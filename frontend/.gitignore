@@ -1,0 +1,49 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencias
+node_modules/
+jspm_packages/
+
+# Compilados y builds
+dist/
+dist-ssr/
+build/
+*.local
+
+# Archivos de entorno
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Archivos de configuración de editores
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Archivos de sistema
+Thumbs.db
+ehthumbs.db
+
+# Archivos de coverage y pruebas
+coverage/
+*.lcov
+
+# Archivos de lock opcionales (elige uno según tu gestor de paquetes)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml

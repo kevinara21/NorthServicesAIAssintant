@@ -1,0 +1,17 @@
+Comandos para iniciar el servidor
+backend: node src/server.js
+frontend: npm run dev
+
+depcheck para ver que modulos de nodejs no uso
+
+Cada vez que se trabaje:
+
+bash
+git add .
+git commit -m "Mensaje claro"
+git push
+
+Y antes de empezar algo nuevo:
+
+bash
+git pull
