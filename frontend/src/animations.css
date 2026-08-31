@@ -1,0 +1,231 @@
+/* ==========================================================================
+   NORTH SERVICES AI ASSISTANT — ANIMATIONS & MICRO-INTERACTIONS
+   Smooth, elegant animations optimized for 60FPS performance
+   ========================================================================== */
+
+/* ========== KEYFRAME ANIMATIONS ========== */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeInDown {
+  from {
+    opacity: 0;
+    transform: translateY(-30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(221, 34, 38, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 35px rgba(221, 34, 38, 0.5);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* ========== ANIMATION CLASSES ========== */
+.animate-fade-in {
+  animation: fadeIn var(--transition-medium) ease-out;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp var(--transition-medium) ease-out;
+}
+
+.animate-fade-in-down {
+  animation: fadeInDown var(--transition-medium) ease-out;
+}
+
+.animate-slide-in-left {
+  animation: slideInLeft var(--transition-medium) ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight var(--transition-medium) ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn var(--transition-medium) ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.animate-bounce {
+  animation: bounce 1s ease-in-out infinite;
+}
+
+/* ========== SCROLL REVEAL HELPER CLASSES ========== */
+.reveal-on-scroll {
+  opacity: 0;
+  transform: translateY(40px);
+  will-change: opacity, transform;
+}
+
+.reveal-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ========== LOADING SKELETON ========== */
+.skeleton-loader {
+  background: linear-gradient(
+    90deg,
+    var(--color-dark-surface) 25%,
+    var(--color-dark-border) 50%,
+    var(--color-dark-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: loadingSkeleton 1.5s infinite;
+  border-radius: var(--border-radius-sm);
+}
+
+@keyframes loadingSkeleton {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ========== IMAGE HOVER ZOOM SMOOTHNESS ========== */
+.zoom-on-hover {
+  overflow: hidden;
+}
+
+.zoom-on-hover img {
+  transition: transform var(--transition-slow);
+}
+
+.zoom-on-hover:hover img {
+  transform: scale(1.06);
+}
+
+/* ========== TRANSITION UTILITIES ========== */
+.transition-fast {
+  transition: all var(--transition-fast);
+}
+
+.transition-medium {
+  transition: all var(--transition-medium);
+}
+
+.transition-slow {
+  transition: all var(--transition-slow);
+}
+
+/* ========== SCROLL HINT ANIMATION ========== */
+.scroll-hint {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-dark-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.scroll-hint:hover {
+  color: var(--color-primary);
+}
+
+.scroll-mouse {
+  width: 22px;
+  height: 36px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 12px;
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.scroll-mouse-wheel {
+  width: 4px;
+  height: 8px;
+  background-color: var(--color-primary);
+  border-radius: 2px;
+  position: absolute;
+  top: 6px;
+  animation: scrollWheel 2s infinite ease-in-out;
+}
+
+@keyframes scrollWheel {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}

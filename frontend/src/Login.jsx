@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from './firebaseConfig';
 import Register from './Register';
+import './App.css';
 
 function Login({ onLoginSuccess }) {
   const [usuarioPrefix, setUsuarioPrefix] = useState('');
@@ -58,12 +59,12 @@ function Login({ onLoginSuccess }) {
   return (
     <div style={{ maxWidth: 380, margin: '60px auto', fontFamily: 'sans-serif' }}>
       <form onSubmit={handleLogin}>
-        <h2>North Services AI Assistant</h2>
-        <p style={{ color: '#555', fontSize: 14 }}>Ingreso a plataforma corporativa</p>
+        <h2 style={{ color: '#000000', marginBottom: '0.5rem' }}>North Services AI Assistant</h2>
+        <p style={{ color: '#666666', fontSize: 14, marginBottom: '1.5rem' }}>Ingreso a plataforma corporativa</p>
         
         <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 12, color: '#475569', marginBottom: 4 }}>Usuario corporativo</label>
-          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #cbd5e1', borderRadius: 4, overflow: 'hidden' }}>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Usuario corporativo</label>
+          <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #E5E7EB', borderRadius: 4, overflow: 'hidden' }}>
             <input
               type="text"
               placeholder="ej. sergio.alvarado"
@@ -72,27 +73,27 @@ function Login({ onLoginSuccess }) {
               required
               style={{ flex: 1, padding: 8, border: 'none', outline: 'none' }}
             />
-            <span style={{ background: '#f1f5f9', padding: '8px 10px', color: '#64748b', fontSize: 13, borderLeft: '1px solid #cbd5e1', userSelect: 'none' }}>
+            <span style={{ background: '#F8F9FA', padding: '8px 10px', color: '#666666', fontSize: 13, borderLeft: '1px solid #E5E7EB', userSelect: 'none' }}>
               @northservices.com.pe
             </span>
           </div>
         </div>
         
         <div style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 12, color: '#475569', marginBottom: 4 }}>Contraseña</label>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
           <input
             type="password"
             placeholder="Contraseña"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
           />
         </div>
         
-        {error && <p style={{ color: 'red', fontSize: 14 }}>{error}</p>}
+        {error && <p style={{ color: '#DD2226', fontSize: 14, fontWeight: 600 }}>{error}</p>}
         
-        <button type="submit" disabled={cargando} style={{ width: '100%', padding: 10, cursor: 'pointer', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 'bold' }}>
+        <button type="submit" disabled={cargando} style={{ width: '100%', padding: 10, cursor: 'pointer', background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
           {cargando ? 'Iniciando sesión...' : 'Ingresar'}
         </button>
       </form>
@@ -101,7 +102,7 @@ function Login({ onLoginSuccess }) {
         <button
           type="button"
           onClick={() => setModoRegistro(true)}
-          style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 13, textDecoration: 'underline' }}
+          style={{ background: 'none', border: 'none', color: '#DD2226', cursor: 'pointer', fontSize: 13, textDecoration: 'underline', fontWeight: 600 }}
         >
           ¿No tienes cuenta? Solicita acceso aquí
         </button>

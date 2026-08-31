@@ -64,9 +64,9 @@ function ModuloManuales({ token }) {
           <p>No hay manuales disponibles en el sistema.</p>
         ) : (
           manuales.map((item) => (
-            <div key={item.id} style={{ background: '#fff', padding: 20, borderRadius: 8, border: '1px solid #cbd5e1' }}>
-              <h4 style={{ margin: '0 0 8px 0', color: '#0f172a' }}>{item.nombre}</h4>
-              <span style={{ background: '#e2e8f0', padding: '2px 8px', borderRadius: 4, fontSize: 12 }}>
+            <div key={item.id} style={{ background: '#FFFFFF', padding: 20, borderRadius: 8, border: '1px solid #E5E7EB' }}>
+              <h4 style={{ margin: '0 0 8px 0', color: '#000000' }}>{item.nombre}</h4>
+              <span style={{ background: '#F8F9FA', padding: '2px 8px', borderRadius: 4, fontSize: 12, color: '#6B7280' }}>
                 {item.version}
               </span>
               <p style={{ fontSize: 14, color: '#475569', margin: '12px 0 20px 0' }}>{item.descripcion}</p>

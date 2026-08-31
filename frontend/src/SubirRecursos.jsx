@@ -74,8 +74,8 @@ export default function SubirRecursos({ token, alCompletar }) {
   };
 
   return (
-    <div style={{ background: '#fff', padding: 20, borderRadius: 8, border: '1px solid #cbd5e1', marginBottom: 20 }}>
-      <h3 style={{ margin: '0 0 15px 0', color: '#0f172a' }}>Publicación Unificada de Recursos</h3>
+    <div style={{ background: '#FFFFFF', padding: 20, borderRadius: 8, border: '1px solid #E5E7EB', marginBottom: 20 }}>
+      <h3 style={{ margin: '0 0 15px 0', color: '#000000', fontWeight: 700 }}>Publicación Unificada de Recursos</h3>
 
       {mensaje && (
         <div style={{
@@ -98,7 +98,7 @@ export default function SubirRecursos({ token, alCompletar }) {
             value={nombre}
             onChange={(e) => setNombre(e.target.value)}
             required
-            style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4 }}
+            style={{ padding: 8, border: '1px solid #E5E7EB', borderRadius: 4 }}
           />
 
           <input
@@ -107,7 +107,7 @@ export default function SubirRecursos({ token, alCompletar }) {
             value={version}
             onChange={(e) => setVersion(e.target.value)}
             required
-            style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4 }}
+            style={{ padding: 8, border: '1px solid #E5E7EB', borderRadius: 4 }}
           />
         </div>
 
@@ -117,12 +117,12 @@ export default function SubirRecursos({ token, alCompletar }) {
           onChange={(e) => setDescripcion(e.target.value)}
           required
           rows={3}
-          style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 4, fontFamily: 'inherit' }}
+          style={{ padding: 8, border: '1px solid #E5E7EB', borderRadius: 4, fontFamily: 'inherit' }}
         />
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15, background: '#f8fafc', padding: 12, borderRadius: 6, border: '1px solid #e2e8f0' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15, background: '#F8F9FA', padding: 12, borderRadius: 6, border: '1px solid #E5E7EB' }}>
           <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#1e293b', marginBottom: 4 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#000000', marginBottom: 4 }}>
               Instalador Software (.ZIP / .RAR)
             </label>
             <input
@@ -134,7 +134,7 @@ export default function SubirRecursos({ token, alCompletar }) {
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#1e293b', marginBottom: 4 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 'bold', color: '#000000', marginBottom: 4 }}>
               Manual Técnico (.PDF)
             </label>
             <input
@@ -148,12 +148,12 @@ export default function SubirRecursos({ token, alCompletar }) {
 
         {cargando && (
           <div style={{ marginTop: 5 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#475569', marginBottom: 4 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6B7280', marginBottom: 4 }}>
               <span>Subiendo e Indexando...</span>
               <span>{progreso}%</span>
             </div>
-            <div style={{ width: '100%', background: '#e2e8f0', height: 8, borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{ width: `${progreso}%`, background: '#2563eb', height: '100%', transition: 'width 0.2s' }}></div>
+            <div style={{ width: '100%', background: '#E5E7EB', height: 8, borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: `${progreso}%`, background: '#DD2226', height: '100%', transition: 'width 0.2s' }}></div>
             </div>
           </div>
         )}
@@ -163,7 +163,7 @@ export default function SubirRecursos({ token, alCompletar }) {
           disabled={cargando}
           style={{
             padding: 10,
-            background: '#2563eb',
+            background: '#DD2226',
             color: '#fff',
             border: 'none',
             borderRadius: 4,

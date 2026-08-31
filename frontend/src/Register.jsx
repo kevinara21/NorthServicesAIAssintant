@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebaseConfig';
+import './App.css';
 
 export default function Register({ alVolverAlLogin }) {
   const [nombre, setNombre] = useState('');
@@ -74,8 +75,8 @@ export default function Register({ alVolverAlLogin }) {
 
   return (
     <div style={{ maxWidth: 380, margin: '50px auto', fontFamily: 'sans-serif' }}>
-      <h2>Solicitud de Acceso</h2>
-      <p style={{ fontSize: 13, color: '#64748b', marginBottom: 20 }}>
+      <h2 style={{ color: '#000000', marginBottom: '0.5rem' }}>Solicitud de Acceso</h2>
+      <p style={{ fontSize: 13, color: '#666666', marginBottom: 20 }}>
         North Services AI Assistant
       </p>
 
@@ -86,8 +87,9 @@ export default function Register({ alVolverAlLogin }) {
             borderRadius: 4,
             marginBottom: 15,
             fontSize: 13,
-            backgroundColor: mensaje.tipo === 'exito' ? '#dcfce7' : '#fee2e2',
-            color: mensaje.tipo === 'exito' ? '#15803d' : '#b91c1c',
+            backgroundColor: mensaje.tipo === 'exito' ? '#D1FAE5' : '#FEE2E2',
+            color: mensaje.tipo === 'exito' ? '#065F46' : '#B91C1C',
+            borderLeft: `4px solid ${mensaje.tipo === 'exito' ? '#10B981' : '#DD2226'}`,
           }}
         >
           {mensaje.texto}
@@ -95,49 +97,59 @@ export default function Register({ alVolverAlLogin }) {
       )}
 
       <form onSubmit={manejarRegistro} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <input
-          type="text"
-          placeholder="Nombre (ej. Sergio)"
-          value={nombre}
-          onChange={(e) => setNombre(e.target.value.replace(/\s+/g, ''))}
-          required
-          style={{ padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
-        />
-        <input
-          type="text"
-          placeholder="Apellido (ej. Alvarado)"
-          value={apellido}
-          onChange={(e) => setApellido(e.target.value.replace(/\s+/g, ''))}
-          required
-          style={{ padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
-        />
+        <div>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Nombre</label>
+          <input
+            type="text"
+            placeholder="Nombre (ej. Sergio)"
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value.replace(/\s+/g, ''))}
+            required
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
+          />
+        </div>
 
         <div>
-          <label style={{ display: 'block', fontSize: 11, color: '#64748b', marginBottom: 2 }}>Correo autogenerado</label>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Apellido</label>
+          <input
+            type="text"
+            placeholder="Apellido (ej. Alvarado)"
+            value={apellido}
+            onChange={(e) => setApellido(e.target.value.replace(/\s+/g, ''))}
+            required
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: 11, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Correo autogenerado</label>
           <input
             type="email"
             value={emailGenerado}
             readOnly
             placeholder="nombre.apellido@northservices.com.pe"
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: 4, color: '#334155' }}
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', background: '#F8F9FA', border: '1px solid #E5E7EB', borderRadius: 4, color: '#666666' }}
           />
         </div>
 
-        <input
-          type="password"
-          placeholder="Contraseña (mínimo 6 caracteres)"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          style={{ padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
-        />
+        <div>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
+          <input
+            type="password"
+            placeholder="Contraseña (mínimo 6 caracteres)"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
+          />
+        </div>
 
         <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#475569', marginBottom: 2 }}>Área</label>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Área</label>
           <select
             value={areaSeleccionada}
             onChange={(e) => setAreaSeleccionada(e.target.value)}
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
           >
             {areasExistentes.map((item) => (
               <option key={item} value={item}>{item}</option>
@@ -150,17 +162,17 @@ export default function Register({ alVolverAlLogin }) {
               value={otraArea}
               onChange={(e) => setOtraArea(e.target.value)}
               required
-              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
+              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
             />
           )}
         </div>
 
         <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#475569', marginBottom: 2 }}>Rol</label>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Rol</label>
           <select
             value={rolSeleccionado}
             onChange={(e) => setRolSeleccionado(e.target.value)}
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
+            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
           >
             {rolesExistentes.map((item) => (
               <option key={item} value={item}>{item}</option>
@@ -173,12 +185,12 @@ export default function Register({ alVolverAlLogin }) {
               value={otroRol}
               onChange={(e) => setOtroRol(e.target.value)}
               required
-              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 4 }}
+              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
             />
           )}
         </div>
 
-        <button type="submit" disabled={cargando} style={{ padding: 10, cursor: 'pointer', marginTop: 10, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, fontWeight: 'bold' }}>
+        <button type="submit" disabled={cargando} style={{ padding: 10, cursor: 'pointer', marginTop: 10, background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
           {cargando ? 'Enviando...' : 'Registrar'}
         </button>
       </form>
@@ -187,7 +199,7 @@ export default function Register({ alVolverAlLogin }) {
         <button
           type="button"
           onClick={alVolverAlLogin}
-          style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 13, textDecoration: 'underline' }}
+          style={{ background: 'none', border: 'none', color: '#DD2226', cursor: 'pointer', fontSize: 13, textDecoration: 'underline', fontWeight: 600 }}
         >
           ¿Ya tienes cuenta? Inicia sesión aquí
         </button>
