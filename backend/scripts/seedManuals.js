@@ -7,7 +7,6 @@ async function registrarManual() {
     await manualRef.set({
       nombre: 'Manual de Usuario - Drilling Merger',
       descripcion: 'Guía técnica y de procedimiento para la consolidación de datos de pozo.',
-      version: 'v1.0',
       nombreArchivo: 'Manual_Drilling_Merger_v1.pdf',
       rutaLocal: 'storage/manuals/drilling-merger/v1.0/Manual_Drilling_Merger_v1.pdf',
       rolesPermitidos: ['administrador', 'supervisor', 'usuario'],

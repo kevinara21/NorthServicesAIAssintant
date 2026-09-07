@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { FiDownload } from 'react-icons/fi';
 
 function CatalogoSoftware({ token }) {
   const [softwareList, setSoftwareList] = useState([]);
@@ -71,9 +72,12 @@ function CatalogoSoftware({ token }) {
               </span>
               <p style={{ fontSize: 14, color: '#475569', margin: '12px 0 20px 0' }}>{item.descripcion}</p>
               <button
+                type="button"
                 onClick={() => handleDownload(item.id, item.nombre, item.version)}
+                aria-label={`Descargar instalador de ${item.nombre}`}
+                title="Descargar instalador ZIP"
                 style={{ width: '100%', padding: '8px 12px', background: '#DD2226', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>
-                Descargar Instalador ZIP
+                <FiDownload aria-hidden="true" />
               </button>
             </div>
           ))

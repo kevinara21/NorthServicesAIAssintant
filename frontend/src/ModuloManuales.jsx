@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { FiDownload } from 'react-icons/fi';
 
 function ModuloManuales({ token }) {
   const [manuales, setManuales] = useState([]);
@@ -66,14 +67,19 @@ function ModuloManuales({ token }) {
           manuales.map((item) => (
             <div key={item.id} style={{ background: '#FFFFFF', padding: 20, borderRadius: 8, border: '1px solid #E5E7EB' }}>
               <h4 style={{ margin: '0 0 8px 0', color: '#000000' }}>{item.nombre}</h4>
-              <span style={{ background: '#F8F9FA', padding: '2px 8px', borderRadius: 4, fontSize: 12, color: '#6B7280' }}>
-                {item.version}
-              </span>
+              {item.version && (
+                <span style={{ background: '#F8F9FA', padding: '2px 8px', borderRadius: 4, fontSize: 12, color: '#6B7280' }}>
+                  {item.version}
+                </span>
+              )}
               <p style={{ fontSize: 14, color: '#475569', margin: '12px 0 20px 0' }}>{item.descripcion}</p>
               <button
+                type="button"
                 onClick={() => handleDownloadPDF(item.id, item.nombre)}
-                style={{ width: '100%', padding: '8px 12px', background: '#0284c7', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 500 }}>
-                Descargar Documento PDF
+                aria-label={`Descargar documento PDF de ${item.nombre}`}
+                title="Descargar documento PDF"
+                style={{ width: '100%', padding: '8px 12px', background: '#DD2226', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 500 }}>
+                <FiDownload aria-hidden="true" />
               </button>
             </div>
           ))
