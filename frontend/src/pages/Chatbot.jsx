@@ -1044,8 +1044,8 @@ export default function Chatbot({ token }) {
             background:
               cargando ||
               !pregunta.trim()
-                ? '#94a3b8'
-                : '#2563eb',
+                ? '#B5181C'
+                : '#DD2226',
 
             color:
               '#fff',
