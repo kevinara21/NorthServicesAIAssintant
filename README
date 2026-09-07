@@ -2,6 +2,15 @@ Comandos para iniciar el servidor
 backend: node src/server.js
 frontend: npm run dev
 
+
+Para OTP por SMS con Infobip, crea `backend/.env` (no lo subas al repositorio) con:
+
+INFOBIP_API_KEY=tu_api_key
+INFOBIP_BASE_URL=https://d8zkg1.api.infobip.com
+INFOBIP_SMS_SENDER=tu_sender_de_sms
+
+El sender debe ser un número o remitente habilitado en tu cuenta de Infobip. Los códigos se guardan hasheados en la colección `otpCodes` de Firestore y caducan en 10 minutos.
+
 depcheck para ver que modulos de nodejs no uso
 
 Cada vez que se trabaje:

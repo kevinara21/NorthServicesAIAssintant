@@ -10,20 +10,21 @@ import {
   FiMenu,
   FiSettings,
   FiUploadCloud,
+  FiUser,
   FiUsers,
   FiX,
 } from 'react-icons/fi';
-import Chatbot from './pages/Chatbot';
-import GestionUsuarios from './pages/GestionUsuarios';
+import Chatbot from '../pages/Chatbot';
+import GestionUsuarios from '../pages/GestionUsuarios';
 import CatalogoSoftware from './CatalogoSoftware';
 import ModuloManuales from './ModuloManuales';
 import SubirRecursos from './SubirRecursos';
-import './App.css';
+import Perfil from './Perfil';
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-export default function Dashboard({ usuario, token, onLogout }) {
+export default function Dashboard({ usuario, token, onLogout, onUsuarioActualizado }) {
   const [vistaActiva, setVistaActiva] = useState('inicio');
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
@@ -34,6 +35,7 @@ export default function Dashboard({ usuario, token, onLogout }) {
     { id: 'inicio', label: 'Inicio', icon: FiHome },
     { id: 'manuales', label: 'Manuales', icon: FiBookOpen },
     { id: 'software', label: 'Software', icon: FiBox },
+    { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
   const opcionesAdmin = [
@@ -52,6 +54,7 @@ export default function Dashboard({ usuario, token, onLogout }) {
       case 'software': return <CatalogoSoftware token={token} />;
       case 'recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
+      case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
       default:
         return (
           <section className="dashboard-home-layout">

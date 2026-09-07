@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-
-const API_URL = 'http://localhost:8000';
+import { API_URL } from '../services/api';
 
 export default function Chatbot({ token }) {
   // =========================================================

@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
+import { FiEye, FiEyeOff } from 'react-icons/fi';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from './firebaseConfig';
-import './App.css';
+import { auth, db } from '../services/firebaseConfig';
 
 export default function Register({ alVolverAlLogin }) {
   const [nombre, setNombre] = useState('');
   const [apellido, setApellido] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [whatsapp, setWhatsapp] = useState('');
 
   const [areaSeleccionada, setAreaSeleccionada] = useState('Sistemas');
   const [otraArea, setOtraArea] = useState('');
@@ -51,6 +53,7 @@ export default function Register({ alVolverAlLogin }) {
         area: areaFinal,
         estado: 'pendiente',
         fechaRegistro: new Date(),
+        ...(whatsapp.trim() ? { whatsapp: whatsapp.trim(), whatsappVerificado: false } : {}),
       });
 
       await signOut(auth);
@@ -74,9 +77,10 @@ export default function Register({ alVolverAlLogin }) {
   };
 
   return (
-    <div style={{ maxWidth: 380, margin: '50px auto', fontFamily: 'sans-serif' }}>
-      <h2 style={{ color: '#000000', marginBottom: '0.5rem' }}>Solicitud de Acceso</h2>
-      <p style={{ fontSize: 13, color: '#666666', marginBottom: 20 }}>
+    <div className="login-page register-page" style={{ maxWidth: 380, margin: '50px auto', fontFamily: 'sans-serif' }}>
+      <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
+      <h2 className="login-heading" style={{ color: '#000000', marginBottom: '0.5rem' }}>Solicitud de Acceso</h2>
+      <p className="login-subtitle" style={{ fontSize: 13, color: '#666666', marginBottom: 20 }}>
         North Services AI Assistant
       </p>
 
@@ -134,14 +138,7 @@ export default function Register({ alVolverAlLogin }) {
 
         <div>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
-          <input
-            type="password"
-            placeholder="Contraseña (mínimo 6 caracteres)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
-          />
+          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Contraseña (mínimo 6 caracteres)" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
         </div>
 
         <div>
@@ -168,6 +165,12 @@ export default function Register({ alVolverAlLogin }) {
         </div>
 
         <div>
+          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>WhatsApp (opcional)</label>
+          <input type="tel" placeholder="+51987654321" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} />
+          <small style={{ color: '#666666' }}>Podrás verificarlo desde tu perfil.</small>
+        </div>
+
+        <div>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Rol</label>
           <select
             value={rolSeleccionado}
@@ -190,7 +193,7 @@ export default function Register({ alVolverAlLogin }) {
           )}
         </div>
 
-        <button type="submit" disabled={cargando} style={{ padding: 10, cursor: 'pointer', marginTop: 10, background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
+        <button className="register-submit-button" type="submit" disabled={cargando} style={{ padding: 10, cursor: 'pointer', marginTop: 10, background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
           {cargando ? 'Enviando...' : 'Registrar'}
         </button>
       </form>
@@ -199,7 +202,7 @@ export default function Register({ alVolverAlLogin }) {
         <button
           type="button"
           onClick={alVolverAlLogin}
-          style={{ background: 'none', border: 'none', color: '#DD2226', cursor: 'pointer', fontSize: 13, textDecoration: 'underline', fontWeight: 600 }}
+          className="login-secondary-link"
         >
           ¿Ya tienes cuenta? Inicia sesión aquí
         </button>

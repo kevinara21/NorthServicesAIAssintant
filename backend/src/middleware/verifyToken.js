@@ -27,6 +27,8 @@ const verifyToken = async (req, res, next) => {
       email: data.email,
       nombre: data.nombre,
       apellido: data.apellido,
+      whatsapp: data.whatsapp || '',
+      whatsappVerificado: data.whatsappVerificado === true,
       // Convertir siempre a minúsculas para comparaciones consistentes
       rol: (data.rol || 'tecnico').toLowerCase(),
       area: data.area || data.departamento || '',

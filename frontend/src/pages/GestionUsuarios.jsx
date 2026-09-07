@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiFetch } from '../services/api';
 
 export default function GestionUsuarios({ token }) {
   const [usuarios, setUsuarios] = useState([]);
@@ -6,7 +7,7 @@ export default function GestionUsuarios({ token }) {
 
   const cargarUsuarios = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api/admin/usuarios', {
+      const res = await apiFetch('/api/admin/usuarios', {
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
@@ -56,7 +57,7 @@ export default function GestionUsuarios({ token }) {
 
     // 2. Envío de cambios al backend
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/usuarios/${userId}`, {
+      const res = await apiFetch(`/api/admin/usuarios/${userId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -82,13 +83,14 @@ export default function GestionUsuarios({ token }) {
   const rolesDisponibles = obtenerRolesDisponibles();
 
   return (
-    <div style={{ padding: '20px', maxWidth: '100%', background: '#fff', borderRadius: '8px', border: '1px solid #cbd5e1' }}>
+    <div className="admin-users-panel" style={{ padding: '20px', maxWidth: '100%', background: '#fff', borderRadius: '8px', border: '1px solid #cbd5e1' }}>
       <h2 style={{ margin: '0 0 10px 0', fontSize: '20px', color: '#0f172a' }}>Panel de Administración de Usuarios</h2>
       <p style={{ color: '#64748b', marginBottom: '20px', fontSize: '14px' }}>
         Aprobación de accesos, bajas y asignación de roles por área.
       </p>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: '6px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
+      <div className="admin-users-table-wrap">
+      <table className="admin-users-table" style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: '6px', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
         <thead>
           <tr style={{ background: '#f8fafc', borderBottom: '1px solid #e2e8f0', textAlign: 'left' }}>
             <th style={{ padding: '12px' }}>Usuario</th>
@@ -107,10 +109,10 @@ export default function GestionUsuarios({ token }) {
 
             return (
               <tr key={userId || index} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                <td style={{ padding: '12px' }}>{u.nombre} {u.apellido}</td>
-                <td style={{ padding: '12px' }}>{u.email}</td>
-                <td style={{ padding: '12px' }}>{areaActual}</td>
-                <td style={{ padding: '12px' }}>
+                <td data-label="Usuario" style={{ padding: '12px' }}>{u.nombre} {u.apellido}</td>
+                <td data-label="Email" style={{ padding: '12px' }}>{u.email}</td>
+                <td data-label="Área" style={{ padding: '12px' }}>{areaActual}</td>
+                <td data-label="Rol" style={{ padding: '12px' }}>
                   <select
                     value={rolActual}
                     onChange={(e) => actualizarUsuario(userId, { rol: e.target.value })}
@@ -123,7 +125,7 @@ export default function GestionUsuarios({ token }) {
                     ))}
                   </select>
                 </td>
-                <td style={{ padding: '12px' }}>
+                <td data-label="Estado" style={{ padding: '12px' }}>
                   <span style={{
                     padding: '4px 8px',
                     borderRadius: '12px',
@@ -135,7 +137,7 @@ export default function GestionUsuarios({ token }) {
                     {u.estado}
                   </span>
                 </td>
-                <td style={{ padding: '12px' }}>
+                <td data-label="Acciones" style={{ padding: '12px' }}>
                   {u.estado === 'pendiente' && (
                     <button
                       type="button"
@@ -169,6 +171,7 @@ export default function GestionUsuarios({ token }) {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

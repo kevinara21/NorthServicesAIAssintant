@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-
-const API_URL = 'http://localhost:8000';
+import { API_URL } from '../services/api';
 
 export default function SubirRecursos({ token, alCompletar }) {
   const [nombre, setNombre] = useState('');
@@ -196,6 +195,7 @@ export default function SubirRecursos({ token, alCompletar }) {
 
   return (
     <div
+      className="resource-upload-panel"
       style={{
         background: '#FFFFFF',
         padding: 20,
@@ -205,6 +205,7 @@ export default function SubirRecursos({ token, alCompletar }) {
       }}
     >
       <h3
+        className="resource-upload-form"
         style={{
           margin: '0 0 6px 0',
           color: '#000000',
@@ -226,6 +227,7 @@ export default function SubirRecursos({ token, alCompletar }) {
 
       {mensaje && (
         <div
+          className="resource-main-fields"
           style={{
             padding: 10,
             borderRadius: 5,
@@ -258,6 +260,7 @@ export default function SubirRecursos({ token, alCompletar }) {
         }}
       >
         <div
+          className="resource-file-fields"
           style={{
             display: 'grid',
             gridTemplateColumns: '2fr 1fr',

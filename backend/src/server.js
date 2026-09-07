@@ -6,8 +6,9 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const PDFParser = require('pdf2json');
+const crypto = require('crypto');
 
-const { db } = require('./firebaseAdmin');
+const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
 const { connectDB, getDB } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
 
@@ -35,6 +36,142 @@ const RAG_NUM_CANDIDATES = Number(
 const EMBEDDING_CONCURRENCY = Number(
   process.env.EMBEDDING_CONCURRENCY || '5'
 );
+
+const OTP_EXPIRATION_MINUTES = 10;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_DESTINATION = normalizarTelefono(process.env.OTP_DESTINATION || '+51981384927');
+const INFOBIP_BASE_URL = (process.env.INFOBIP_BASE_URL || '').replace(/\/$/, '');
+const INFOBIP_SMS_SENDER = process.env.INFOBIP_SMS_SENDER || '447491163443';
+const INFOBIP_WHATSAPP_SENDER = process.env.INFOBIP_WHATSAPP_SENDER || '';
+const INFOBIP_WHATSAPP_TEMPLATE_NAME = process.env.INFOBIP_WHATSAPP_TEMPLATE_NAME || 'test_whatsapp_template_en';
+const INFOBIP_WHATSAPP_LANGUAGE = process.env.INFOBIP_WHATSAPP_LANGUAGE || 'en';
+
+function normalizarTelefono(telefono) {
+  return String(telefono || '').replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+}
+
+function generarCodigoOTP() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+function hashOTP(codigo) {
+  return crypto.createHash('sha256').update(codigo).digest('hex');
+}
+
+async function enviarOTPSMS(telefono, codigo) {
+  if (!process.env.INFOBIP_API_KEY || !INFOBIP_BASE_URL || !INFOBIP_SMS_SENDER) {
+    throw new Error('Infobip SMS no está configurado. Define INFOBIP_API_KEY, INFOBIP_BASE_URL e INFOBIP_SMS_SENDER.');
+  }
+
+  const response = await fetch(`${INFOBIP_BASE_URL}/sms/3/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `App ${process.env.INFOBIP_API_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      messages: [{
+        destinations: [{ to: telefono.replace('+', '') }],
+        sender: INFOBIP_SMS_SENDER,
+        content: { text: `North Services: tu código de verificación es ${codigo}. Vence en ${OTP_EXPIRATION_MINUTES} minutos.` },
+      }],
+    }),
+  });
+
+  const respuestaInfobip = await response.json().catch(() => ({}));
+  const resultado = respuestaInfobip?.messages?.[0];
+
+  if (!response.ok || resultado?.status?.groupName === 'REJECTED') {
+    const detalle = resultado?.status?.description || respuestaInfobip?.requestError?.serviceException?.text;
+    if (detalle === 'Destination not registered') throw new Error('El número de destino no está habilitado para recibir SMS de este remitente de Infobip.');
+    throw new Error(`Infobip rechazó el envío (${response.status})${detalle ? `: ${detalle}` : '.'}`);
+  }
+
+  return {
+    messageId: resultado?.messageId || null,
+    estado: resultado?.status?.groupName || 'ACCEPTED',
+    descripcion: resultado?.status?.description || null,
+  };
+}
+
+async function enviarOTPWhatsApp(telefono, codigo) {
+  if (!process.env.INFOBIP_API_KEY || !INFOBIP_BASE_URL || !INFOBIP_WHATSAPP_SENDER) {
+    throw new Error('Infobip WhatsApp no está configurado.');
+  }
+
+  const response = await fetch(`${INFOBIP_BASE_URL}/whatsapp/1/message/template`, {
+    method: 'POST',
+    headers: {
+      Authorization: `App ${process.env.INFOBIP_API_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      messages: [{
+        from: INFOBIP_WHATSAPP_SENDER,
+        to: telefono.replace('+', ''),
+        content: {
+          templateName: INFOBIP_WHATSAPP_TEMPLATE_NAME,
+          templateData: { body: { placeholders: [codigo] } },
+          language: INFOBIP_WHATSAPP_LANGUAGE,
+        },
+      }],
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  const resultado = data?.messages?.[0];
+  const detalle = resultado?.status?.description || data?.requestError?.serviceException?.text;
+  if (!response.ok || resultado?.status?.groupName === 'REJECTED') {
+    throw new Error(`Infobip rechazó WhatsApp${detalle ? `: ${detalle}` : '.'}`);
+  }
+  return { messageId: resultado?.messageId || null, estado: resultado?.status?.groupName || 'ACCEPTED', descripcion: detalle || null };
+}
+
+async function crearOTP({ uid = null, telefono, email = null, proposito, canal = 'sms' }) {
+  const codigo = generarCodigoOTP();
+  const referencia = db.collection('otpCodes').doc();
+  await referencia.set({
+    uid, email, telefono, proposito, canal, codigoHash: hashOTP(codigo), intentos: 0, usado: false,
+    creadoEn: FieldValue.serverTimestamp(),
+    expiraEn: new Date(Date.now() + OTP_EXPIRATION_MINUTES * 60 * 1000),
+  });
+  try {
+    const envio = canal === 'whatsapp'
+      ? await enviarOTPWhatsApp(telefono, codigo)
+      : await enviarOTPSMS(telefono, codigo);
+    await referencia.update({
+      infobipMessageId: envio.messageId,
+      infobipEstado: envio.estado,
+      infobipDescripcion: envio.descripcion,
+    });
+    return envio;
+  } catch (error) {
+    await referencia.delete();
+    throw error;
+  }
+}
+
+async function validarOTP({ codigo, telefono, uid = null, proposito }) {
+  const snapshot = await db.collection('otpCodes')
+    .where('telefono', '==', telefono).get();
+  const documentos = snapshot.docs
+    .filter((documento) => {
+      const data = documento.data();
+      return data.proposito === proposito && data.usado === false;
+    })
+    .sort((a, b) => (b.data().creadoEn?.toMillis?.() || 0) - (a.data().creadoEn?.toMillis?.() || 0));
+  if (!documentos.length) throw new Error('Código inválido o expirado.');
+  const referencia = documentos[0];
+  const otp = referencia.data();
+  const expiraEn = otp.expiraEn?.toDate ? otp.expiraEn.toDate() : new Date(otp.expiraEn);
+  if ((uid && otp.uid !== uid) || otp.intentos >= OTP_MAX_ATTEMPTS || expiraEn < new Date()) throw new Error('Código inválido o expirado.');
+    if (hashOTP(codigo) !== otp.codigoHash) {
+    await referencia.ref.update({ intentos: FieldValue.increment(1) });
+    throw new Error('Código inválido o expirado.');
+  }
+  await referencia.ref.update({ usado: true, verificadoEn: FieldValue.serverTimestamp() });
+}
 
 // ============================================================
 // ADMIN
@@ -786,6 +923,87 @@ app.get(
     });
   }
 );
+
+// ============================================================
+// OTP, PERFIL Y RECUPERACIÓN DE CONTRASEÑA
+// ============================================================
+
+app.post('/api/otp/solicitar', verifyToken, async (req, res) => {
+  try {
+    const telefono = OTP_DESTINATION;
+    const canal = req.body.canal === 'whatsapp' ? 'whatsapp' : 'sms';
+    if (!/^\+\d{8,15}$/.test(telefono)) return res.status(400).json({ ok: false, error: 'Ingresa un número con código de país, por ejemplo +51987654321.' });
+    await crearOTP({ uid: req.user.uid, telefono, canal, proposito: 'verificar-whatsapp' });
+    res.json({ ok: true, mensaje: `Código enviado por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.` });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/otp/verificar', verifyToken, async (req, res) => {
+  try {
+    const telefonoUsuario = normalizarTelefono(req.body.telefono);
+    if (!/^\+\d{8,15}$/.test(telefonoUsuario)) return res.status(400).json({ ok: false, error: 'Ingresa un número válido con código de país.' });
+    await validarOTP({ uid: req.user.uid, telefono: OTP_DESTINATION, codigo: String(req.body.codigo || ''), proposito: 'verificar-whatsapp' });
+    await db.collection('users').doc(req.user.uid).update({ whatsapp: telefonoUsuario, whatsappVerificado: true, whatsappVerificadoEn: FieldValue.serverTimestamp() });
+    res.json({ ok: true, mensaje: 'Número verificado para SMS.' });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/perfil', verifyToken, async (req, res) => {
+  try {
+    const nombre = String(req.body.nombre || '').trim();
+    const apellido = String(req.body.apellido || '').trim();
+    if (!nombre || !apellido) return res.status(400).json({ ok: false, error: 'Nombre y apellido son obligatorios.' });
+    const email = `${nombre.toLowerCase()}.${apellido.toLowerCase()}@northservices.com.pe`;
+    await authAdmin.updateUser(req.user.uid, { displayName: `${nombre} ${apellido}`, email });
+    await db.collection('users').doc(req.user.uid).update({ nombre, apellido, email });
+    res.json({ ok: true, usuario: { ...req.user, nombre, apellido, email } });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.code === 'auth/email-already-exists' ? 'El correo generado ya está registrado.' : error.message });
+  }
+});
+
+app.post('/api/password/solicitar', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (snapshot.empty) return res.status(400).json({ ok: false, error: 'No existe una cuenta con ese correo.' });
+    await crearOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, email, proposito: 'restablecer-password' });
+    res.json({ ok: true, mensaje: 'Código enviado por SMS.' });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/password/restablecer', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
+    if (snapshot.empty) throw new Error('Cuenta no encontrada.');
+    const nuevaPassword = String(req.body.nuevaPassword || '');
+    if (nuevaPassword.length < 6) return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 6 caracteres.' });
+    const usuario = snapshot.docs[0].data();
+    await validarOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, codigo: String(req.body.codigo || ''), proposito: 'restablecer-password' });
+    await authAdmin.updateUser(snapshot.docs[0].id, { password: nuevaPassword });
+    res.json({ ok: true, mensaje: 'Contraseña actualizada correctamente.' });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/password/cambiar', verifyToken, async (req, res) => {
+  try {
+    const nuevaPassword = String(req.body.nuevaPassword || '');
+    if (nuevaPassword.length < 6) return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 6 caracteres.' });
+    await authAdmin.updateUser(req.user.uid, { password: nuevaPassword });
+    res.json({ ok: true, mensaje: 'Contraseña actualizada correctamente.' });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
 
 // ============================================================
 // SUBIDA UNIFICADA
@@ -2134,42 +2352,19 @@ app.put(
 // INICIAR SERVIDOR
 // ============================================================
 
-const PORT =
-  process.env.PORT ||
-  8000;
+const PORT = process.env.PORT || 8000;
+const HOST = process.env.HOST || "0.0.0.0";
 
 connectDB()
   .then(() => {
-    app.listen(
-      PORT,
-      () => {
-        console.log(
-          `Servidor corriendo en http://localhost:${PORT}`
-        );
-
-        console.log(
-          `[CONFIG] RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD}`
-        );
-
-        console.log(
-          `[CONFIG] RAG_LIMIT=${RAG_LIMIT}`
-        );
-
-        console.log(
-          `[CONFIG] RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`
-        );
-
-        console.log(
-          `[CONFIG] EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`
-        );
-      }
-    );
+    app.listen(PORT, HOST, () => {
+      console.log(`Servidor corriendo en http://${HOST}:${PORT}`);
+      console.log(`[CONFIG] RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD}`);
+      console.log(`[CONFIG] RAG_LIMIT=${RAG_LIMIT}`);
+      console.log(`[CONFIG] RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`);
+      console.log(`[CONFIG] EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`);
+    });
   })
-  .catch(
-    (error) => {
-      console.error(
-        'Fallo al conectar con MongoDB Atlas:',
-        error
-      );
-    }
-  );
+  .catch((error) => {
+    console.error("Fallo al conectar con MongoDB Atlas:", error);
+  });

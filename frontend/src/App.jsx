@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import Login from './Login';
-import Dashboard from './Dashboard';
+import Login from './pages/Login';
+import Dashboard from './components/Dashboard';
 
 function App() {
   const [usuario, setUsuario] = useState(null);
@@ -37,7 +37,7 @@ function App() {
       {!usuario ? (
         <Login onLoginSuccess={handleLoginSuccess} />
       ) : (
-        <Dashboard usuario={usuario} token={token} onLogout={handleLogout} />
+        <Dashboard usuario={usuario} token={token} onLogout={handleLogout} onUsuarioActualizado={(usuarioData) => handleLoginSuccess(usuarioData, token)} />
       )}
     </div>
   );
