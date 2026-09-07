@@ -78,7 +78,7 @@ function Login({ onLoginSuccess }) {
       if (!res.ok) throw new Error(data.error || 'No se pudo completar la operación.');
       if (!otpEnviado) setOtpEnviado(true);
       else { setModoRecuperacion(false); setOtpEnviado(false); setCodigo(''); setNuevaPassword(''); }
-      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado por WhatsApp.');
+      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado.');
     } catch (err) { setError(err.message); }
     finally { setCargando(false); }
   };

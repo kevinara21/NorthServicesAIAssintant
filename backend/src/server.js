@@ -2216,6 +2216,77 @@ ${preguntaLimpia}
 // GESTIÓN DE USUARIOS
 // ============================================================
 
+// ============================================================
+// POZOS Y FACTURACIÓN
+// ============================================================
+
+app.get('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const snapshot = await db.collection('pagosStarlink').orderBy('diaPago', 'asc').get();
+    const pozos = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
+    res.json({ ok: true, pozos });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const datos = normalizarDatosPozo(req.body);
+    if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
+    const referencia = await db.collection('pagosStarlink').add({ ...datos, creadoEn: FieldValue.serverTimestamp(), actualizadoEn: FieldValue.serverTimestamp() });
+    res.status(201).json({ ok: true, pozo: { id: referencia.id, ...datos } });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const referencia = db.collection('pagosStarlink').doc(req.params.id);
+    const existente = await referencia.get();
+    if (!existente.exists) return res.status(404).json({ ok: false, error: 'Pozo no encontrado.' });
+    const datosSolicitados = normalizarDatosPozo(req.body);
+    const datosOriginales = existente.data();
+    const datos = {
+      ...datosSolicitados,
+      numero: datosOriginales.numero || 0,
+      codigoKit: datosOriginales.codigoKit || '',
+      serieAntena: datosOriginales.serieAntena || datosOriginales.codigo4Pba || '',
+      diaInicioPeriodo: datosOriginales.diaInicioPeriodo || datosOriginales.periodoInicio || '',
+      diaFinPeriodo: datosOriginales.diaFinPeriodo || datosOriginales.periodoFin || '',
+      diaPago: datosOriginales.diaPago || datosOriginales.fechaPago || '',
+    };
+    if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
+    await referencia.update({ ...datos, actualizadoEn: FieldValue.serverTimestamp() });
+    res.json({ ok: true, pozo: { id: req.params.id, ...datos } });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+function normalizarDatosPozo(datos = {}) {
+  const diaInicioPeriodo = normalizarDia(datos.diaInicioPeriodo || datos.periodoInicio);
+  const diaFinPeriodo = normalizarDia(datos.diaFinPeriodo || datos.periodoFin);
+  const diaPago = normalizarDia(datos.diaPago || datos.fechaPago) || (diaInicioPeriodo ? (diaInicioPeriodo === 1 ? 31 : diaInicioPeriodo - 1) : '');
+  return {
+    numero: Number(datos.numero) || 0,
+    nombrePozo: String(datos.nombrePozo || '').trim(),
+    correo: String(datos.correo || '').trim(),
+    codigoKit: String(datos.codigoKit || '').trim(),
+    serieAntena: String(datos.serieAntena || datos.codigo4Pba || '').trim(),
+    diaInicioPeriodo,
+    diaFinPeriodo,
+    diaPago,
+    estadoPago: datos.estadoPago === 'pagado' ? 'pagado' : 'no_pagado',
+  };
+}
+
+function normalizarDia(valor) {
+  const dia = Number.parseInt(valor, 10);
+  return dia >= 1 && dia <= 31 ? dia : '';
+}
+
 app.get(
   '/api/admin/usuarios',
   verifyToken,

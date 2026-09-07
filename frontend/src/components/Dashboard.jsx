@@ -4,6 +4,7 @@ import {
   FiBox,
   FiChevronRight,
   FiExternalLink,
+  FiWifi,
   FiHome,
   FiLogOut,
   FiMessageCircle,
@@ -16,6 +17,7 @@ import {
 } from 'react-icons/fi';
 import Chatbot from '../pages/Chatbot';
 import GestionUsuarios from '../pages/GestionUsuarios';
+import GestionFacturacion from '../pages/GestionFacturacion';
 import CatalogoSoftware from './CatalogoSoftware';
 import ModuloManuales from './ModuloManuales';
 import SubirRecursos from './SubirRecursos';
@@ -34,13 +36,14 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
   const opcionesPrincipales = [
     { id: 'inicio', label: 'Inicio', icon: FiHome },
     { id: 'manuales', label: 'Manuales', icon: FiBookOpen },
-    { id: 'software', label: 'Software', icon: FiBox },
+    { id: 'software', label: 'Softwares', icon: FiBox },
     { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
   const opcionesAdmin = [
     { id: 'recursos', label: 'Subir recursos', icon: FiUploadCloud },
     { id: 'usuarios', label: 'Gestionar usuarios', icon: FiUsers },
+    { id: 'facturacion', label: 'Starlink', icon: FiWifi },
   ];
 
   const cambiarVista = (vista) => {
@@ -54,6 +57,7 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
       case 'software': return <CatalogoSoftware token={token} />;
       case 'recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
+      case 'facturacion': return <GestionFacturacion token={token} />;
       case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
       default:
         return (
@@ -84,6 +88,13 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
                 </a>
               </div>
               <div className="company-inventory-links">
+                <a href="https://drive.google.com/drive/folders/1Bdm_qnQ_ccSnL2MRTFfJHoPnwHju5DYd?usp=sharing" target="_blank" rel="noreferrer">
+                  <span>
+                    <strong>Drive compartido</strong>
+                    <small>Acceso a la carpeta compartida de recursos de la empresa</small>
+                  </span>
+                  <FiExternalLink aria-hidden="true" />
+                </a>
                 <a href="https://northservices.com.pe/inventorymwd/" target="_blank" rel="noreferrer">
                   <span>
                     <strong>Inventario MWD / LWD</strong>
