@@ -2,36 +2,33 @@ const { db, FieldValue } = require('../src/firebaseAdmin');
 
 const pozos = [
   {
-    id: 'pozo-1-oficinas',
+    id: 'KIT400851262',
     numero: 1,
     nombrePozo: 'OFICINAS',
     correo: 'cristhian.barrantes@northservices.com.pe',
     codigoKit: 'KIT400851262',
     serieAntena: '4PBA00778844',
     diaInicioPeriodo: 14,
-    diaFinPeriodo: 13,
     diaPago: 13,
   },
   {
-    id: 'pozo-3-kit-01-oly-xiii',
+    id: 'KIT402255653KSK',
     numero: 3,
-    nombrePozo: 'KIT 01 OLY XIII',
+    nombrePozo: 'P-16603D',
     correo: 'kit1starlink@gmail.com',
     codigoKit: 'KIT402255653KSK',
     serieAntena: '4PBA02172477',
     diaInicioPeriodo: 11,
-    diaFinPeriodo: 10,
     diaPago: 10,
   },
   {
-    id: 'pozo-4-kit-03-unna-lt-iv',
+    id: 'KIT402262772QAZ',
     numero: 4,
-    nombrePozo: 'KIT 03 UNNA LT IV',
+    nombrePozo: 'GAV-1XD',
     correo: 'starlinkmwd@gmail.com',
     codigoKit: 'KIT402262772QAZ',
     serieAntena: '4PBA02180001',
     diaInicioPeriodo: 27,
-    diaFinPeriodo: 26,
     diaPago: 26,
   },
 ];
@@ -40,19 +37,17 @@ async function seedPozos() {
   const batch = db.batch();
   for (const pozo of pozos) {
     const { id, ...datos } = pozo;
-    batch.set(db.collection('pagosStarlink').doc(id), {
+    batch.set(db.collection('facturacionStarlink').doc(id), {
       ...datos,
       estadoPago: 'no_pagado',
-      observacion: FieldValue.delete(),
-      periodoInicio: FieldValue.delete(),
+      diaFinPeriodo: FieldValue.delete(),
       periodoFin: FieldValue.delete(),
-      fechaPago: FieldValue.delete(),
       actualizadoEn: new Date(),
       creadoEn: new Date(),
     }, { merge: true });
   }
   await batch.commit();
-  console.log(`${pozos.length} registros registrados en pagosStarlink.`);
+  console.log(`${pozos.length} registros registrados en facturacionStarlink.`);
 }
 
 seedPozos().catch((error) => {

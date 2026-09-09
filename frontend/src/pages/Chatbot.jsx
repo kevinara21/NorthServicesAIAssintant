@@ -1,6 +1,16 @@
 import React, { useState } from 'react';
 import { API_URL } from '../services/api';
 
+function limpiarFormatoRespuesta(texto) {
+  return texto
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/(^|\n)\s*\*\s+/g, '$1- ')
+    .replace(/(^|\n)\s*#{1,6}\s+/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/_(.*?)_/g, '$1');
+}
+
 export default function Chatbot({ token }) {
   // =========================================================
   // PRUEBA: confirma que ESTE Chatbot.jsx está siendo cargado
@@ -786,7 +796,7 @@ export default function Chatbot({ token }) {
                         : '0 1px 2px rgba(0,0,0,0.04)',
                   }}
                 >
-                  {msg.texto || (
+                  {msg.texto ? limpiarFormatoRespuesta(msg.texto) : (
                     <span
                       style={{
                         color:
@@ -801,146 +811,6 @@ export default function Chatbot({ token }) {
                   )}
                 </div>
 
-                {/* FUENTES */}
-                {!esUsuario &&
-                  msg.fuentes &&
-                  msg.fuentes.length >
-                    0 && (
-                    <div
-                      style={{
-                        marginTop:
-                          '8px',
-
-                        maxWidth:
-                          '82%',
-
-                        width:
-                          '100%',
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize:
-                            '12px',
-
-                          fontWeight:
-                            700,
-
-                          color:
-                            '#475569',
-
-                          marginBottom:
-                            '5px',
-                        }}
-                      >
-                        Fuentes consultadas
-                      </div>
-
-                      <div
-                        style={{
-                          display:
-                            'flex',
-
-                          flexDirection:
-                            'column',
-
-                          gap:
-                            '5px',
-                        }}
-                      >
-                        {msg.fuentes.map(
-                          (
-                            fuente,
-                            index
-                          ) => (
-                            <div
-                              key={
-                                index
-                              }
-                              style={{
-                                background:
-                                  '#f1f5f9',
-
-                                border:
-                                  '1px solid #e2e8f0',
-
-                                borderRadius:
-                                  '6px',
-
-                                padding:
-                                  '7px 9px',
-
-                                fontSize:
-                                  '12px',
-
-                                color:
-                                  '#475569',
-                              }}
-                            >
-                              <strong>
-                                {fuente.titulo_seccion ||
-                                  fuente.nombreManual ||
-                                  `Fuente ${
-                                    index +
-                                    1
-                                  }`}
-                              </strong>
-
-                              {fuente.score !==
-                                undefined && (
-                                <span
-                                  style={{
-                                    marginLeft:
-                                      '8px',
-
-                                    color:
-                                      '#64748b',
-                                  }}
-                                >
-                                  Relevancia:{' '}
-                                  {Number(
-                                    fuente.score
-                                  ).toFixed(
-                                    3
-                                  )}
-                                </span>
-                              )}
-                            </div>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                {/* MÉTRICAS */}
-                {!esUsuario &&
-                  msg.metricas &&
-                  !cargando && (
-                    <div
-                      style={{
-                        marginTop:
-                          '6px',
-
-                        fontSize:
-                          '11px',
-
-                        color:
-                          '#94a3b8',
-                      }}
-                    >
-                      Consulta:{' '}
-                      {
-                        msg.metricas
-                          .totalMs
-                      }{' '}
-                      ms
-
-                      {msg.metricas
-                        .firstTokenMs !==
-                        undefined &&
-                        ` · Primer token: ${msg.metricas.firstTokenMs} ms`}
-                    </div>
-                  )}
               </div>
             );
           }

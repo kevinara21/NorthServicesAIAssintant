@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FiCheckCircle, FiEye, FiEyeOff, FiSend } from 'react-icons/fi';
+import { FiCheck, FiCheckCircle, FiEye, FiEyeOff, FiKey, FiLock, FiSave, FiSend } from 'react-icons/fi';
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
 import { apiFetch } from '../services/api';
@@ -35,7 +35,7 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   };
 
   const guardarPerfil = async (event) => {
-    event.preventDefault();
+    if (event) event.preventDefault();
     setCargando(true);
     setMensaje(null);
     try {
@@ -60,7 +60,7 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   };
 
   const verificarCodigo = async (event) => {
-    event.preventDefault();
+    if (event) event.preventDefault();
     setCargando(true);
     setMensaje(null);
     try {
@@ -104,48 +104,117 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
         <p>Administra tus datos de acceso y verifica el número asociado a tu cuenta.</p>
       </div>
       {mensaje && <div className={`profile-message ${mensaje.tipo}`}>{mensaje.texto}</div>}
-      <form className="profile-panel profile-panel-unified" onSubmit={otpEnviado ? verificarCodigo : guardarPerfil}>
+      <div className="profile-panel profile-panel-unified">
         <h3>Datos personales</h3>
-        <div className="profile-data-layout">
-          <div className="profile-fields">
-            <div className="profile-fields-row">
-              <label>Nombre<input value={nombre} onChange={(event) => setNombre(event.target.value)} required /></label>
-              <label>Apellido<input value={apellido} onChange={(event) => setApellido(event.target.value)} required /></label>
+        <form onSubmit={guardarPerfil}>
+          <div className="profile-personal-grid">
+            {/* Fila 1: Nombre, Apellido, Canal de código OTP */}
+            <label>
+              Nombre
+              <input value={nombre} onChange={(event) => setNombre(event.target.value)} required />
+            </label>
+            <label>
+              Apellido
+              <input value={apellido} onChange={(event) => setApellido(event.target.value)} required />
+            </label>
+            <label>
+              Canal de código OTP
+              <select className="profile-channel-select" value={canal} onChange={(event) => { setCanal(event.target.value); setOtpEnviado(false); }}>
+                <option value="sms">SMS</option>
+                <option value="whatsapp">WhatsApp</option>
+              </select>
+            </label>
+
+            {/* Fila 2: Correo corporativo, Número de teléfono, Enviar código */}
+            <label>
+              Correo corporativo
+              <input value={`${nombre.toLowerCase()}.${apellido.toLowerCase()}@northservices.com.pe`} readOnly />
+            </label>
+            <label>
+              Número de teléfono
+              <input value={telefono} onChange={(event) => setTelefono(event.target.value)} placeholder="+51987654321" required />
+            </label>
+            <div className="profile-action-wrapper">
+              <button className="profile-primary-button profile-btn-full" type="button" onClick={enviarCodigo} disabled={cargando}>
+                <FiSend /> Enviar código
+              </button>
             </div>
-            <div className="profile-fields-row">
-              <label>Correo corporativo<input value={`${nombre.toLowerCase()}.${apellido.toLowerCase()}@northservices.com.pe`} readOnly /></label>
-              <label>Número de teléfono<input value={telefono} onChange={(event) => setTelefono(event.target.value)} placeholder="+51987654321" required />
-                <span className="profile-channel-inline">
-                  <span>Canal de código OTP</span>
-                  <select className="profile-channel-select" value={canal} onChange={(event) => { setCanal(event.target.value); setOtpEnviado(false); }}>
-                    <option value="sms">SMS</option>
-                    <option value="whatsapp">WhatsApp</option>
-                  </select>
-                </span>
-                {otpEnviado && <span className="profile-otp-inline"><span>Código OTP</span><input value={codigo} onChange={(event) => setCodigo(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength="6" required /></span>}
-              </label>
+
+            {/* Fila 3: Guardar cambios (abajo de Correo, mismo ancho con icono), Estado / OTP */}
+            <div className="profile-action-wrapper">
+              <button className="profile-secondary-button profile-btn-full" type="submit" disabled={cargando}>
+                <FiSave /> Guardar cambios
+              </button>
+            </div>
+            <div>
+              {otpEnviado ? (
+                <label>
+                  Código OTP
+                  <input value={codigo} onChange={(event) => setCodigo(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength="6" placeholder="Ingresa 6 dígitos" required />
+                </label>
+              ) : (
+                usuario?.whatsappVerificado && telefono === usuario.whatsapp && (
+                  <div className="profile-verified-badge"><FiCheckCircle /> Número verificado</div>
+                )
+              )}
+            </div>
+            <div>
+              {otpEnviado && (
+                <div className="profile-action-wrapper">
+                  <button className="profile-primary-button profile-btn-full" type="button" onClick={verificarCodigo} disabled={cargando}>
+                    <FiCheck /> Verificar número
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-        </div>
-        {usuario?.whatsappVerificado && telefono === usuario.whatsapp && !otpEnviado && (
-          <div className="profile-verified"><FiCheckCircle /> Número verificado</div>
-        )}
-        <div className="profile-actions">
-          <button className="profile-primary-button" type={otpEnviado ? 'submit' : 'button'} onClick={otpEnviado ? undefined : enviarCodigo} disabled={cargando}>
-            {otpEnviado ? 'Verificar número' : <><FiSend /> Enviar código</>}
-          </button>
-          {!otpEnviado && <button className="profile-secondary-button" type="submit" disabled={cargando}>Guardar cambios</button>}
-        </div>
+        </form>
+
         <div className="profile-password-section">
-          <h3>Cambiar contraseña</h3>
+          <h3><FiLock /> Cambiar contraseña</h3>
           <div className="profile-password-fields">
-            <label>Contraseña actual<span className="password-field"><input type={passwordVisible.actual ? 'text' : 'password'} value={passwordActual} onChange={(event) => setPasswordActual(event.target.value)} required /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, actual: !visible.actual }))} aria-label={passwordVisible.actual ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible.actual ? <FiEyeOff /> : <FiEye />}</button></span></label>
-            <label>Nueva contraseña<span className="password-field"><input type={passwordVisible.nueva ? 'text' : 'password'} value={nuevaPassword} onChange={(event) => setNuevaPassword(event.target.value)} minLength="6" required /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, nueva: !visible.nueva }))} aria-label={passwordVisible.nueva ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible.nueva ? <FiEyeOff /> : <FiEye />}</button></span></label>
-            <label>Repite la nueva contraseña<span className="password-field"><input type={passwordVisible.repetir ? 'text' : 'password'} value={repetirPassword} onChange={(event) => setRepetirPassword(event.target.value)} minLength="6" required /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, repetir: !visible.repetir }))} aria-label={passwordVisible.repetir ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible.repetir ? <FiEyeOff /> : <FiEye />}</button></span></label>
+            <label>
+              Contraseña actual
+              <span className="password-field">
+                <input type={passwordVisible.actual ? 'text' : 'password'} value={passwordActual} onChange={(event) => setPasswordActual(event.target.value)} required />
+                <button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, actual: !visible.actual }))} aria-label={passwordVisible.actual ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+                  {passwordVisible.actual ? <FiEyeOff /> : <FiEye />}
+                </button>
+              </span>
+            </label>
+            <label>
+              Nueva contraseña
+              <span className="password-field">
+                <input type={passwordVisible.nueva ? 'text' : 'password'} value={nuevaPassword} onChange={(event) => setNuevaPassword(event.target.value)} minLength="6" required />
+                <button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, nueva: !visible.nueva }))} aria-label={passwordVisible.nueva ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+                  {passwordVisible.nueva ? <FiEyeOff /> : <FiEye />}
+                </button>
+              </span>
+            </label>
+            <div className="profile-password-repeat-wrap">
+              <label>
+                Repite la nueva contraseña
+                <span className="password-field">
+                  <input type={passwordVisible.repetir ? 'text' : 'password'} value={repetirPassword} onChange={(event) => setRepetirPassword(event.target.value)} minLength="6" required />
+                  <button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => ({ ...visible, repetir: !visible.repetir }))} aria-label={passwordVisible.repetir ? 'Ocultar contraseña' : 'Mostrar contraseña'}>
+                    {passwordVisible.repetir ? <FiEyeOff /> : <FiEye />}
+                  </button>
+                </span>
+              </label>
+              <button
+                className="profile-primary-button profile-password-icon-btn"
+                type="button"
+                onClick={cambiarPassword}
+                disabled={cargando}
+                title="Actualizar contraseña"
+                aria-label="Actualizar contraseña"
+              >
+                <FiKey aria-hidden="true" />
+              </button>
+            </div>
           </div>
-          <button className="profile-primary-button" type="button" onClick={cambiarPassword} disabled={cargando}>Actualizar contraseña</button>
         </div>
-      </form>
+      </div>
     </section>
   );
 }

@@ -1440,6 +1440,8 @@ app.get(
             nombre:
               item.nombre,
 
+            descripcion:
+              item.descripcion,
 
             version:
               item.version,
@@ -2017,13 +2019,16 @@ REGLAS IMPORTANTES:
 
 5. Responde de manera profesional, clara y concisa.
 
-6. Cuando sea útil, menciona el documento o sección donde
-   encontraste la información.
+6. Usa texto plano, sin Markdown, sin asteriscos, sin negritas,
+  sin encabezados y sin listas con asteriscos.
 
 7. No menciones que eres un modelo de lenguaje.
 
 8. No inventes procedimientos, códigos de error, valores,
    configuraciones ni pasos técnicos.
+
+9. No enumeres las fuentes ni muestres etiquetas como
+  "FUENTE 1", "FUENTE 2" o similares.
 
 CONTEXTO RECUPERADO:
 
@@ -2222,8 +2227,15 @@ ${preguntaLimpia}
 
 app.get('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const snapshot = await db.collection('pagosStarlink').orderBy('diaPago', 'asc').get();
-    const pozos = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
+    const snapshot = await db.collection('facturacionStarlink').orderBy('diaPago', 'asc').get();
+    const pozos = snapshot.docs.map((documento) => {
+      const datos = documento.data();
+      return {
+        id: documento.id,
+        ...datos,
+        estadoPago: calcularEstadoPago(datos),
+      };
+    });
     res.json({ ok: true, pozos });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -2234,8 +2246,13 @@ app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
   try {
     const datos = normalizarDatosPozo(req.body);
     if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
-    const referencia = await db.collection('pagosStarlink').add({ ...datos, creadoEn: FieldValue.serverTimestamp(), actualizadoEn: FieldValue.serverTimestamp() });
-    res.status(201).json({ ok: true, pozo: { id: referencia.id, ...datos } });
+    if (!datos.codigoKit) return res.status(400).json({ ok: false, error: 'El código KIT es obligatorio.' });
+    const datosConPago = datos.estadoPago === 'pagado'
+      ? { ...datos, fechaUltimoPago: obtenerFechaHoy() }
+      : datos;
+    const referencia = db.collection('facturacionStarlink').doc(datos.codigoKit);
+    await referencia.set({ ...datosConPago, creadoEn: FieldValue.serverTimestamp(), actualizadoEn: FieldValue.serverTimestamp() });
+    res.status(201).json({ ok: true, pozo: { id: datos.codigoKit, ...datosConPago } });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
   }
@@ -2243,7 +2260,7 @@ app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
 
 app.put('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
-    const referencia = db.collection('pagosStarlink').doc(req.params.id);
+    const referencia = db.collection('facturacionStarlink').doc(req.params.id);
     const existente = await referencia.get();
     if (!existente.exists) return res.status(404).json({ ok: false, error: 'Pozo no encontrado.' });
     const datosSolicitados = normalizarDatosPozo(req.body);
@@ -2253,30 +2270,43 @@ app.put('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) =
       numero: datosOriginales.numero || 0,
       codigoKit: datosOriginales.codigoKit || '',
       serieAntena: datosOriginales.serieAntena || datosOriginales.codigo4Pba || '',
+      fechaInicioPeriodo: datosSolicitados.fechaInicioPeriodo || datosOriginales.fechaInicioPeriodo || '',
       diaInicioPeriodo: datosOriginales.diaInicioPeriodo || datosOriginales.periodoInicio || '',
-      diaFinPeriodo: datosOriginales.diaFinPeriodo || datosOriginales.periodoFin || '',
       diaPago: datosOriginales.diaPago || datosOriginales.fechaPago || '',
     };
     if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
-    await referencia.update({ ...datos, actualizadoEn: FieldValue.serverTimestamp() });
-    res.json({ ok: true, pozo: { id: req.params.id, ...datos } });
+    const pagoVigente = calcularEstadoPago(datosOriginales) === 'pagado';
+    const fechaUltimoPago = datos.estadoPago === 'pagado'
+      ? (pagoVigente ? datosOriginales.fechaUltimoPago : obtenerFechaHoy())
+      : null;
+    const cambiosPago = datos.estadoPago === 'pagado'
+      ? { fechaUltimoPago }
+      : { fechaUltimoPago: FieldValue.delete() };
+    await referencia.update({
+      ...datos,
+      diaFinPeriodo: FieldValue.delete(),
+      periodoFin: FieldValue.delete(),
+      ...cambiosPago,
+      actualizadoEn: FieldValue.serverTimestamp(),
+    });
+    res.json({ ok: true, pozo: { id: req.params.id, ...datos, fechaUltimoPago } });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
   }
 });
 
 function normalizarDatosPozo(datos = {}) {
-  const diaInicioPeriodo = normalizarDia(datos.diaInicioPeriodo || datos.periodoInicio);
-  const diaFinPeriodo = normalizarDia(datos.diaFinPeriodo || datos.periodoFin);
-  const diaPago = normalizarDia(datos.diaPago || datos.fechaPago) || (diaInicioPeriodo ? (diaInicioPeriodo === 1 ? 31 : diaInicioPeriodo - 1) : '');
+  const fechaInicioPeriodo = normalizarFechaInicio(datos.fechaInicioPeriodo);
+  const diaInicioPeriodo = normalizarDia(fechaInicioPeriodo ? fechaInicioPeriodo.slice(-2) : (datos.diaInicioPeriodo || datos.periodoInicio));
+  const diaPago = calcularDiaPago(diaInicioPeriodo);
   return {
     numero: Number(datos.numero) || 0,
     nombrePozo: String(datos.nombrePozo || '').trim(),
     correo: String(datos.correo || '').trim(),
     codigoKit: String(datos.codigoKit || '').trim(),
     serieAntena: String(datos.serieAntena || datos.codigo4Pba || '').trim(),
+    fechaInicioPeriodo,
     diaInicioPeriodo,
-    diaFinPeriodo,
     diaPago,
     estadoPago: datos.estadoPago === 'pagado' ? 'pagado' : 'no_pagado',
   };
@@ -2285,6 +2315,77 @@ function normalizarDatosPozo(datos = {}) {
 function normalizarDia(valor) {
   const dia = Number.parseInt(valor, 10);
   return dia >= 1 && dia <= 31 ? dia : '';
+}
+
+function normalizarFechaInicio(valor) {
+  const fecha = String(valor || '').trim();
+  return /^\d{4}-\d{2}-(0[1-9]|[12]\d|3[01])$/.test(fecha) ? fecha : '';
+}
+
+function calcularDiaPago(diaInicio) {
+  const dia = normalizarDia(diaInicio);
+  if (dia >= 29 && dia <= 31) return 28;
+  return dia ? (dia === 1 ? 31 : dia - 1) : '';
+}
+
+function obtenerFechaHoy() {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const valores = Object.fromEntries(partes.map(({ type, value }) => [type, value]));
+  return `${valores.year}-${valores.month}-${valores.day}`;
+}
+
+function convertirFechaPago(valor) {
+  if (!valor) return null;
+  if (typeof valor === 'string') {
+    const coincidencia = valor.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return coincidencia ? {
+      anio: Number(coincidencia[1]),
+      mes: Number(coincidencia[2]) - 1,
+      dia: Number(coincidencia[3]),
+    } : null;
+  }
+  if (typeof valor.toDate === 'function') {
+    const fecha = valor.toDate();
+    const partes = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Lima',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(fecha);
+    const valores = Object.fromEntries(partes.map(({ type, value }) => [type, value]));
+    return { anio: Number(valores.year), mes: Number(valores.month) - 1, dia: Number(valores.day) };
+  }
+  return null;
+}
+
+function calcularEstadoPago(datos) {
+  if (datos.estadoPago !== 'pagado') return 'no_pagado';
+
+  const diaPago = normalizarDia(datos.diaPago || datos.fechaPago);
+  const fechaUltimoPago = convertirFechaPago(datos.fechaUltimoPago);
+  if (!diaPago || !fechaUltimoPago) return 'no_pagado';
+
+  const fechaHoy = convertirFechaPago(obtenerFechaHoy());
+  const pagoEnMesActual = fechaUltimoPago.anio === fechaHoy.anio
+    && fechaUltimoPago.mes === fechaHoy.mes;
+
+  if (fechaHoy.dia < diaPago) {
+    if (pagoEnMesActual && fechaUltimoPago.dia <= fechaHoy.dia) return 'pagado';
+
+    const fechaMesAnterior = new Date(Date.UTC(fechaHoy.anio, fechaHoy.mes - 1, 1));
+    const pagoEnMesAnterior = fechaUltimoPago.anio === fechaMesAnterior.getUTCFullYear()
+      && fechaUltimoPago.mes === fechaMesAnterior.getUTCMonth();
+    return pagoEnMesAnterior && fechaUltimoPago.dia >= diaPago ? 'pagado' : 'no_pagado';
+  }
+
+  return pagoEnMesActual && fechaUltimoPago.dia >= diaPago
+    ? 'pagado'
+    : 'no_pagado';
 }
 
 app.get(

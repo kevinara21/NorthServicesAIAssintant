@@ -64,7 +64,7 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
           <section className="dashboard-home-layout">
             <div className="dashboard-home-main dashboard-welcome">
               <span className="dashboard-eyebrow">Panel de control</span>
-              <h1>Bienvenido, {usuario?.nombre || 'usuario'}</h1>
+              <h1>Bienvenid@, {usuario?.nombre || 'usuario'}</h1>
               <p>North Services &amp; Rental Tools es un aliado estratégico para la industria petrolera, con soluciones técnicas, herramientas especializadas y operaciones orientadas a la seguridad y la eficiencia.</p>
               <h3 className="dashboard-home-title">Tus herramientas</h3>
               <div className="dashboard-quick-links">
@@ -81,7 +81,7 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
               <span className="dashboard-eyebrow">Páginas</span>
               <div className="company-overview">
                 <span className="company-overview-label">North Services &amp; Rental Tools</span>
-                <p>Desde 2009, desarrollamos servicios de perforación direccional, SlickLine, fluidos de perforación, cementación, fractura y acidificación para proyectos exigentes en la región.</p>
+                <p>Desde 2009, desarrollamos servicios de Perforación Direccional, SlickLine, Fluidos de Perforación, Cementación, Fractura y Acidificación para proyectos exigentes en la región.</p>
                 <a href="https://northservices.com.pe/" target="_blank" rel="noreferrer">
                   Conocer la empresa
                   <FiExternalLink aria-hidden="true" />

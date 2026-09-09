@@ -2,19 +2,42 @@ import { useEffect, useState } from 'react';
 import { FiEdit2, FiPlus, FiSave } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 
-const pozoVacio = {
-  nombrePozo: '', correo: '', codigoKit: '', serieAntena: '',
-  diaInicioPeriodo: '', diaFinPeriodo: '', diaPago: '', estadoPago: 'no_pagado',
-};
+function obtenerFechaActual() {
+  const hoy = new Date();
+  const mes = String(hoy.getMonth() + 1).padStart(2, '0');
+  const dia = String(hoy.getDate()).padStart(2, '0');
+  return `${hoy.getFullYear()}-${mes}-${dia}`;
+}
 
 function calcularDiaPago(diaInicio) {
   const dia = Number(diaInicio);
+  if (dia >= 29 && dia <= 31) return 28;
   return dia >= 1 && dia <= 31 ? (dia === 1 ? 31 : dia - 1) : '';
+}
+
+function crearPozoVacio() {
+  const diaActual = new Date().getDate();
+  return {
+    nombrePozo: '', correo: '', codigoKit: '', serieAntena: '',
+    fechaInicioPeriodo: obtenerFechaActual(),
+    diaInicioPeriodo: diaActual,
+    diaPago: calcularDiaPago(diaActual),
+    estadoPago: 'no_pagado',
+  };
+}
+
+function fechaParaDia(dia) {
+  const numero = Number(dia);
+  if (!numero) return '';
+  const hoy = new Date();
+  const mes = String(hoy.getMonth() + 1).padStart(2, '0');
+  const diaFormateado = String(numero).padStart(2, '0');
+  return `${hoy.getFullYear()}-${mes}-${diaFormateado}`;
 }
 
 export default function GestionFacturacion({ token }) {
   const [pozos, setPozos] = useState([]);
-  const [formulario, setFormulario] = useState(pozoVacio);
+  const [formulario, setFormulario] = useState(crearPozoVacio);
   const [editando, setEditando] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
@@ -47,18 +70,28 @@ export default function GestionFacturacion({ token }) {
     setFormulario((actual) => ({
       ...actual,
       [campo]: valor,
-      ...(campo === 'diaInicioPeriodo' && !actual.diaPago ? { diaPago: calcularDiaPago(valor) } : {}),
+      ...(campo === 'fechaInicioPeriodo'
+        ? {
+          diaInicioPeriodo: valor ? Number(valor.slice(-2)) : '',
+          diaPago: valor ? calcularDiaPago(Number(valor.slice(-2))) : '',
+        }
+        : {}),
     }));
   };
 
   const editarPozo = (pozo) => {
     setEditando(pozo.id);
-    setFormulario({ ...pozoVacio, ...pozo });
+    setFormulario({
+      ...crearPozoVacio(),
+      ...pozo,
+      fechaInicioPeriodo: pozo.fechaInicioPeriodo || fechaParaDia(pozo.diaInicioPeriodo),
+      diaPago: calcularDiaPago(pozo.diaInicioPeriodo),
+    });
     setMensaje(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const cancelarEdicion = () => { setEditando(null); setFormulario(pozoVacio); };
+  const cancelarEdicion = () => { setEditando(null); setFormulario(crearPozoVacio()); };
 
   const guardarPozo = async (event) => {
     event.preventDefault();
@@ -94,7 +127,7 @@ export default function GestionFacturacion({ token }) {
       <div className="billing-heading">
         <span className="dashboard-eyebrow">Administración</span>
         <h1>Pago de Starlink</h1>
-        <p>Consulta y actualiza el estado de pago. La fecha sugerida de pago es un día antes del inicio del periodo.</p>
+        <p>Consulta y actualiza el estado de pago. El pago se calcula automáticamente un día antes del inicio del periodo.</p>
       </div>
 
       {mensaje && <div className={`profile-message ${mensaje.tipo}`}>{mensaje.texto}</div>}
@@ -106,13 +139,12 @@ export default function GestionFacturacion({ token }) {
           <label>Correo<input type="email" value={formulario.correo} onChange={(event) => cambiarCampo('correo', event.target.value)} /></label>
           <label>Código KIT<input value={formulario.codigoKit} readOnly={Boolean(editando)} onChange={(event) => cambiarCampo('codigoKit', event.target.value)} /></label>
           <label>N° Serie Antena<input value={formulario.serieAntena || formulario.codigo4Pba || ''} readOnly={Boolean(editando)} onChange={(event) => cambiarCampo('serieAntena', event.target.value)} /></label>
-          {!editando && <label>Día de inicio del periodo<input type="number" min="1" max="31" placeholder="Ej. 14" value={formulario.diaInicioPeriodo} onChange={(event) => cambiarCampo('diaInicioPeriodo', event.target.value)} /></label>}
-          {!editando && <label>Día de fin del periodo<input type="number" min="1" max="31" placeholder="Ej. 13" value={formulario.diaFinPeriodo} onChange={(event) => cambiarCampo('diaFinPeriodo', event.target.value)} /></label>}
-          {!editando && <label>Día de pago<input type="number" min="1" max="31" value={formulario.diaPago} onChange={(event) => cambiarCampo('diaPago', event.target.value)} /></label>}
-          <label>Estado de pago<select value={formulario.estadoPago} onChange={(event) => cambiarCampo('estadoPago', event.target.value)}><option value="no_pagado">No pagado</option><option value="pagado">Pagado</option></select></label>
+          <label>Inicio del periodo<input type="date" value={formulario.fechaInicioPeriodo} onChange={(event) => cambiarCampo('fechaInicioPeriodo', event.target.value)} required /></label>
+          <label>Día de pago<input type="number" value={formulario.diaPago} readOnly /></label>
+          <label className="billing-status-field">Estado de pago<select value={formulario.estadoPago} onChange={(event) => cambiarCampo('estadoPago', event.target.value)}><option value="no_pagado">No pagado</option><option value="pagado">Pagado</option></select></label>
+          <div className="billing-form-actions"><button className="profile-primary-button" type="submit" disabled={guardando}>{editando ? <><FiSave /> Guardar cambios</> : <><FiPlus /> Agregar pozo</>}</button></div>
         </div>
-        {editando && <p className="billing-immutable-period">Periodo registrado: del día {formulario.diaInicioPeriodo || '-'} al {formulario.diaFinPeriodo || '-'} de cada mes · Pago día {formulario.diaPago || '-'}</p>}
-        <button className="profile-primary-button" type="submit" disabled={guardando}>{editando ? <><FiSave /> Guardar cambios</> : <><FiPlus /> Agregar pozo</>}</button>
+        <p className="billing-immutable-period">El pago vence un día antes del inicio. Para inicios los días 29, 30 o 31, Starlink ajusta el cobro al día 28.</p>
       </form>
 
       <div className="billing-table-wrap">
@@ -123,7 +155,7 @@ export default function GestionFacturacion({ token }) {
               <td data-label="Correo">{pozo.correo || 'Sin correo'}</td>
               <td data-label="Identificadores"><small>KIT S/N: {pozo.codigoKit || '-'}<br />Serie antena: {pozo.serieAntena || pozo.codigo4Pba || '-'}</small></td>
               <td data-label="Periodo">Día {pozo.diaInicioPeriodo || pozo.periodoInicio || '-'} de cada mes</td>
-              <td data-label="Pago"><span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span><small>Vence día {pozo.diaPago || pozo.fechaPago || '-'}</small></td>
+              <td data-label="Pago"><span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span><small>Vence día {pozo.diaPago || pozo.fechaPago || '-'}</small>{pozo.fechaUltimoPago && <small>Último pago: {pozo.fechaUltimoPago}</small>}</td>
               <td data-label="Acción"><button className="billing-edit-button" type="button" onClick={() => editarPozo(pozo)}><FiEdit2 /> Editar</button></td>
             </tr>
           ))}

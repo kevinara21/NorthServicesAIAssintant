@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { FiCheckCircle, FiEdit3, FiFileText, FiPackage, FiPlus, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { API_URL } from '../services/api';
 
 export default function SubirRecursos({ token, alCompletar }) {
@@ -8,6 +9,33 @@ export default function SubirRecursos({ token, alCompletar }) {
 
   const [archivoZip, setArchivoZip] = useState(null);
   const [archivoPdf, setArchivoPdf] = useState(null);
+  const [arrastrandoZip, setArrastrandoZip] = useState(false);
+  const [arrastrandoPdf, setArrastrandoPdf] = useState(false);
+
+  const formatearTamano = (bytes) => {
+    if (!bytes) return '0 B';
+    const k = 1024;
+    const dm = 1;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  };
+
+  const limpiarZip = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setArchivoZip(null);
+    const input = document.getElementById('archivo-zip');
+    if (input) input.value = '';
+  };
+
+  const limpiarPdf = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setArchivoPdf(null);
+    const input = document.getElementById('archivo-pdf');
+    if (input) input.value = '';
+  };
 
   const [cargando, setCargando] = useState(false);
   const [progreso, setProgreso] = useState(0);
@@ -210,8 +238,12 @@ export default function SubirRecursos({ token, alCompletar }) {
           margin: '0 0 6px 0',
           color: '#000000',
           fontWeight: 700,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
         }}
       >
+        <FiUploadCloud aria-hidden="true" style={{ color: '#DD2226', fontSize: 20 }} />
         Publicación de Recursos
       </h3>
 
@@ -324,126 +356,126 @@ export default function SubirRecursos({ token, alCompletar }) {
           }}
         />
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: 15,
-            background: '#FFFFFF',
-            padding: 12,
-            borderRadius: 6,
-            border: '1px solid #E5E7EB',
-          }}
-        >
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: 12,
-                fontWeight: 'bold',
-                color: '#000000',
-                marginBottom: 5,
-              }}
-            >
-              Instalador de software (opcional)
-            </label>
-
-            <div
-              style={{
-                fontSize: 11,
-                color: '#6B7280',
-                marginBottom: 6,
-              }}
-            >
-              ZIP / RAR / EXE
-            </div>
-
+        <div className="custom-upload-grid">
+          {/* Tarjeta 1: Instalador de software (ZIP/RAR/EXE) */}
+          <div
+            className={`custom-upload-card ${archivoZip ? 'has-file' : ''} ${arrastrandoZip ? 'dragging' : ''}`}
+            onDragOver={(e) => { e.preventDefault(); setArrastrandoZip(true); }}
+            onDragLeave={() => setArrastrandoZip(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setArrastrandoZip(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) setArchivoZip(file);
+            }}
+            onClick={() => document.getElementById('archivo-zip')?.click()}
+          >
             <input
-              className="resource-field"
               id="archivo-zip"
               type="file"
               accept=".zip,.rar,.exe"
               disabled={cargando}
-              onChange={(e) =>
-                setArchivoZip(
-                  e.target.files?.[0] || null
-                )
-              }
-              style={{
-                fontSize: 12,
-                width: '100%',
-                background: '#FFFFFF',
-                color: '#111827',
-              }}
+              style={{ display: 'none' }}
+              onChange={(e) => setArchivoZip(e.target.files?.[0] || null)}
             />
 
-            {archivoZip && (
-              <div
-                style={{
-                  marginTop: 5,
-                  fontSize: 11,
-                  color: '#475569',
-                  wordBreak: 'break-all',
-                }}
-              >
-                Seleccionado: {archivoZip.name}
+            <div className="custom-upload-icon-circle">
+              {archivoZip ? <FiCheckCircle style={{ fontSize: 24 }} /> : <FiPackage style={{ fontSize: 22 }} />}
+            </div>
+
+            <div className="custom-upload-title">Instalador de software (opcional)</div>
+            <div className="custom-upload-subtitle">Formatos admitidos: ZIP, RAR, EXE</div>
+
+            {archivoZip ? (
+              <div className="custom-upload-file-info" onClick={(e) => e.stopPropagation()}>
+                <span className="custom-upload-file-name" title={archivoZip.name}>
+                  {archivoZip.name}
+                </span>
+                <span className="custom-upload-file-size">
+                  {formatearTamano(archivoZip.size)}
+                </span>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="custom-upload-badge"
+                    onClick={() => document.getElementById('archivo-zip')?.click()}
+                  >
+                    <FiEdit3 /> Cambiar
+                  </button>
+                  <button
+                    type="button"
+                    className="custom-upload-remove-btn"
+                    onClick={limpiarZip}
+                  >
+                    <FiTrash2 /> Quitar
+                  </button>
+                </div>
               </div>
+            ) : (
+              <span className="custom-upload-badge">
+                <FiPlus /> Seleccionar instalador
+              </span>
             )}
           </div>
 
-          <div>
-            <label
-              style={{
-                display: 'block',
-                fontSize: 12,
-                fontWeight: 'bold',
-                color: '#000000',
-                marginBottom: 5,
-              }}
-            >
-              Manual Técnico
-            </label>
-
-            <div
-              style={{
-                fontSize: 11,
-                color: '#6B7280',
-                marginBottom: 6,
-              }}
-            >
-              PDF para el sistema RAG (puede subirse solo)
-            </div>
-
+          {/* Tarjeta 2: Manual Técnico (PDF) */}
+          <div
+            className={`custom-upload-card ${archivoPdf ? 'has-file' : ''} ${arrastrandoPdf ? 'dragging' : ''}`}
+            onDragOver={(e) => { e.preventDefault(); setArrastrandoPdf(true); }}
+            onDragLeave={() => setArrastrandoPdf(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setArrastrandoPdf(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) setArchivoPdf(file);
+            }}
+            onClick={() => document.getElementById('archivo-pdf')?.click()}
+          >
             <input
-              className="resource-field"
               id="archivo-pdf"
               type="file"
               accept=".pdf,application/pdf"
               disabled={cargando}
-              onChange={(e) =>
-                setArchivoPdf(
-                  e.target.files?.[0] || null
-                )
-              }
-              style={{
-                fontSize: 12,
-                width: '100%',
-                background: '#FFFFFF',
-                color: '#111827',
-              }}
+              style={{ display: 'none' }}
+              onChange={(e) => setArchivoPdf(e.target.files?.[0] || null)}
             />
 
-            {archivoPdf && (
-              <div
-                style={{
-                  marginTop: 5,
-                  fontSize: 11,
-                  color: '#475569',
-                  wordBreak: 'break-all',
-                }}
-              >
-                Seleccionado: {archivoPdf.name}
+            <div className="custom-upload-icon-circle">
+              {archivoPdf ? <FiCheckCircle style={{ fontSize: 24 }} /> : <FiFileText style={{ fontSize: 22 }} />}
+            </div>
+
+            <div className="custom-upload-title">Manual Técnico para IA</div>
+            <div className="custom-upload-subtitle">Documento PDF (Indexación RAG)</div>
+
+            {archivoPdf ? (
+              <div className="custom-upload-file-info" onClick={(e) => e.stopPropagation()}>
+                <span className="custom-upload-file-name" title={archivoPdf.name}>
+                  {archivoPdf.name}
+                </span>
+                <span className="custom-upload-file-size">
+                  {formatearTamano(archivoPdf.size)}
+                </span>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="custom-upload-badge"
+                    onClick={() => document.getElementById('archivo-pdf')?.click()}
+                  >
+                    <FiEdit3 /> Cambiar
+                  </button>
+                  <button
+                    type="button"
+                    className="custom-upload-remove-btn"
+                    onClick={limpiarPdf}
+                  >
+                    <FiTrash2 /> Quitar
+                  </button>
+                </div>
               </div>
+            ) : (
+              <span className="custom-upload-badge">
+                <FiPlus /> Seleccionar manual PDF
+              </span>
             )}
           </div>
         </div>
@@ -503,7 +535,7 @@ export default function SubirRecursos({ token, alCompletar }) {
           type="submit"
           disabled={cargando}
           style={{
-            padding: 10,
+            padding: 11,
             background: cargando
               ? '#9CA3AF'
               : '#DD2226',
@@ -516,11 +548,21 @@ export default function SubirRecursos({ token, alCompletar }) {
             fontWeight: 'bold',
             marginTop: 5,
             transition: 'background 0.2s',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            fontSize: 14,
           }}
         >
-          {cargando
-            ? 'Procesando Recurso...'
-            : 'Publicar Recurso Unificado'}
+          {cargando ? (
+            'Procesando Recurso...'
+          ) : (
+            <>
+              <FiUploadCloud aria-hidden="true" style={{ fontSize: 18 }} />
+              Publicar Recurso Unificado
+            </>
+          )}
         </button>
       </form>
     </div>
