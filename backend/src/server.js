@@ -186,6 +186,14 @@ const requireAdmin = (req, res, next) => {
     });
   }
 
+  if (req.user.estado !== 'activo') {
+    return res.status(403).json({
+      ok: false,
+      error:
+        'El administrador aún no ha habilitado su cuenta para el sistema.'
+    });
+  }
+
   next();
 };
 
@@ -917,6 +925,16 @@ app.get(
   '/api/perfil',
   verifyToken,
   (req, res) => {
+    if (req.user.estado !== 'activo') {
+      return res.status(403).json({
+        ok: false,
+        error: req.user.estado === 'pendiente'
+          ? 'El administrador aún no ha habilitado su cuenta para el sistema.'
+          : 'Su cuenta no se encuentra activa en el sistema. Contacte al administrador.',
+        estado: req.user.estado
+      });
+    }
+
     res.json({
       ok: true,
       usuario: req.user
@@ -1407,9 +1425,10 @@ app.get(
         req.user.estado !==
         'activo'
       ) {
-        return res.json({
-          ok: true,
-          catalogo: []
+        return res.status(403).json({
+          ok: false,
+          error:
+            'El administrador aún no ha habilitado su cuenta para el sistema.'
         });
       }
 
@@ -1557,9 +1576,10 @@ app.get(
         req.user.estado !==
         'activo'
       ) {
-        return res.json({
-          ok: true,
-          catalogo: []
+        return res.status(403).json({
+          ok: false,
+          error:
+            'El administrador aún no ha habilitado su cuenta para el sistema.'
         });
       }
 
@@ -1727,6 +1747,17 @@ app.post(
 
       const preguntaLimpia =
         pregunta.trim();
+
+      if (
+        req.user.estado !==
+        'activo'
+      ) {
+        return res.status(403).json({
+          ok: false,
+          error:
+            'El administrador aún no ha habilitado su cuenta para el sistema.'
+        });
+      }
 
       // --------------------------------------------------------
       // SSE

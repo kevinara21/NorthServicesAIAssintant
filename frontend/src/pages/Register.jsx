@@ -3,6 +3,7 @@ import { FiEye, FiEyeOff } from 'react-icons/fi';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../services/firebaseConfig';
+import { useNotification } from '../context/NotificationContext';
 
 export default function Register({ alVolverAlLogin }) {
   const [nombre, setNombre] = useState('');
@@ -20,6 +21,8 @@ export default function Register({ alVolverAlLogin }) {
   const [cargando, setCargando] = useState(false);
   const [mensaje, setMensaje] = useState(null);
 
+  const { notificarExito, notificarError, notificarAdvertencia } = useNotification();
+
   const areasExistentes = ['Sistemas', 'Operaciones', 'Mantenimiento', 'Administración', 'Crear nueva área...'];
   const rolesExistentes = ['Técnico', 'Supervisor', 'Administrador', 'Crear nuevo rol...'];
 
@@ -36,7 +39,9 @@ export default function Register({ alVolverAlLogin }) {
     const rolFinal = rolSeleccionado === 'Crear nuevo rol...' ? otroRol.trim() : rolSeleccionado;
 
     if (!areaFinal || !rolFinal) {
-      setMensaje({ tipo: 'error', texto: 'Por favor especifique Área y Rol.' });
+      const msg = 'Por favor especifique Área y Rol.';
+      setMensaje({ tipo: 'error', texto: msg });
+      notificarAdvertencia(msg, { titulo: 'Campos requeridos' });
       setCargando(false);
       return;
     }
@@ -56,21 +61,29 @@ export default function Register({ alVolverAlLogin }) {
         ...(whatsapp.trim() ? { whatsapp: whatsapp.trim(), whatsappVerificado: false } : {}),
       });
 
+      // Asegurar que el usuario recién creado no quede autenticado
       await signOut(auth);
 
+      const mensajeExito = 'Solicitud enviada exitosamente. Tu cuenta se encuentra en revisión por el administrador.';
       setMensaje({
         tipo: 'exito',
-        texto: 'Solicitud enviada exitosamente. Tu cuenta se encuentra en revisión.',
+        texto: mensajeExito,
+      });
+
+      notificarExito(mensajeExito, {
+        titulo: 'Solicitud Enviada',
+        duracion: 7000,
       });
     } catch (error) {
       console.error('Error al registrar usuario:', error);
       let errorTexto = 'Ocurrió un error al registrar la cuenta.';
       if (error.code === 'auth/email-already-in-use') {
-        errorTexto = 'El correo electrónico ya está registrado.';
+        errorTexto = 'El correo corporativo generado ya se encuentra registrado.';
       } else if (error.code === 'auth/weak-password') {
         errorTexto = 'La contraseña debe tener al menos 6 caracteres.';
       }
       setMensaje({ tipo: 'error', texto: errorTexto });
+      notificarError(errorTexto, { titulo: 'Error de Registro' });
     } finally {
       setCargando(false);
     }
@@ -84,21 +97,6 @@ export default function Register({ alVolverAlLogin }) {
         North Services AI Assistant
       </p>
 
-      {mensaje && (
-        <div
-          style={{
-            padding: 10,
-            borderRadius: 4,
-            marginBottom: 15,
-            fontSize: 13,
-            backgroundColor: mensaje.tipo === 'exito' ? '#D1FAE5' : '#FEE2E2',
-            color: mensaje.tipo === 'exito' ? '#065F46' : '#B91C1C',
-            borderLeft: `4px solid ${mensaje.tipo === 'exito' ? '#10B981' : '#DD2226'}`,
-          }}
-        >
-          {mensaje.texto}
-        </div>
-      )}
 
       <form onSubmit={manejarRegistro} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div>

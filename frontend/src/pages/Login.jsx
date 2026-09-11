@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { FiEye, FiEyeOff } from 'react-icons/fi';
 import { auth } from '../services/firebaseConfig';
 import Register from './Register';
 import { apiFetch } from '../services/api';
+import { useNotification } from '../context/NotificationContext';
 
 function Login({ onLoginSuccess }) {
   const [usuarioPrefix, setUsuarioPrefix] = useState('');
@@ -17,6 +18,8 @@ function Login({ onLoginSuccess }) {
   const [codigo, setCodigo] = useState('');
   const [nuevaPassword, setNuevaPassword] = useState('');
   const [otpEnviado, setOtpEnviado] = useState(false);
+
+  const { notificarExito, notificarError, notificarAdvertencia, notificarInfo } = useNotification();
 
   // Limpia el texto eliminando @ y cualquier dominio que intenten escribir
   const handleUserChange = (e) => {
@@ -44,17 +47,42 @@ function Login({ onLoginSuccess }) {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
 
-      if (data.ok) {
+      // Validar respuesta del servidor y estado activo
+      if (res.ok && data.ok && data.usuario?.estado === 'activo') {
+        notificarExito(`¡Bienvenid@, ${data.usuario.nombre || 'usuario'}!`, {
+          titulo: 'Sesión iniciada',
+          duracion: 3500,
+        });
         onLoginSuccess(data.usuario, token);
       } else {
-        setError(data.error || 'Error al obtener el perfil de usuario');
+        // Cerrar sesión de Firebase de inmediato para que no quede abierta
+        await signOut(auth);
+
+        const mensajeBloqueo = data.error || (data.estado === 'pendiente' || !res.ok
+          ? 'El administrador aún no ha habilitado su cuenta para el sistema.'
+          : 'Su cuenta no se encuentra activa en el sistema. Contacte al administrador.');
+
+        setError(mensajeBloqueo);
+        notificarAdvertencia(mensajeBloqueo, {
+          titulo: 'Acceso No Habilitado',
+          duracion: 6500,
+        });
       }
     } catch (err) {
-      setError('Usuario o contraseña incorrectos');
-      console.error(err);
+      console.error('Error al iniciar sesión:', err);
+      let mensajeError = 'Usuario o contraseña incorrectos';
+      if (err.code === 'auth/too-many-requests') {
+        mensajeError = 'Demasiados intentos fallidos. Intenta más tarde.';
+      } else if (err.code === 'auth/network-request-failed') {
+        mensajeError = 'Error de conexión con el servidor. Revisa tu conexión a internet.';
+      }
+
+      setError(mensajeError);
+      notificarError(mensajeError, {
+        titulo: 'Error de Autenticación',
+      });
     } finally {
       setCargando(false);
     }
@@ -74,13 +102,31 @@ function Login({ onLoginSuccess }) {
         body: JSON.stringify(body),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'No se pudo completar la operación.');
-      if (!otpEnviado) setOtpEnviado(true);
-      else { setModoRecuperacion(false); setOtpEnviado(false); setCodigo(''); setNuevaPassword(''); }
-      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado.');
-    } catch (err) { setError(err.message); }
-    finally { setCargando(false); }
+      
+      if (!otpEnviado) {
+        setOtpEnviado(true);
+        notificarInfo('Código de verificación enviado a tu teléfono corporativo.', {
+          titulo: 'Código OTP',
+        });
+      } else {
+        setModoRecuperacion(false);
+        setOtpEnviado(false);
+        setCodigo('');
+        setNuevaPassword('');
+        notificarExito('Contraseña actualizada con éxito. Ya puedes iniciar sesión con tus nuevas credenciales.', {
+          titulo: 'Contraseña restablecida',
+          duracion: 6000,
+        });
+      }
+      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado por SMS.');
+    } catch (err) {
+      setError(err.message);
+      notificarError(err.message, { titulo: 'Error al recuperar' });
+    } finally {
+      setCargando(false);
+    }
   };
 
   if (modoRegistro) {
@@ -135,8 +181,6 @@ function Login({ onLoginSuccess }) {
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
           <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Contraseña" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
         </div>
-        
-        {error && <p style={{ color: '#DD2226', fontSize: 14, fontWeight: 600 }}>{error}</p>}
         
         <button type="submit" disabled={cargando} style={{ width: '100%', padding: 10, cursor: 'pointer', background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
           {cargando ? 'Iniciando sesión...' : 'Ingresar'}
