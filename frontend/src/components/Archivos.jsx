@@ -87,7 +87,7 @@ export default function Archivos({ token, usuario }) {
     <section>
       <span className="dashboard-eyebrow">Contenido para IA</span>
       <h1>Archivos</h1>
-      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx) y formatos de texto; los demás se guardan para descarga.</p>
+      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), Visio (.vsdx) y formatos de texto; los demás se guardan para descarga.</p>
       <form className="compact-upload-form" onSubmit={subir}>
         <label className="compact-upload-file">Archivo
           <input id="archivo-colaborativo" type="file" onChange={(event) => setArchivo(event.target.files?.[0] || null)} disabled={cargando} required />

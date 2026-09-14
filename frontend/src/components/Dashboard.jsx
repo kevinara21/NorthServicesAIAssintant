@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   FiBookOpen,
   FiFolder,
@@ -7,14 +7,15 @@ import {
   FiWifi,
   FiHome,
   FiLogOut,
-  FiMessageCircle,
   FiMenu,
   FiSettings,
   FiUploadCloud,
   FiUser,
   FiUsers,
   FiX,
+  FiMonitor,
 } from 'react-icons/fi';
+import { FaRobot } from 'react-icons/fa';
 import Chatbot from '../pages/Chatbot';
 import GestionUsuarios from '../pages/GestionUsuarios';
 import GestionFacturacion from '../pages/GestionFacturacion';
@@ -22,16 +23,31 @@ import SubirRecursos from './SubirRecursos';
 import Perfil from './Perfil';
 import Recursos from './Recursos';
 import Archivos from './Archivos';
+import EclipseTouch from './EclipseTouch';
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 export default function Dashboard({ usuario, token, onLogout, onUsuarioActualizado }) {
-  const [vistaActiva, setVistaActiva] = useState('inicio');
+const [vistaActiva, setVistaActiva] = useState('inicio');
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
+  const [eclipseAbierto, setEclipseAbierto] = useState(false);
+  const panelAsistenteRef = useRef(null);
+  const botonAsistenteRef = useRef(null);
   const esAdministrador = normalizarRol(usuario?.rol) === 'administrador';
   const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(' ') || 'Usuario';
+
+  useEffect(() => {
+    if (!asistenteAbierto) return undefined;
+    const manejarClickFuera = (evento) => {
+      const dentroDelPanel = panelAsistenteRef.current?.contains(evento.target);
+      const dentroDelBoton = botonAsistenteRef.current?.contains(evento.target);
+      if (!dentroDelPanel && !dentroDelBoton) setAsistenteAbierto(false);
+    };
+    document.addEventListener('mousedown', manejarClickFuera);
+    return () => document.removeEventListener('mousedown', manejarClickFuera);
+  }, [asistenteAbierto]);
 
   const opcionesPrincipales = [
     { id: 'inicio', label: 'Inicio', icon: FiHome },
@@ -54,7 +70,7 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
   const renderVista = () => {
     switch (vistaActiva) {
       case 'recursos': return <Recursos token={token} esAdministrador={esAdministrador} />;
-      case 'archivos': return <Archivos token={token} usuario={usuario} />;
+case 'archivos': return <Archivos token={token} usuario={usuario} />;
       case 'publicar-recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
       case 'facturacion': return <GestionFacturacion token={token} />;
@@ -109,6 +125,13 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
                   </span>
                   <FiExternalLink aria-hidden="true" />
                 </a>
+                <button type="button" className="company-inventory-link-button" onClick={() => setEclipseAbierto(true)}>
+                  <span>
+                    <strong>Eclipse Touch</strong>
+                    <small>Monitoreo de pozos - enlaces compartidos</small>
+                  </span>
+                  <FiMonitor aria-hidden="true" />
+                </button>
               </div>
             </aside>
           </section>
@@ -184,27 +207,32 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
         <div className="dashboard-view">{renderVista()}</div>
       </main>
 
+      {eclipseAbierto && (
+        <EclipseTouch token={token} usuario={usuario} onCerrar={() => setEclipseAbierto(false)} />
+      )}
+
       {asistenteAbierto && (
-        <section className="floating-ai-panel" aria-label="Asistente Virtual IA">
+        <section className="floating-ai-panel" aria-label="Asistente Virtual IA" ref={panelAsistenteRef}>
           <header className="floating-ai-header">
             <div>
               <strong>Asistente Virtual IA</strong>
             </div>
           </header>
           <div className="floating-ai-content">
-            <Chatbot token={token} />
+            <Chatbot token={token} uid={usuario?.uid} />
           </div>
         </section>
       )}
 
       <button
         type="button"
+        ref={botonAsistenteRef}
         className={`floating-ai-button ${asistenteAbierto ? 'active' : ''}`}
         aria-label={asistenteAbierto ? 'Cerrar asistente virtual' : 'Abrir asistente virtual'}
         onClick={() => setAsistenteAbierto((abierto) => !abierto)}
       >
-        {asistenteAbierto ? <FiX aria-hidden="true" /> : <FiMessageCircle aria-hidden="true" />}
-        <span>{asistenteAbierto ? 'Cerrar' : 'Asistente IA'}</span>
+        {asistenteAbierto ? <FiX aria-hidden="true" /> : <FaRobot aria-hidden="true" />}
+        <span>{asistenteAbierto ? 'Cerrar' : 'IA'}</span>
       </button>
     </div>
   );

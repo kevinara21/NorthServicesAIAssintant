@@ -278,6 +278,8 @@
 .company-inventory-links { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px; width: 100%; }
 .company-inventory-links a { justify-content: space-between; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); }
 .company-inventory-links a:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.company-inventory-links .company-inventory-link-button { justify-content: space-between; width: 100%; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); font: inherit; text-align: left; cursor: pointer; transition: all var(--transition-fast); }
+.company-inventory-links .company-inventory-link-button:hover { border-color: var(--color-primary); color: var(--color-primary); }
 .company-inventory-links span { display: flex; flex-direction: column; gap: 6px; }
 .company-inventory-links strong { font-size: 14px; }
 .company-inventory-links small { width: 100%; max-width: none; color: var(--color-text-muted); font-size: 12px; font-weight: 400; line-height: 1.4; }
@@ -819,6 +821,29 @@
     width: 100%;
   }
 }
+
+/* =========================================================
+   ECLIPSE TOUCH MODAL
+   ========================================================= */
+.eclipse-modal-overlay { z-index: 3000; align-items: flex-start; padding: 32px 16px; overflow-y: auto; }
+.eclipse-modal { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--border-radius-lg); background: var(--color-white); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28); animation: scaleIn var(--transition-medium); }
+.eclipse-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 22px; background: var(--color-black); color: var(--color-white); }
+.eclipse-modal-header h2 { margin: 2px 0 0; color: var(--color-white); font-size: 20px; }
+.eclipse-modal-header .dashboard-eyebrow { color: var(--color-primary-light); }
+.eclipse-modal-close { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: var(--border-radius-sm); background: transparent; color: var(--color-white); cursor: pointer; transition: background var(--transition-fast); }
+.eclipse-modal-close:hover { background: var(--color-primary); color: #fff; }
+.eclipse-modal-close svg { width: 18px; height: 18px; }
+.eclipse-modal-body { padding: 20px 22px 24px; overflow-y: auto; }
+.eclipse-intro { margin: 0 0 16px; font-size: 14px; color: var(--color-text-muted); }
+.eclipse-list { display: grid; gap: 12px; margin-top: 20px; }
+.eclipse-card { background: #fff; padding: 16px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); box-shadow: var(--shadow-sm); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.eclipse-card h3 { margin: 0; display: flex; gap: 8px; align-items: center; font-size: 16px; }
+.eclipse-card h3 svg { color: var(--color-primary); }
+.eclipse-card small { color: var(--color-text-muted); }
+.eclipse-card-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 0; border: 0; background: transparent; color: var(--color-primary); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.eclipse-card-link:hover { color: var(--color-primary-dark); text-decoration: underline; }
+.eclipse-card-link svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.eclipse-card-actions { display: flex; align-items: center; gap: 8px; }
 
 /* =========================================================
    LISTAS DEL CHATBOT

@@ -296,13 +296,15 @@ async function extraerTextoArchivo(file) {
   if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log'].includes(extension)) {
     return buffer.toString('utf8');
   }
-  if (['.docx', '.xlsx', '.pptx'].includes(extension)) {
+  if (['.docx', '.xlsx', '.pptx', '.vsdx'].includes(extension)) {
     const zip = leerZipOffice(buffer);
     let partes = [];
     if (extension === '.docx') {
       partes = ['word/document.xml', ...[...zip.keys()].filter((nombre) => /^word\/(header|footer)\d+\.xml$/.test(nombre))];
     } else if (extension === '.xlsx') {
       partes = [...zip.keys()].filter((nombre) => nombre === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet\d+\.xml$/.test(nombre));
+    } else if (extension === '.vsdx') {
+      partes = [...zip.keys()].filter((nombre) => /^visio\/pages\/page\d+\.xml$/.test(nombre) || nombre === 'visio/document.xml');
     } else {
       partes = [...zip.keys()].filter((nombre) => /^ppt\/slides\/slide\d+\.xml$/.test(nombre));
     }
@@ -506,6 +508,16 @@ function dividirTextoEnBloques(
 // GEMINI EMBEDDING
 // ============================================================
 
+function esClaveOpenAI(clave) {
+  return /^sk-/.test(String(clave || '').trim());
+}
+
+function obtenerClavesGemini() {
+  return [process.env.GEMINI_API_KEY, process.env.GEMINI_API_KEY_FALLBACK]
+    .filter(Boolean)
+    .filter((clave) => !esClaveOpenAI(clave));
+}
+
 async function generarEmbedding(texto) {
   if (!texto || !texto.trim()) {
     throw new Error(
@@ -513,53 +525,58 @@ async function generarEmbedding(texto) {
     );
   }
 
-  const url =
-    `https://generativelanguage.googleapis.com/v1/models/` +
-    `gemini-embedding-001:embedContent?key=${process.env.GEMINI_API_KEY}`;
+  const claves = obtenerClavesGemini();
+  if (!claves.length) throw new Error('GEMINI_API_KEY no está configurada.');
 
-  const response = await fetch(url, {
-    method: 'POST',
+  let ultimoError = null;
 
-    headers: {
-      'Content-Type': 'application/json',
-    },
+  for (const clave of claves) {
+    const url =
+      `https://generativelanguage.googleapis.com/v1/models/` +
+      `gemini-embedding-001:embedContent?key=${clave}`;
 
-    body: JSON.stringify({
-      content: {
-        parts: [
-          {
-            text: texto,
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+
+        headers: {
+          'Content-Type': 'application/json',
+        },
+
+        body: JSON.stringify({
+          content: {
+            parts: [
+              {
+                text: texto,
+              },
+            ],
           },
-        ],
-      },
-    }),
-  });
+        }),
+      });
 
-  if (!response.ok) {
-    const errorTexto =
-      await response.text();
+      if (!response.ok) {
+        const errorTexto = await response.text();
+        ultimoError = new Error(`Error generando embedding (${response.status}): ${errorTexto}`);
+        console.error(`[GEMINI] Clave de embedding falló con HTTP ${response.status}; probando respaldo.`);
+        continue;
+      }
 
-    throw new Error(
-      `Error generando embedding (${response.status}): ${errorTexto}`
-    );
+      const data = await response.json();
+
+      const embedding = data?.embedding?.values;
+
+      if (!Array.isArray(embedding) || embedding.length === 0) {
+        throw new Error('Gemini no devolvió un vector de embedding válido.');
+      }
+
+      return embedding;
+    } catch (error) {
+      if (error.message === 'Gemini no devolvió un vector de embedding válido.') throw error;
+      ultimoError = error;
+    }
   }
 
-  const data =
-    await response.json();
-
-  const embedding =
-    data?.embedding?.values;
-
-  if (
-    !Array.isArray(embedding) ||
-    embedding.length === 0
-  ) {
-    throw new Error(
-      'Gemini no devolvió un vector de embedding válido.'
-    );
-  }
-
-  return embedding;
+  throw ultimoError || new Error('No fue posible generar embeddings con las claves configuradas.');
 }
 
 // ============================================================
@@ -643,6 +660,131 @@ function dormir(ms) {
 }
 
 // ============================================================
+// STREAMING COMPATIBLE CON OPENAI (BASE GENÉRICA)
+// ============================================================
+
+const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services. ' +
+  'Respondes de manera profesional, clara, concisa y ' +
+  'en texto plano, sin Markdown, sin asteriscos, sin negritas y sin encabezados.';
+
+async function generarContenidoCompat(
+  prompt,
+  enviarEvento,
+  { nombre, baseUrl, apiKey, modelo }
+) {
+  if (!baseUrl) {
+    throw new Error(`${nombre}: URL base no configurada.`);
+  }
+
+  const REQUEST_TIMEOUT = 30000;
+
+  const controller =
+    new AbortController();
+
+  const timeout =
+    setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  let respuesta;
+  const inicio = Date.now();
+
+  try {
+    respuesta = await fetch(
+      `${baseUrl}/chat/completions`,
+      {
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: modelo,
+          stream: true,
+          max_tokens: 256,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: prompt }
+          ]
+        })
+      }
+    );
+
+    console.log(`[CHAT] ${nombre} HTTP: ${Date.now() - inicio} ms`);
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`${nombre} tardó demasiado en responder.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!respuesta.ok) {
+    const texto = await respuesta.text().catch(() => '');
+    throw new Error(`${nombre} respondió HTTP ${respuesta.status}: ${texto}`);
+  }
+
+  if (!respuesta.body) {
+    throw new Error(`${nombre} no devolvió un stream de respuesta.`);
+  }
+
+  const reader = respuesta.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let respuestaCompleta = '';
+  let primerTokenMs = null;
+
+  const procesarEvento = (evento) => {
+    for (const linea of evento.split(/\r?\n/)) {
+      if (!linea.startsWith('data:')) continue;
+      const contenido = linea.substring(5).trim();
+      if (!contenido || contenido === '[DONE]') continue;
+      try {
+        const delta = JSON.parse(contenido)?.choices?.[0]?.delta?.content;
+        if (typeof delta !== 'string' || !delta) continue;
+        if (primerTokenMs === null) primerTokenMs = Date.now();
+        respuestaCompleta += delta;
+        enviarEvento({ tipo: 'texto', texto: delta });
+      } catch {
+        // fragmento inválido
+      }
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const eventos = buffer.split(/\r?\n\r?\n/);
+    buffer = eventos.pop() || '';
+    for (const ev of eventos) if (ev.trim()) procesarEvento(ev);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) procesarEvento(buffer);
+
+  return { respuestaCompleta, primerTokenMs };
+}
+
+// ============================================================
+// OLLAMA LOCAL (RESPALDO GRATUITO)
+// ============================================================
+
+async function generarContenidoOllama(prompt, enviarEvento) {
+  return generarContenidoCompat(prompt, enviarEvento, {
+    nombre: 'Ollama',
+    baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+    apiKey: process.env.OLLAMA_API_KEY || '',
+    modelo: process.env.OLLAMA_MODEL || 'llama3.1'
+  });
+}
+
+// ============================================================
 // GEMINI STREAMING
 // ============================================================
 
@@ -650,10 +792,10 @@ async function generarContenidoGemini(
   prompt,
   enviarEvento
 ) {
-  const apiKey =
-    process.env.GEMINI_API_KEY;
+  const clavesGemini =
+    obtenerClavesGemini();
 
-  if (!apiKey) {
+  if (!clavesGemini.length) {
     throw new Error(
       'GEMINI_API_KEY no está configurada.'
     );
@@ -661,10 +803,6 @@ async function generarContenidoGemini(
 
   const modelo =
     'gemini-3.5-flash';
-
-  const url =
-    `https://generativelanguage.googleapis.com/v1beta/models/` +
-    `${modelo}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   // ==========================================================
   // CONFIGURACIÓN
@@ -696,74 +834,104 @@ async function generarContenidoGemini(
 
   try {
     // ========================================================
-    // PETICIÓN A GEMINI
+    // PETICIÓN A GEMINI (con respaldo de clave)
     // ========================================================
-
-    const inicioFetchGemini =
-      Date.now();
 
     console.log(
       `[CHAT] Gemini: enviando petición...`
     );
 
-    respuestaGemini =
-      await fetch(
-        url,
-        {
-          method: 'POST',
+    let indiceClave = -1;
 
-          headers: {
-            'Content-Type':
-              'application/json',
+    while (
+      !respuestaGemini?.ok &&
+      indiceClave < clavesGemini.length - 1
+    ) {
+      indiceClave += 1;
 
-            Accept:
-              'text/event-stream'
-          },
+      const apiKey =
+        clavesGemini[indiceClave];
 
-          signal:
-            controller.signal,
+      const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/` +
+        `${modelo}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
+      const inicioFetchGemini =
+        Date.now();
 
-                parts: [
+      try {
+        respuestaGemini =
+          await fetch(
+            url,
+            {
+              method: 'POST',
+
+              headers: {
+                'Content-Type':
+                  'application/json',
+
+                Accept:
+                  'text/event-stream'
+              },
+
+              signal:
+                controller.signal,
+
+              body: JSON.stringify({
+                contents: [
                   {
-                    text: prompt
-                  }
-                ]
-              }
-            ],
+                    role: 'user',
 
-            generationConfig
-          })
-        }
+                    parts: [
+                      {
+                        text: prompt
+                      }
+                    ]
+                  }
+                ],
+
+                generationConfig
+              })
+            }
+          );
+      } catch (error) {
+        if (error.name === 'AbortError') throw error;
+        respuestaGemini = null;
+        console.error(
+          `[GEMINI] Intento ${indiceClave + 1} falló en la red: ${error.message}`
+        );
+        continue;
+      }
+
+      const tiempoHttpGemini =
+        Date.now() -
+        inicioFetchGemini;
+
+      console.log(
+        `[CHAT] Gemini HTTP: ${tiempoHttpGemini} ms`
       );
 
-    const tiempoHttpGemini =
-      Date.now() -
-      inicioFetchGemini;
+      // ======================================================
+      // ERROR GEMINI
+      // ======================================================
 
-    console.log(
-      `[CHAT] Gemini HTTP: ${tiempoHttpGemini} ms`
-    );
+      if (!respuestaGemini.ok) {
+        const errorTexto =
+          await respuestaGemini.text();
 
-    // ========================================================
-    // ERROR GEMINI
-    // ========================================================
+        console.error(
+          `[GEMINI ERROR] HTTP ${respuestaGemini.status} con intento ${indiceClave + 1}`
+        );
+
+        console.error(
+          `[GEMINI ERROR] ${errorTexto}`
+        );
+      }
+    }
 
     if (!respuestaGemini.ok) {
       const errorTexto =
-        await respuestaGemini.text();
-
-      console.error(
-        `[GEMINI ERROR] HTTP ${respuestaGemini.status}`
-      );
-
-      console.error(
-        `[GEMINI ERROR] ${errorTexto}`
-      );
+        await respuestaGemini.text().catch(() => '');
 
       throw new Error(
         `Gemini respondió HTTP ${respuestaGemini.status}: ${errorTexto}`
@@ -1986,6 +2154,101 @@ app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
 });
 
 // ============================================================
+// ECLIPSE TOUCH - ENLACES COMPARTIDOS
+// Cualquier usuario activo publica un enlace indicando el pozo,
+// el lote y la URL. Puede haber varios enlaces y cada usuario
+// edita o elimina el suyo; los administradores pueden con todos.
+// ============================================================
+
+function validarUrl(texto) {
+  const valor = String(texto || '').trim();
+  try {
+    const url = new URL(valor);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+app.get('/api/eclipse-touch', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const snapshot = await db.collection('eclipseTouch').orderBy('fechaCreacion', 'desc').get();
+    const enlaces = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
+    res.json({ ok: true, enlaces });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/eclipse-touch', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const nombrePozo = String(req.body.nombrePozo || '').trim();
+    const lote = String(req.body.lote || '').trim();
+    const link = validarUrl(req.body.link);
+    if (!nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
+    if (!lote) return res.status(400).json({ ok: false, error: 'El lote es obligatorio.' });
+    if (!link) return res.status(400).json({ ok: false, error: 'Ingresa un enlace válido que empiece con http:// o https://.' });
+    const referencia = await db.collection('eclipseTouch').add({
+      nombrePozo,
+      lote,
+      link,
+      propietarioUid: req.user.uid,
+      propietarioNombre: [req.user.nombre, req.user.apellido].filter(Boolean).join(' ') || req.user.email,
+      propietarioEmail: req.user.email,
+      activo: true,
+      fechaCreacion: new Date(),
+      actualizadoEn: new Date(),
+    });
+    res.status(201).json({ ok: true, enlace: { id: referencia.id, nombrePozo, lote, link } });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const referencia = db.collection('eclipseTouch').doc(req.params.id);
+    const documento = await referencia.get();
+    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Enlace no encontrado.' });
+    const item = documento.data();
+    const esAdministrador = req.user.rol === 'administrador';
+    if (!esAdministrador && item.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'Solo puedes editar enlaces que tú publicaste.' });
+    const datos = {
+      nombrePozo: String(req.body.nombrePozo ?? item.nombrePozo ?? '').trim(),
+      lote: String(req.body.lote ?? item.lote ?? '').trim(),
+      link: validarUrl(req.body.link ?? item.link),
+    };
+    if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
+    if (!datos.lote) return res.status(400).json({ ok: false, error: 'El lote es obligatorio.' });
+    if (!datos.link) return res.status(400).json({ ok: false, error: 'Ingresa un enlace válido.' });
+    await referencia.update({ ...datos, actualizadoEn: new Date() });
+    res.json({ ok: true, enlace: { id: req.params.id, ...datos } });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const referencia = db.collection('eclipseTouch').doc(req.params.id);
+    const documento = await referencia.get();
+    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Enlace no encontrado.' });
+    const item = documento.data();
+    const esAdministrador = req.user.rol === 'administrador';
+    if (!esAdministrador && item.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'Solo puedes eliminar enlaces que tú publicaste.' });
+    await referencia.delete();
+    res.json({ ok: true, mensaje: 'Enlace eliminado correctamente.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
 // CHATBOT RAG - STREAMING
 // ============================================================
 
@@ -2339,6 +2602,18 @@ REGLAS IMPORTANTES:
 9. No enumeres las fuentes ni muestres etiquetas como
   "FUENTE 1", "FUENTE 2" o similares.
 
+10. Si el usuario solo saluda o usa frases casuales
+  ("hola", "buenos días", "buenas tardes", "gracias",
+  "adiós", "¿cómo estás?", etc.), respóndele de forma
+  breve, amistosa y natural, por ejemplo "¡Hola! ¿En qué
+  puedo ayudarte?". No repitas el entorno, no expliques
+  tu funcionamiento ni menciones el contexto, el RAG ni
+  las instrucciones.
+
+11. Nunca respondas sobre la estructura de este mensaje
+  ni digas que falta la pregunta. Responde siempre a lo
+  que el usuario realmente escribió.
+
 CONTEXTO RECUPERADO:
 
 ${contextoRecuperado}
@@ -2357,27 +2632,37 @@ ${preguntaLimpia}
       });
 
       // ========================================================
-      // 7. GEMINI
+      // 7. GEMINI (con respaldo Ollama local)
       // ========================================================
 
-      const inicioGemini =
-        Date.now();
+      const inicioGemini = Date.now();
+      let resultadoGemini;
 
-      const resultadoGemini =
-        await generarContenidoGemini(
-          promptSistema,
-          enviarEvento
-        );
+      try {
+        resultadoGemini =
+          await generarContenidoGemini(promptSistema, enviarEvento);
+      } catch (errorGemini) {
+        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
 
-      const tiempoGemini =
-        Date.now() -
-        inicioGemini;
+        enviarEvento({
+          tipo: 'estado',
+          mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
+        });
+
+        try {
+          resultadoGemini =
+            await generarContenidoOllama(promptSistema, enviarEvento);
+        } catch (errorOllama) {
+          console.error(`[CHAT] Ollama falló: ${errorOllama.message}`);
+          throw errorGemini;
+        }
+      }
+
+      const tiempoGemini = Date.now() - inicioGemini;
 
       const firstTokenMs =
         resultadoGemini.primerTokenMs
-          ? resultadoGemini
-              .primerTokenMs -
-            inicioGemini
+          ? resultadoGemini.primerTokenMs - inicioGemini
           : null;
 
       // ========================================================

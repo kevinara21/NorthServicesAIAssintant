@@ -58,8 +58,8 @@ export default function Recursos({ token, esAdministrador }) {
     <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, versión o archivo…" /></label>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 20, marginTop: 20 }}>
       {recursosFiltrados.length === 0 ? <p>{busqueda ? 'No hay recursos que coincidan con la búsqueda.' : 'No hay recursos disponibles.'}</p> : recursosFiltrados.map((recurso) => <article key={recurso.id} style={{ background: '#fff', padding: 20, borderRadius: 8, border: '1px solid #e5e7eb' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><h3 style={{ margin: 0 }}>{recurso.nombre}</h3><span>{recurso.software && <FiBox aria-label="Software" />} {recurso.manual && <FiBookOpen aria-label="Manual" />}</span></div>
-        <small>{recurso.version || 'Sin versión'}</small><p style={{ color: '#475569' }}>{recurso.descripcion || 'Sin descripción.'}</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}><h3 style={{ margin: 0 }}>{recurso.nombre}</h3><span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}><span>{recurso.software && <FiBox aria-label="Software" />} {recurso.manual && <FiBookOpen aria-label="Manual" />}</span><small>{recurso.version || 'Sin versión'}</small></span></div>
+        <p style={{ color: '#475569', marginTop: 8 }}>{recurso.descripcion || 'Sin descripción.'}</p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {recurso.software && <button type="button" className="resource-icon-button primary" onClick={() => descargar(recurso, 'software')} aria-label="Descargar software" title="Descargar software"><FiBox aria-hidden="true" /></button>}
           {recurso.manual && <button type="button" className="resource-icon-button" onClick={() => descargar(recurso, 'manual')} aria-label="Descargar manual" title="Descargar manual"><FiBookOpen aria-hidden="true" /></button>}

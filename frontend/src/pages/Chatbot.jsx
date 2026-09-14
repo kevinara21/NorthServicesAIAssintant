@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { API_URL } from '../services/api';
 
 function limpiarFormatoRespuesta(texto) {
@@ -11,7 +11,58 @@ function limpiarFormatoRespuesta(texto) {
     .replace(/_(.*?)_/g, '$1');
 }
 
-export default function Chatbot({ token }) {
+const estilosEnlaceChat = {
+  color: '#DD2226',
+  textDecoration: 'underline',
+  fontWeight: 600,
+  wordBreak: 'break-all',
+};
+
+function renderizarTextoEnriquecido(texto) {
+  const textoLimpio = limpiarFormatoRespuesta(texto);
+  const patron = /(https?:\/\/[^\s<>)'"\]}]+)|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|(\+[\d\s()-]{7,18}\d)/g;
+  const fragmentos = [];
+  let ultimoIndex = 0;
+  let coincidencia;
+  let llave = 0;
+  while ((coincidencia = patron.exec(textoLimpio)) !== null) {
+    if (coincidencia.index > ultimoIndex) {
+      fragmentos.push(textoLimpio.slice(ultimoIndex, coincidencia.index));
+    }
+    const [completo, url, email, telefono] = coincidencia;
+    let enlace = null;
+    if (url) {
+      enlace = { href: url, texto: url, externo: true };
+    } else if (email) {
+      enlace = { href: `mailto:${email}`, texto: email };
+    } else if (telefono) {
+      const digitos = telefono.replace(/\D/g, '');
+      enlace = { href: `https://wa.me/${digitos}`, texto: telefono, externo: true };
+    }
+    if (enlace) {
+      fragmentos.push(
+        <a
+          key={llave++}
+          href={enlace.href}
+          target={enlace.externo ? '_blank' : undefined}
+          rel={enlace.externo ? 'noreferrer' : undefined}
+          style={estilosEnlaceChat}
+        >
+          {enlace.texto}
+        </a>
+      );
+    } else {
+      fragmentos.push(completo);
+    }
+    ultimoIndex = coincidencia.index + completo.length;
+  }
+  if (ultimoIndex < textoLimpio.length) {
+    fragmentos.push(textoLimpio.slice(ultimoIndex));
+  }
+  return fragmentos;
+}
+
+export default function Chatbot({ token, uid }) {
   // =========================================================
   // PRUEBA: confirma que ESTE Chatbot.jsx está siendo cargado
   // =========================================================
@@ -23,6 +74,63 @@ export default function Chatbot({ token }) {
   const [pregunta, setPregunta] = useState('');
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(false);
+
+  // =========================================================
+  // PERSISTENCIA DEL HISTORIAL
+  // El chat se guarda por usuario en localStorage para que al
+  // cerrar el panel o recargar la página no se pierda la
+  // conversación. Solo el botón "Limpiar" borra el historial.
+  // =========================================================
+
+  const claveHistorial = `chat_historial_${uid || 'anonimo'}`;
+
+  useEffect(() => {
+    try {
+      const guardado = localStorage.getItem(claveHistorial);
+      if (guardado) {
+        const datos = JSON.parse(guardado);
+        if (Array.isArray(datos)) setHistorial(datos);
+      }
+    } catch {
+      // Historial previo inválido; se ignora y se empieza vacío.
+    }
+  }, [claveHistorial]);
+
+  useEffect(() => {
+    try {
+      if (historial.length === 0) {
+        localStorage.removeItem(claveHistorial);
+        return;
+      }
+      const completo = historial.filter((mensaje) => mensaje.emisor !== 'bot' || mensaje.texto);
+      localStorage.setItem(claveHistorial, JSON.stringify(completo));
+    } catch {
+      // Almacenamiento no disponible; el chat sigue funcionando sin guardar.
+    }
+  }, [historial, claveHistorial]);
+
+  // =========================================================
+  // SCROLL DEL CHAT
+  // Al abrir o generar respuestas, se mantiene anclado al final
+  // (último mensaje). Si el usuario sube para leer lo anterior,
+  // no se lo arrastra hacia abajo.
+  // =========================================================
+
+  const contenedorChatRef = useRef(null);
+  const cercaDelFinalRef = useRef(true);
+
+  const manejarScrollChat = () => {
+    const contenedor = contenedorChatRef.current;
+    if (!contenedor) return;
+    const distanciaAlFinal = contenedor.scrollHeight - contenedor.scrollTop - contenedor.clientHeight;
+    cercaDelFinalRef.current = distanciaAlFinal < 80;
+  };
+
+  useEffect(() => {
+    const contenedor = contenedorChatRef.current;
+    if (!contenedor) return;
+    if (cercaDelFinalRef.current) contenedor.scrollTop = contenedor.scrollHeight;
+  }, [historial]);
 
   const descargarFuente = async (ruta, etiqueta) => {
     try {
@@ -667,6 +775,8 @@ export default function Chatbot({ token }) {
           ÁREA DEL CHAT
       =================================================== */}
       <div
+        ref={contenedorChatRef}
+        onScroll={manejarScrollChat}
         style={{
           height: '400px',
 
@@ -811,7 +921,7 @@ export default function Chatbot({ token }) {
                         : '0 1px 2px rgba(0,0,0,0.04)',
                   }}
                 >
-                  {msg.texto ? limpiarFormatoRespuesta(msg.texto) : (
+                  {msg.texto ? renderizarTextoEnriquecido(msg.texto) : (
                     <span
                       style={{
                         color:
