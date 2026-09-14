@@ -1,15 +1,20 @@
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore"; // 1. Importar getFirestore
+import { getFirestore } from "firebase/firestore";
+
+// Cargar variables de entorno
+// Asegúrate de tener dotenv instalado: npm install dotenv
+import dotenv from "dotenv";
+dotenv.config();
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD3tRcWScSHTJs6NPMszI9L1wPEne0QTZw",
-  authDomain: "north-services-ai.firebaseapp.com",
-  projectId: "north-services-ai",
-  storageBucket: "north-services-ai.firebasestorage.app",
-  messagingSenderId: "668485822272",
-  appId: "1:668485822272:web:4270954e8fb7f66ff63ca5",
-  measurementId: "G-8H18LZZJJ0"
+  apiKey: process.env.FIREBASE_API_KEY,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.FIREBASE_APP_ID,
+  measurementId: process.env.FIREBASE_MEASUREMENT_ID,
 };
 
 // Inicializar Firebase
@@ -17,4 +22,4 @@ const app = initializeApp(firebaseConfig);
 
 // Exportar instancias de autenticación y base de datos
 export const auth = getAuth(app);
-export const db = getFirestore(app); // 2. Exportar la instancia de Firestore
+export const db = getFirestore(app);
