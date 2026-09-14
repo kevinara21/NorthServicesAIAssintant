@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { FiEdit2, FiPlus, FiSave } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
+import { useNotification } from '../context/NotificationContext';
 
 function obtenerFechaActual() {
   const hoy = new Date();
@@ -41,7 +42,7 @@ export default function GestionFacturacion({ token }) {
   const [editando, setEditando] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
-  const [mensaje, setMensaje] = useState(null);
+  const { notificarError, notificarExito } = useNotification();
 
   const cargarPozos = async () => {
     try {
@@ -60,7 +61,7 @@ export default function GestionFacturacion({ token }) {
         return Number(a.diaPago) - Number(b.diaPago);
       }));
     } catch (error) {
-      setMensaje({ tipo: 'error', texto: error.message });
+      notificarError(error.message, { titulo: 'No se pudo cargar Starlink' });
     } finally { setCargando(false); }
   };
 
@@ -87,7 +88,6 @@ export default function GestionFacturacion({ token }) {
       fechaInicioPeriodo: pozo.fechaInicioPeriodo || fechaParaDia(pozo.diaInicioPeriodo),
       diaPago: calcularDiaPago(pozo.diaInicioPeriodo),
     });
-    setMensaje(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -96,7 +96,6 @@ export default function GestionFacturacion({ token }) {
   const guardarPozo = async (event) => {
     event.preventDefault();
     setGuardando(true);
-    setMensaje(null);
     const ruta = editando ? `/api/admin/starlink/${editando}` : '/api/admin/starlink';
     try {
       const respuesta = await apiFetch(ruta, {
@@ -112,11 +111,13 @@ export default function GestionFacturacion({ token }) {
         throw new Error('El backend no respondió correctamente. Reinicia el servidor backend.');
       }
       if (!respuesta.ok) throw new Error(data.error || 'No se pudo guardar el pozo.');
-      setMensaje({ tipo: 'exito', texto: editando ? 'Información actualizada en Firebase.' : 'Pozo agregado a Firebase.' });
+      notificarExito(editando ? 'Información actualizada en Firebase.' : 'Pozo agregado a Firebase.', {
+        titulo: editando ? 'Registro actualizado' : 'Pozo agregado',
+      });
       cancelarEdicion();
       await cargarPozos();
     } catch (error) {
-      setMensaje({ tipo: 'error', texto: error.message });
+      notificarError(error.message, { titulo: 'No se pudo guardar el registro' });
     } finally { setGuardando(false); }
   };
 
@@ -129,8 +130,6 @@ export default function GestionFacturacion({ token }) {
         <h1>Pago de Starlink</h1>
         <p>Consulta y actualiza el estado de pago. El pago se calcula automáticamente un día antes del inicio del periodo.</p>
       </div>
-
-      {mensaje && <div className={`profile-message ${mensaje.tipo}`}>{mensaje.texto}</div>}
 
       <form className="billing-form" onSubmit={guardarPozo}>
         <div className="billing-form-header"><h3>{editando ? 'Editar registro Starlink' : 'Agregar Starlink'}</h3>{editando && <button className="billing-cancel" type="button" onClick={cancelarEdicion}>Cancelar</button>}</div>

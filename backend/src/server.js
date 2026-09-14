@@ -7,6 +7,7 @@ const fs = require('fs');
 const multer = require('multer');
 const PDFParser = require('pdf2json');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
 const { connectDB, getDB } = require('./db/mongodb');
@@ -250,6 +251,72 @@ function extraerTextoPDF(buffer) {
   });
 }
 
+function decodificarEntidadesXML(texto) {
+  return texto
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, codigo) => String.fromCharCode(Number(codigo)))
+    .replace(/\s+/g, ' ').trim();
+}
+
+// Los formatos Office modernos son archivos ZIP con XML. Esta lectura evita
+// depender de una aplicación instalada en el servidor y cubre DOCX, XLSX y PPTX.
+function leerZipOffice(buffer) {
+  const eocd = buffer.lastIndexOf(Buffer.from('PK\x05\x06'));
+  if (eocd < 0) throw new Error('El documento Office no tiene un contenedor ZIP válido.');
+  const totalEntradas = buffer.readUInt16LE(eocd + 10);
+  let cursor = buffer.readUInt32LE(eocd + 16);
+  const archivos = new Map();
+  for (let indice = 0; indice < totalEntradas; indice += 1) {
+    if (buffer.readUInt32LE(cursor) !== 0x02014b50) break;
+    const metodo = buffer.readUInt16LE(cursor + 10);
+    const comprimido = buffer.readUInt32LE(cursor + 20);
+    const nombreLongitud = buffer.readUInt16LE(cursor + 28);
+    const extraLongitud = buffer.readUInt16LE(cursor + 30);
+    const comentarioLongitud = buffer.readUInt16LE(cursor + 32);
+    const offsetLocal = buffer.readUInt32LE(cursor + 42);
+    const nombre = buffer.subarray(cursor + 46, cursor + 46 + nombreLongitud).toString('utf8');
+    if (buffer.readUInt32LE(offsetLocal) === 0x04034b50) {
+      const nombreLocal = buffer.readUInt16LE(offsetLocal + 26);
+      const extraLocal = buffer.readUInt16LE(offsetLocal + 28);
+      const inicio = offsetLocal + 30 + nombreLocal + extraLocal;
+      const datos = buffer.subarray(inicio, inicio + comprimido);
+      archivos.set(nombre, metodo === 8 ? zlib.inflateRawSync(datos) : datos);
+    }
+    cursor += 46 + nombreLongitud + extraLongitud + comentarioLongitud;
+  }
+  return archivos;
+}
+
+async function extraerTextoArchivo(file) {
+  const extension = path.extname(file.originalname || '').toLowerCase();
+  const buffer = await fs.promises.readFile(file.path);
+  if (extension === '.pdf') return extraerTextoPDF(buffer);
+  if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log'].includes(extension)) {
+    return buffer.toString('utf8');
+  }
+  if (['.docx', '.xlsx', '.pptx'].includes(extension)) {
+    const zip = leerZipOffice(buffer);
+    let partes = [];
+    if (extension === '.docx') {
+      partes = ['word/document.xml', ...[...zip.keys()].filter((nombre) => /^word\/(header|footer)\d+\.xml$/.test(nombre))];
+    } else if (extension === '.xlsx') {
+      partes = [...zip.keys()].filter((nombre) => nombre === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet\d+\.xml$/.test(nombre));
+    } else {
+      partes = [...zip.keys()].filter((nombre) => /^ppt\/slides\/slide\d+\.xml$/.test(nombre));
+    }
+    return partes
+      .map((nombre) => zip.get(nombre)?.toString('utf8') || '')
+      .map(decodificarEntidadesXML)
+      .filter(Boolean)
+      .join('\n');
+  }
+  // El archivo queda disponible para descarga aunque su formato no permita
+  // extraer texto automáticamente (por ejemplo imágenes, ZIP o ejecutables).
+  return '';
+}
+
 // ============================================================
 // MULTER
 // ============================================================
@@ -329,6 +396,47 @@ const uploadUnificado =
       maxCount: 1
     }
   ]);
+
+// Los archivos colaborativos se guardan con un nombre generado por el servidor.
+// Así evitamos sobrescribir archivos de otros usuarios y no dependemos de la
+// extensión para aceptar el archivo.
+const storageArchivos = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const folderPath = path.join(__dirname, '../storage', 'archivos', req.user.uid);
+    fs.mkdirSync(folderPath, { recursive: true });
+    cb(null, folderPath);
+  },
+  filename: (req, file, cb) => {
+    const nombreSeguro = path.basename(file.originalname || 'archivo')
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${Date.now()}-${crypto.randomUUID()}-${nombreSeguro || 'archivo'}`);
+  },
+});
+
+const uploadArchivo = multer({
+  storage: storageArchivos,
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+async function eliminarArchivoYCarpetasVacias(rutaArchivo, raizPermitida) {
+  const raiz = path.resolve(raizPermitida);
+  const ruta = path.resolve(rutaArchivo);
+  if (!ruta.startsWith(`${raiz}${path.sep}`)) return;
+  if (fs.existsSync(ruta)) await fs.promises.unlink(ruta);
+
+  // Solo subimos hasta la raíz específica del tipo de archivo; nunca se borra
+  // la carpeta raíz de almacenamiento, y rmdir solo elimina directorios vacíos.
+  let carpeta = path.dirname(ruta);
+  while (carpeta.startsWith(`${raiz}${path.sep}`) && carpeta !== raiz) {
+    try {
+      await fs.promises.rmdir(carpeta);
+    } catch (error) {
+      if (error.code === 'ENOTEMPTY' || error.code === 'ENOENT') break;
+      throw error;
+    }
+    carpeta = path.dirname(carpeta);
+  }
+}
 
 // ============================================================
 // DIVIDIR TEXTO
@@ -1098,11 +1206,17 @@ app.post(
           ? descripcion.trim()
           : `Manual técnico de ${nombre.trim()}`;
 
-      let idSoftware =
-        null;
-
-      let idManual =
-        null;
+      // Un solo documento de Firestore representa el recurso completo, aunque
+      // tenga instalador y manual. Así se muestran y descargan juntos.
+      const recursoRef = await db.collection('recursos').add({
+        nombre: nombre.trim(),
+        descripcion: descripcionFinal,
+        version: version || 'v1.0',
+        activo: true,
+        software: null,
+        manual: null,
+        fechaPublicacion: new Date(),
+      });
 
       // ========================================================
       // SOFTWARE
@@ -1124,28 +1238,12 @@ app.post(
             fileZip.filename
           );
 
-        const docZip =
-          await db
-            .collection(
-              'software'
-            )
-            .add({
-              nombre,
-              descripcion: descripcionFinal,
-              version:
-                version ||
-                'v1.0',
-              nombreArchivo:
-                fileZip.filename,
-              rutaLocal:
-                rutaRelativa,
-              activo: true,
-              fechaPublicacion:
-                new Date()
-            });
-
-        idSoftware =
-          docZip.id;
+        await recursoRef.update({
+          software: {
+            nombreArchivo: fileZip.filename,
+            rutaLocal: rutaRelativa,
+          },
+        });
       }
 
       // ========================================================
@@ -1175,43 +1273,12 @@ app.post(
                 filePdf.filename
               );
 
-        // ------------------------------------------------------
-        // FIREBASE
-        // ------------------------------------------------------
-
-        const docPdf =
-          await db
-            .collection(
-              'manuales'
-            )
-            .add({
-              nombre:
-                nombre.trim(),
-
-              descripcion: descripcionFinal,
-
-              ...(soloManual
-                ? {}
-                : {
-                    version:
-                      version ||
-                      'v1.0'
-                  }),
-
-              nombreArchivo:
-                filePdf.filename,
-
-              rutaLocal:
-                rutaRelativa,
-
-              activo: true,
-
-              fechaCreacion:
-                new Date()
-            });
-
-        idManual =
-          docPdf.id;
+        await recursoRef.update({
+          manual: {
+            nombreArchivo: filePdf.filename,
+            rutaLocal: rutaRelativa,
+          },
+        });
 
         // ------------------------------------------------------
         // EXTRAER PDF
@@ -1299,8 +1366,8 @@ app.post(
                 );
 
               return {
-                manualId:
-                  docPdf.id,
+                recursoId:
+                  recursoRef.id,
 
                 nombreManual:
                   nombre,
@@ -1393,9 +1460,7 @@ app.post(
         mensaje:
           'Recurso publicado e indexado correctamente en la IA.',
 
-        idSoftware,
-
-        idManual
+        idRecurso: recursoRef.id
       });
     } catch (error) {
       console.error(
@@ -1413,7 +1478,66 @@ app.post(
 );
 
 // ============================================================
-// SOFTWARE
+// RECURSOS UNIFICADOS
+// ============================================================
+
+app.get('/api/recursos', verifyToken, async (req, res) => {
+  try {
+    if (req.user.estado !== 'activo') return res.status(403).json({ ok: false, error: 'Cuenta pendiente de aprobación.' });
+    const snapshot = await db.collection('recursos').where('activo', '==', true).get();
+    res.json({ ok: true, recursos: snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() })) });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+async function descargarRecursoUnificado(req, res) {
+  try {
+    if (req.user.estado !== 'activo') return res.status(403).json({ ok: false, error: 'Cuenta pendiente de aprobación.' });
+    const documento = await db.collection('recursos').doc(req.params.id).get();
+    if (!documento.exists || documento.data().activo !== true) return res.status(404).json({ ok: false, error: 'Recurso no encontrado.' });
+    const archivo = req.params.tipo === 'manual' ? documento.data().manual : documento.data().software;
+    if (!archivo?.rutaLocal) return res.status(404).json({ ok: false, error: 'Esta descarga no está disponible para el recurso.' });
+    const rutaArchivo = path.resolve(__dirname, '..', archivo.rutaLocal);
+    const raiz = path.resolve(__dirname, '../storage');
+    if (!rutaArchivo.startsWith(`${raiz}${path.sep}`) || !fs.existsSync(rutaArchivo)) return res.status(404).json({ ok: false, error: 'El archivo no existe en el servidor.' });
+    res.download(rutaArchivo, archivo.nombreArchivo);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+}
+
+app.get('/api/recursos/:id/software/download', verifyToken, (req, res) => {
+  req.params.tipo = 'software';
+  return descargarRecursoUnificado(req, res);
+});
+app.get('/api/recursos/:id/manual/download', verifyToken, (req, res) => {
+  req.params.tipo = 'manual';
+  return descargarRecursoUnificado(req, res);
+});
+
+app.delete('/api/admin/recursos/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const referencia = db.collection('recursos').doc(req.params.id);
+    const documento = await referencia.get();
+    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Recurso no encontrado.' });
+    const recurso = documento.data();
+    await getDB().collection('conocimientos_vectores').deleteMany({ recursoId: req.params.id });
+    const raiz = path.resolve(__dirname, '../storage');
+    for (const archivo of [recurso.software, recurso.manual]) {
+      if (!archivo?.rutaLocal) continue;
+      const rutaArchivo = path.resolve(__dirname, '..', archivo.rutaLocal);
+      await eliminarArchivoYCarpetasVacias(rutaArchivo, raiz);
+    }
+    await referencia.delete();
+    res.json({ ok: true, mensaje: 'Recurso, descargas y vectores de MongoDB eliminados.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
+// SOFTWARE LEGADO
 // ============================================================
 
 app.get(
@@ -1712,6 +1836,156 @@ app.get(
 );
 
 // ============================================================
+// ELIMINACIÓN DE RECURSOS ADMINISTRATIVOS
+// ============================================================
+
+async function eliminarRecursoAdministrativo(coleccion, id, { eliminarVectores = false } = {}) {
+  const referencia = db.collection(coleccion).doc(id);
+  const documento = await referencia.get();
+  if (!documento.exists) {
+    const error = new Error('Recurso no encontrado.');
+    error.status = 404;
+    throw error;
+  }
+  const item = documento.data();
+  if (eliminarVectores) await getDB().collection('conocimientos_vectores').deleteMany({ manualId: id });
+  const raiz = path.resolve(__dirname, '../storage');
+  const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal || '');
+  await eliminarArchivoYCarpetasVacias(rutaArchivo, raiz);
+  await referencia.delete();
+}
+
+app.delete('/api/admin/software/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    await eliminarRecursoAdministrativo('software', req.params.id);
+    res.json({ ok: true, mensaje: 'Software eliminado correctamente.' });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete('/api/admin/manuales/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    await eliminarRecursoAdministrativo('manuales', req.params.id, { eliminarVectores: true });
+    res.json({ ok: true, mensaje: 'Manual y sus vectores de MongoDB fueron eliminados.' });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
+// ARCHIVOS COLABORATIVOS E INDEXACIÓN RAG
+// ============================================================
+
+function usuarioActivo(req, res) {
+  if (req.user.estado !== 'activo') {
+    res.status(403).json({ ok: false, error: 'Cuenta pendiente de aprobación.' });
+    return false;
+  }
+  return true;
+}
+
+app.post('/api/archivos', verifyToken, (req, res, next) => {
+  if (!usuarioActivo(req, res)) return;
+  next();
+}, uploadArchivo.single('archivo'), async (req, res) => {
+  let referencia = null;
+  try {
+    if (!req.file) return res.status(400).json({ ok: false, error: 'Debes seleccionar un archivo.' });
+
+    const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
+    referencia = await db.collection('archivos').add({
+      nombre: String(req.body.nombre || path.parse(req.file.originalname).name).trim(),
+      descripcion: String(req.body.descripcion || '').trim(),
+      nombreArchivo: req.file.originalname,
+      rutaLocal,
+      tipoMime: req.file.mimetype || 'application/octet-stream',
+      tamano: req.file.size,
+      extension: path.extname(req.file.originalname || '').toLowerCase(),
+      propietarioUid: req.user.uid,
+      propietarioNombre: [req.user.nombre, req.user.apellido].filter(Boolean).join(' ') || req.user.email,
+      propietarioEmail: req.user.email,
+      activo: true,
+      estadoIndexacion: 'pendiente',
+      fechaCreacion: new Date(),
+    });
+
+    const texto = await extraerTextoArchivo(req.file);
+    const bloques = dividirTextoEnBloques(texto, 800);
+    if (!bloques.length) {
+      await referencia.update({ estadoIndexacion: 'sin_texto', actualizadoEn: new Date() });
+      return res.status(201).json({ ok: true, archivo: { id: referencia.id }, mensaje: 'Archivo guardado. Este formato no contiene texto que pueda indexarse automáticamente.' });
+    }
+
+    const resultados = await procesarConcurrencia(bloques, EMBEDDING_CONCURRENCY, async (fragmento, indice) => ({
+      archivoId: referencia.id,
+      nombreArchivo: req.file.originalname,
+      nombreManual: String(req.body.nombre || path.parse(req.file.originalname).name).trim(),
+      titulo_seccion: `${req.file.originalname} (Parte ${indice + 1})`,
+      contenido_texto: fragmento,
+      embedding: await generarEmbedding(fragmento),
+      fechaIndexacion: new Date(),
+    }));
+    const vectores = resultados.filter((resultado) => resultado && !resultado.error && Array.isArray(resultado.embedding));
+    if (!vectores.length) throw new Error('No se pudo generar embeddings para el contenido del archivo.');
+    await getDB().collection('conocimientos_vectores').insertMany(vectores, { ordered: false });
+    await referencia.update({ estadoIndexacion: 'completada', fragmentosIndexados: vectores.length, actualizadoEn: new Date() });
+    res.status(201).json({ ok: true, archivo: { id: referencia.id }, mensaje: 'Archivo guardado e indexado correctamente para el asistente IA.' });
+  } catch (error) {
+    console.error('Error al cargar archivo colaborativo:', error);
+    if (referencia) await referencia.update({ estadoIndexacion: 'error', errorIndexacion: error.message, actualizadoEn: new Date() }).catch(() => {});
+    res.status(500).json({ ok: false, error: error.message || 'No se pudo procesar el archivo.' });
+  }
+});
+
+app.get('/api/archivos', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const snapshot = await db.collection('archivos').where('activo', '==', true).get();
+    const archivos = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
+    res.json({ ok: true, archivos });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/archivos/:id/download', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const documento = await db.collection('archivos').doc(req.params.id).get();
+    if (!documento.exists || documento.data().activo !== true) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
+    const item = documento.data();
+    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
+    const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal);
+    if (!rutaArchivo.startsWith(`${raizArchivos}${path.sep}`) || !fs.existsSync(rutaArchivo)) return res.status(404).json({ ok: false, error: 'El archivo ya no está disponible en el servidor.' });
+    res.download(rutaArchivo, item.nombreArchivo);
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const referencia = db.collection('archivos').doc(req.params.id);
+    const documento = await referencia.get();
+    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
+    const item = documento.data();
+    const esAdministrador = req.user.rol === 'administrador';
+    if (!esAdministrador && item.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' });
+
+    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: req.params.id });
+    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
+    const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal);
+    await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
+    await referencia.delete();
+    res.json({ ok: true, mensaje: 'Archivo y su información indexada fueron eliminados.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
 // CHATBOT RAG - STREAMING
 // ============================================================
 
@@ -1879,6 +2153,10 @@ app.post(
                 _id: 1,
 
                 manualId: 1,
+
+                recursoId: 1,
+
+                archivoId: 1,
 
                 nombreManual: 1,
 
@@ -2106,23 +2384,41 @@ ${preguntaLimpia}
       // 8. FUENTES
       // ========================================================
 
-      const fuentes =
-        resultadosRelevantes.map(
-          (f) => ({
-            documento:
-              f.nombreManual ||
-              'Manual',
+      const solicitaDescarga = /\b(descarga|descargar|download|software|instalador|archivo|manual)\b/i.test(preguntaLimpia);
+      const descargasPorFuente = new Map();
+      if (solicitaDescarga) {
+        const recursosIds = [...new Set(resultadosRelevantes.map((f) => f.recursoId).filter(Boolean))];
+        const archivosIds = [...new Set(resultadosRelevantes.map((f) => f.archivoId).filter(Boolean))];
+        const manualesIds = [...new Set(resultadosRelevantes.map((f) => f.manualId).filter(Boolean))];
+        const recursos = await Promise.all(recursosIds.map(async (id) => ({ id, documento: await db.collection('recursos').doc(id).get() })));
+        const archivos = await Promise.all(archivosIds.map(async (id) => ({ id, documento: await db.collection('archivos').doc(id).get() })));
+        const manuales = await Promise.all(manualesIds.map(async (id) => ({ id, documento: await db.collection('manuales').doc(id).get() })));
+        recursos.forEach(({ id, documento }) => {
+          if (!documento.exists || documento.data().activo !== true) return;
+          const recurso = documento.data();
+          const botones = [];
+          if (recurso.software?.rutaLocal) botones.push({ etiqueta: 'Descargar software', ruta: `/api/recursos/${id}/software/download` });
+          if (recurso.manual?.rutaLocal) botones.push({ etiqueta: 'Descargar manual', ruta: `/api/recursos/${id}/manual/download` });
+          descargasPorFuente.set(`recurso:${id}`, botones);
+        });
+        archivos.forEach(({ id, documento }) => {
+          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: 'Descargar archivo', ruta: `/api/archivos/${id}/download` }]);
+        });
+        manuales.forEach(({ id, documento }) => {
+          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`manual:${id}`, [{ etiqueta: 'Descargar manual', ruta: `/api/manuales/${id}/download` }]);
+        });
+      }
 
-            seccion:
-              f.titulo_seccion ||
-              'Sin sección',
-
-            relevancia:
-              Number(
-                f.score || 0
-              )
-          })
-        );
+      const fuentes = resultadosRelevantes.map((f) => ({
+        documento: f.nombreManual || 'Manual',
+        seccion: f.titulo_seccion || 'Sin sección',
+        relevancia: Number(f.score || 0),
+        descargas: f.recursoId
+          ? (descargasPorFuente.get(`recurso:${f.recursoId}`) || [])
+          : (f.archivoId
+            ? (descargasPorFuente.get(`archivo:${f.archivoId}`) || [])
+            : (descargasPorFuente.get(`manual:${f.manualId}`) || [])),
+      }));
 
       enviarEvento({
         tipo:

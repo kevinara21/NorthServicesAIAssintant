@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   FiBookOpen,
-  FiBox,
+  FiFolder,
   FiChevronRight,
   FiExternalLink,
   FiWifi,
@@ -18,10 +18,10 @@ import {
 import Chatbot from '../pages/Chatbot';
 import GestionUsuarios from '../pages/GestionUsuarios';
 import GestionFacturacion from '../pages/GestionFacturacion';
-import CatalogoSoftware from './CatalogoSoftware';
-import ModuloManuales from './ModuloManuales';
 import SubirRecursos from './SubirRecursos';
 import Perfil from './Perfil';
+import Recursos from './Recursos';
+import Archivos from './Archivos';
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -35,13 +35,13 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
 
   const opcionesPrincipales = [
     { id: 'inicio', label: 'Inicio', icon: FiHome },
-    { id: 'manuales', label: 'Manuales', icon: FiBookOpen },
-    { id: 'software', label: 'Softwares', icon: FiBox },
+    { id: 'recursos', label: 'Recursos', icon: FiBookOpen },
+    { id: 'archivos', label: 'Archivos', icon: FiFolder },
     { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
   const opcionesAdmin = [
-    { id: 'recursos', label: 'Subir recursos', icon: FiUploadCloud },
+    { id: 'publicar-recursos', label: 'Publicar recursos', icon: FiUploadCloud },
     { id: 'usuarios', label: 'Gestionar usuarios', icon: FiUsers },
     { id: 'facturacion', label: 'Starlink', icon: FiWifi },
   ];
@@ -53,9 +53,9 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
 
   const renderVista = () => {
     switch (vistaActiva) {
-      case 'manuales': return <ModuloManuales token={token} />;
-      case 'software': return <CatalogoSoftware token={token} />;
-      case 'recursos': return <SubirRecursos token={token} />;
+      case 'recursos': return <Recursos token={token} esAdministrador={esAdministrador} />;
+      case 'archivos': return <Archivos token={token} usuario={usuario} />;
+      case 'publicar-recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
       case 'facturacion': return <GestionFacturacion token={token} />;
       case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
@@ -175,7 +175,6 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
         <header className="dashboard-topbar">
           <div>
             <span className="dashboard-section-label">North Services AI Assistant</span>
-            <h2>{[...opcionesPrincipales, ...opcionesAdmin].find((opcion) => opcion.id === vistaActiva)?.label || 'Inicio'}</h2>
           </div>
           <div className="dashboard-topbar-user">
             <span>{usuario?.email || 'Sesión activa'}</span>

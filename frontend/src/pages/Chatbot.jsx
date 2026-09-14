@@ -24,6 +24,21 @@ export default function Chatbot({ token }) {
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(false);
 
+  const descargarFuente = async (ruta, etiqueta) => {
+    try {
+      const respuesta = await fetch(`${API_URL}${ruta}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!respuesta.ok) throw new Error('No se pudo descargar el recurso solicitado.');
+      const url = URL.createObjectURL(await respuesta.blob());
+      const enlace = document.createElement('a');
+      enlace.href = url;
+      enlace.download = etiqueta;
+      enlace.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      window.alert(error.message);
+    }
+  };
+
   // =========================================================
   // ENVÍO DE MENSAJE
   // =========================================================
@@ -811,6 +826,17 @@ export default function Chatbot({ token }) {
                   )}
                 </div>
 
+                {!esUsuario && msg.fuentes?.flatMap((fuente) => fuente.descargas || []).filter((descarga, indice, lista) => lista.findIndex((item) => item.ruta === descarga.ruta) === indice).map((descarga) => (
+                  <button
+                    type="button"
+                    key={descarga.ruta}
+                    onClick={() => descargarFuente(descarga.ruta, descarga.etiqueta)}
+                    style={{ marginTop: 8, marginRight: 8, border: 'none', borderRadius: 5, padding: '7px 10px', background: '#DD2226', color: '#fff', cursor: 'pointer', fontWeight: 600 }}
+                  >
+                    {descarga.etiqueta}
+                  </button>
+                ))}
+
               </div>
             );
           }
@@ -833,7 +859,6 @@ export default function Chatbot({ token }) {
                 '4px',
             }}
           >
-            Procesando consulta...
           </div>
         )}
       </div>
