@@ -14,6 +14,7 @@ import {
   FiUsers,
   FiX,
   FiMonitor,
+  FiTrash2,
 } from 'react-icons/fi';
 import { FaRobot } from 'react-icons/fa';
 import Chatbot from '../pages/Chatbot';
@@ -23,7 +24,8 @@ import SubirRecursos from './SubirRecursos';
 import Perfil from './Perfil';
 import Recursos from './Recursos';
 import Archivos from './Archivos';
-import EclipseTouch from './EclipseTouch';
+import MonitoreoPozos from './MonitoreoPozos';
+import Papelera from '../pages/Papelera';
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -32,9 +34,19 @@ export default function Dashboard({ usuario, token, onLogout, onUsuarioActualiza
 const [vistaActiva, setVistaActiva] = useState('inicio');
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
-  const [eclipseAbierto, setEclipseAbierto] = useState(false);
+  const [monitoreoAbierto, setMonitoreoAbierto] = useState(false);
   const panelAsistenteRef = useRef(null);
   const botonAsistenteRef = useRef(null);
+  const navRef = useRef(null);
+  const ocultarNavTimerRef = useRef(null);
+
+  const manejarScrollNav = () => {
+    const nav = navRef.current;
+    if (!nav) return;
+    nav.classList.add('scrolling');
+    if (ocultarNavTimerRef.current) clearTimeout(ocultarNavTimerRef.current);
+    ocultarNavTimerRef.current = setTimeout(() => nav.classList.remove('scrolling'), 500);
+  };
   const esAdministrador = normalizarRol(usuario?.rol) === 'administrador';
   const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(' ') || 'Usuario';
 
@@ -53,6 +65,7 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
     { id: 'inicio', label: 'Inicio', icon: FiHome },
     { id: 'recursos', label: 'Recursos', icon: FiBookOpen },
     { id: 'archivos', label: 'Archivos', icon: FiFolder },
+    { id: 'papelera', label: 'Papelera', icon: FiTrash2 },
     { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
@@ -74,6 +87,7 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
       case 'publicar-recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
       case 'facturacion': return <GestionFacturacion token={token} />;
+      case 'papelera': return <Papelera token={token} usuario={usuario} />;
       case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
       default:
         return (
@@ -125,10 +139,10 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
                   </span>
                   <FiExternalLink aria-hidden="true" />
                 </a>
-                <button type="button" className="company-inventory-link-button" onClick={() => setEclipseAbierto(true)}>
+                <button type="button" className="company-inventory-link-button" onClick={() => setMonitoreoAbierto(true)}>
                   <span>
-                    <strong>Eclipse Touch</strong>
-                    <small>Monitoreo de pozos - enlaces compartidos</small>
+                    <strong>Monitoreo de pozos</strong>
+                    <small>Monitoreo remoto en vivo - enlaces compartidos</small>
                   </span>
                   <FiMonitor aria-hidden="true" />
                 </button>
@@ -174,7 +188,7 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
           <span className="dashboard-role"><FiSettings aria-hidden="true" /> {esAdministrador ? 'Administrador' : (usuario?.rol || 'Usuario')}</span>
         </div>
 
-        <nav className="dashboard-nav" aria-label="Navegación principal">
+        <nav className="dashboard-nav" ref={navRef} onScroll={manejarScrollNav} aria-label="Navegación principal">
           <span className="dashboard-nav-title">General</span>
           {renderOpciones(opcionesPrincipales)}
 
@@ -207,12 +221,11 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
         <div className="dashboard-view">{renderVista()}</div>
       </main>
 
-      {eclipseAbierto && (
-        <EclipseTouch token={token} usuario={usuario} onCerrar={() => setEclipseAbierto(false)} />
+      {monitoreoAbierto && (
+        <MonitoreoPozos token={token} usuario={usuario} onCerrar={() => setMonitoreoAbierto(false)} />
       )}
 
-      {asistenteAbierto && (
-        <section className="floating-ai-panel" aria-label="Asistente Virtual IA" ref={panelAsistenteRef}>
+      <section className={`floating-ai-panel ${asistenteAbierto ? '' : 'closed'}`} aria-label="Asistente Virtual IA" aria-hidden={!asistenteAbierto} ref={panelAsistenteRef}>
           <header className="floating-ai-header">
             <div>
               <strong>Asistente Virtual IA</strong>
@@ -222,7 +235,6 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
             <Chatbot token={token} uid={usuario?.uid} />
           </div>
         </section>
-      )}
 
       <button
         type="button"

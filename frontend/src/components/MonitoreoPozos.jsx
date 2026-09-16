@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FiEdit2, FiExternalLink, FiLink, FiMonitor, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
@@ -22,19 +22,22 @@ function formatearFecha(valor) {
   }
 }
 
-export default function EclipseTouch({ token, usuario, onCerrar }) {
+export default function MonitoreoPozos({ token, usuario, onCerrar }) {
   const [enlaces, setEnlaces] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [nombrePozo, setNombrePozo] = useState('');
   const [lote, setLote] = useState('');
+  const [descripcion, setDescripcion] = useState('');
   const [link, setLink] = useState('');
   const [editandoId, setEditandoId] = useState(null);
+  const [confirmacion, setConfirmacion] = useState({ visible: false, item: null });
+  const ventanasAbiertas = useRef([]);
   const { notificarExito, notificarError } = useNotification();
   const esAdministrador = usuario?.rol?.toLowerCase() === 'administrador';
 
   const cargarEnlaces = async () => {
     try {
-      const respuesta = await apiFetch('/api/eclipse-touch', { headers: { Authorization: `Bearer ${token}` } });
+      const respuesta = await apiFetch('/api/monitoreo', { headers: { Authorization: `Bearer ${token}` } });
       const data = await respuesta.json();
       if (!respuesta.ok) throw new Error(data.error || 'No se pudieron cargar los enlaces.');
       setEnlaces(data.enlaces || []);
@@ -52,6 +55,11 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
     return () => document.removeEventListener('keydown', manejarTecla);
   }, []);
 
+  useEffect(() => {
+    const ventanas = ventanasAbiertas.current;
+    return () => ventanas.forEach((ventana) => ventana.close());
+  }, []);
+
   const abrirEnlace = (item) => {
     const ventana = window.open(item.link, '_blank');
     if (!ventana) {
@@ -59,7 +67,7 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
       return;
     }
     ventanasAbiertas.current.push(ventana);
-    notificarExito('Abriendo el enlace del pozo…', { titulo: 'Eclipse Touch' });
+    notificarExito('Abriendo el enlace del pozo…', { titulo: 'Monitoreo remoto' });
   };
 
   const guardar = async (event) => {
@@ -70,15 +78,15 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
     setCargando(true);
     try {
       const esEdicion = Boolean(editandoId);
-      const respuesta = await apiFetch(esEdicion ? `/api/eclipse-touch/${editandoId}` : '/api/eclipse-touch', {
+      const respuesta = await apiFetch(esEdicion ? `/api/monitoreo/${editandoId}` : '/api/monitoreo', {
         method: esEdicion ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ nombrePozo: nombrePozo.trim(), lote: lote.trim(), link: link.trim() }),
+        body: JSON.stringify({ nombrePozo: nombrePozo.trim(), lote: lote.trim(), descripcion: descripcion.trim(), link: link.trim() }),
       });
       const data = await respuesta.json();
       if (!respuesta.ok) throw new Error(data.error || 'No se pudo guardar el enlace.');
-      notificarExito(esEdicion ? 'Enlace actualizado correctamente.' : 'Enlace publicado correctamente.', { titulo: 'Eclipse Touch' });
-      setEditandoId(null); setNombrePozo(''); setLote(''); setLink('');
+      notificarExito(esEdicion ? 'Transmisión actualizada correctamente.' : 'Transmisión publicada correctamente.', { titulo: 'Monitoreo remoto' });
+      setEditandoId(null); setNombrePozo(''); setLote(''); setDescripcion(''); setLink('');
       await cargarEnlaces();
     } catch (error) {
       notificarError(error.message, { titulo: 'No se pudo guardar' });
@@ -91,18 +99,25 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
     setEditandoId(item.id);
     setNombrePozo(item.nombrePozo || '');
     setLote(item.lote || '');
+    setDescripcion(item.descripcion || '');
     setLink(item.link || '');
   };
 
   const cancelarEdicion = () => {
     setEditandoId(null);
-    setNombrePozo(''); setLote(''); setLink('');
+    setNombrePozo(''); setLote(''); setDescripcion(''); setLink('');
   };
 
   const eliminar = async (item) => {
-    if (!window.confirm(`¿Eliminar el enlace del pozo "${item.nombrePozo}"?`)) return;
+    setConfirmacion({ visible: true, item });
+  };
+
+  const confirmarEliminar = async () => {
+    const item = confirmacion.item;
+    setConfirmacion({ visible: false, item: null });
+    if (!item) return;
     try {
-      const respuesta = await apiFetch(`/api/eclipse-touch/${item.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+      const respuesta = await apiFetch(`/api/monitoreo/${item.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
       const data = await respuesta.json();
       if (!respuesta.ok) throw new Error(data.error || 'No se pudo eliminar el enlace.');
       setEnlaces((actual) => actual.filter((enlace) => enlace.id !== item.id));
@@ -113,28 +128,30 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
   };
 
   return (
-    <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Eclipse Touch" onClick={(event) => { if (event.target === event.currentTarget) onCerrar(); }}>
+    <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Monitoreo remoto de pozos" onClick={(event) => { if (event.target === event.currentTarget) onCerrar(); }}>
       <div className="eclipse-modal">
         <header className="eclipse-modal-header">
           <div>
-            <span className="dashboard-eyebrow">Monitoreo de pozos</span>
-            <h2>Eclipse Touch</h2>
+            <span className="dashboard-eyebrow">Monitoreo remoto en vivo</span>
           </div>
-          <button type="button" className="eclipse-modal-close" onClick={onCerrar} aria-label="Cerrar Eclipse Touch"><FiX aria-hidden="true" /></button>
+          <button type="button" className="eclipse-modal-close" onClick={onCerrar} aria-label="Cerrar Monitoreo de pozos"><FiX aria-hidden="true" /></button>
         </header>
 
         <div className="eclipse-modal-body">
-          <p className="eclipse-intro">Cualquier usuario activo puede publicar un enlace de Eclipse Touch indicando el nombre del pozo y su lote. Haz clic sobre un pozo para abrir su enlace directamente y administra el que compartiste.</p>
+          <p className="eclipse-intro">Cualquier usuario activo puede publicar una transmisión indicando pozo, lote y el enlace de monitoreo. En la descripción señala qué transmisión es (por ejemplo, Sureshot o Eclipse Touch). Haz clic sobre un pozo para abrir su enlace y administra el que compartiste.</p>
 
           <form className="compact-upload-form" onSubmit={guardar}>
-            <label>Nombre del pozo
+            <label>Pozo
               <input value={nombrePozo} onChange={(event) => setNombrePozo(event.target.value)} disabled={cargando} placeholder="Ej. Pozo Norte 12" />
             </label>
             <label>Lote
               <input value={lote} onChange={(event) => setLote(event.target.value)} disabled={cargando} placeholder="Ej. Lote X" />
             </label>
-            <label>Enlace <small>(URL)</small>
+            <label>Enlace
               <input value={link} onChange={(event) => setLink(event.target.value)} disabled={cargando} placeholder="https://..." />
+            </label>
+            <label>Descripción
+              <input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} placeholder="Ej. Transmisión Sureshot" />
             </label>
             <button className="profile-primary-button" type="submit" disabled={cargando}><FiLink aria-hidden="true" /> {cargando ? 'Guardando…' : (editandoId ? 'Guardar cambios' : 'Publicar enlace')}</button>
           </form>
@@ -144,7 +161,7 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
 
           <div className="eclipse-list">
             {enlaces.length === 0 ? (
-              <p>No hay enlaces de Eclipse Touch publicados todavía.</p>
+              <p>No hay transmisiones publicadas todavía.</p>
             ) : enlaces.map((item) => {
               const puedeAdministrar = esAdministrador || item.propietarioUid === usuario?.uid;
               return (
@@ -152,6 +169,7 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
                   <div style={{ minWidth: 0 }}>
                     <h3><FiMonitor aria-hidden="true" /> {item.nombrePozo}</h3>
                     <small>Lote {item.lote} · Publicado por {item.propietarioNombre || item.propietarioEmail || 'Usuario'} · {formatearFecha(item.fechaCreacion)}</small>
+                    {item.descripcion && <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: '#0f172a' }}>{item.descripcion}</div>}
                     <div>
                       <button type="button" className="eclipse-card-link" onClick={() => abrirEnlace(item)} title="Abrir enlace del pozo">
                         {item.link} <FiExternalLink aria-hidden="true" />
@@ -173,6 +191,19 @@ export default function EclipseTouch({ token, usuario, onCerrar }) {
           </div>
         </div>
       </div>
+
+      {confirmacion.visible && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setConfirmacion({ visible: false, item: null })}>
+          <div style={{ background: '#fff', borderRadius: 12, padding: '28px 32px', maxWidth: 420, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: '1px solid #e2e8f0' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>¿Eliminar la transmisión del pozo "{confirmacion.item?.nombrePozo}"?</div>
+            <p style={{ color: '#64748b', fontSize: 14, lineHeight: 1.6, margin: 0, marginBottom: 24 }}>El enlace ya no estará disponible para los demás usuarios.</p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setConfirmacion({ visible: false, item: null })} style={{ padding: '8px 18px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#374151', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Cancelar</button>
+              <button type="button" onClick={confirmarEliminar} style={{ padding: '8px 18px', border: 'none', borderRadius: 6, background: '#DC2626', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

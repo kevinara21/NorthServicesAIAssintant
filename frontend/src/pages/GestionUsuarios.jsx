@@ -3,7 +3,12 @@ import { apiFetch } from '../services/api';
 
 export default function GestionUsuarios({ token }) {
   const [usuarios, setUsuarios] = useState([]);
+  const [areasDisponibles, setAreasDisponibles] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [crearAreaPara, setCrearAreaPara] = useState(null);
+  const [crearRolPara, setCrearRolPara] = useState(null);
+  const [nuevaArea, setNuevaArea] = useState('');
+  const [nuevoRol, setNuevoRol] = useState('');
 
   const cargarUsuarios = async () => {
     try {
@@ -27,10 +32,34 @@ export default function GestionUsuarios({ token }) {
     cargarUsuarios();
   }, []);
 
+  useEffect(() => {
+    const areas = [...new Set(usuarios.map(u => (u.area || u.departamento || '').toLowerCase()).filter(Boolean))];
+    setAreasDisponibles(areas);
+  }, [usuarios]);
+
   const obtenerRolesDisponibles = () => {
     const rolesBase = ['tecnico', 'supervisor', 'administrador'];
     const rolesEnDB = usuarios.map(u => (u.rol || '').toLowerCase()).filter(Boolean);
     return Array.from(new Set([...rolesBase, ...rolesEnDB]));
+  };
+
+  const normalizarTexto = (valor) => valor.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  const crearAreaYAsignar = async (userId) => {
+    const nombre = normalizarTexto(nuevaArea);
+    if (!nombre) return;
+    setAreasDisponibles((prev) => Array.from(new Set([...prev, nombre])));
+    setCrearAreaPara(null);
+    setNuevaArea('');
+    await actualizarUsuario(userId, { area: nombre });
+  };
+
+  const crearRolYAsignar = async (userId) => {
+    const nombre = normalizarTexto(nuevoRol);
+    if (!nombre) return;
+    setCrearRolPara(null);
+    setNuevoRol('');
+    await actualizarUsuario(userId, { rol: nombre });
   };
 
   const actualizarUsuario = async (userId, nuevosDatos) => {
@@ -111,19 +140,69 @@ export default function GestionUsuarios({ token }) {
               <tr key={userId || index} style={{ borderBottom: '1px solid #f1f5f9' }}>
                 <td data-label="Usuario" style={{ padding: '12px' }}>{u.nombre} {u.apellido}</td>
                 <td data-label="Email" style={{ padding: '12px' }}>{u.email}</td>
-                <td data-label="Área" style={{ padding: '12px' }}>{areaActual}</td>
+                <td data-label="Área" style={{ padding: '12px' }}>
+                  {crearAreaPara === userId ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input
+                        value={nuevaArea}
+                        onChange={(e) => setNuevaArea(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); crearAreaYAsignar(userId); } }}
+                        placeholder="Nueva área"
+                        autoFocus
+                        style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', width: 110, background: '#FFFFFF', color: '#0f172a' }}
+                      />
+                      <button type="button" onClick={() => crearAreaYAsignar(userId)} style={{ background: '#16a34a', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}>OK</button>
+                      <button type="button" onClick={() => { setCrearAreaPara(null); setNuevaArea(''); }} style={{ background: 'transparent', color: '#64748b', border: 'none', padding: '4px 6px', cursor: 'pointer', fontWeight: 600 }}>✕</button>
+                    </div>
+                  ) : (
+                    <select
+                      value={areaActual.toLowerCase()}
+                      onChange={(e) => {
+                        if (e.target.value === '__crear_area__') { setCrearAreaPara(userId); setNuevaArea(''); }
+                        else { actualizarUsuario(userId, { area: e.target.value }); }
+                      }}
+                      style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', textTransform: 'capitalize' }}
+                    >
+                      {areasDisponibles.map((area) => (
+                        <option key={area} value={area} style={{ textTransform: 'capitalize' }}>
+                          {area}
+                        </option>
+                      ))}
+                      <option value="__crear_area__">＋ Crear nueva área...</option>
+                    </select>
+                  )}
+                </td>
                 <td data-label="Rol" style={{ padding: '12px' }}>
-                  <select
-                    value={rolActual}
-                    onChange={(e) => actualizarUsuario(userId, { rol: e.target.value })}
-                    style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', textTransform: 'capitalize' }}
-                  >
-                    {rolesDisponibles.map((rol) => (
-                      <option key={rol} value={rol} style={{ textTransform: 'capitalize' }}>
-                        {rol}
-                      </option>
-                    ))}
-                  </select>
+                  {crearRolPara === userId ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <input
+                        value={nuevoRol}
+                        onChange={(e) => setNuevoRol(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); crearRolYAsignar(userId); } }}
+                        placeholder="Nuevo rol"
+                        autoFocus
+                        style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', width: 110, background: '#FFFFFF', color: '#0f172a' }}
+                      />
+                      <button type="button" onClick={() => crearRolYAsignar(userId)} style={{ background: '#16a34a', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 600 }}>OK</button>
+                      <button type="button" onClick={() => { setCrearRolPara(null); setNuevoRol(''); }} style={{ background: 'transparent', color: '#64748b', border: 'none', padding: '4px 6px', cursor: 'pointer', fontWeight: 600 }}>✕</button>
+                    </div>
+                  ) : (
+                    <select
+                      value={rolActual}
+                      onChange={(e) => {
+                        if (e.target.value === '__crear_rol__') { setCrearRolPara(userId); setNuevoRol(''); }
+                        else { actualizarUsuario(userId, { rol: e.target.value }); }
+                      }}
+                      style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #cbd5e1', textTransform: 'capitalize' }}
+                    >
+                      {rolesDisponibles.map((rol) => (
+                        <option key={rol} value={rol} style={{ textTransform: 'capitalize' }}>
+                          {rol}
+                        </option>
+                      ))}
+                      <option value="__crear_rol__">＋ Crear nuevo rol...</option>
+                    </select>
+                  )}
                 </td>
                 <td data-label="Estado" style={{ padding: '12px' }}>
                   <span style={{

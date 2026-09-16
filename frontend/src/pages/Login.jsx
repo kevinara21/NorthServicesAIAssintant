@@ -140,7 +140,7 @@ function Login({ onLoginSuccess }) {
           <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
           <h2 className="login-heading">Recuperar contraseña</h2>
           <p className="login-subtitle">Recibirás un código por SMS en tu teléfono verificado.</p>
-          <label className="login-recovery-field">Usuario corporativo<input type="text" placeholder="ej. sergio.alvarado" value={usuarioPrefix} onChange={handleUserChange} required /></label>
+          <label className="login-recovery-field">Usuario corporativo<input type="text" placeholder="ej. nombre.apellido" value={usuarioPrefix} onChange={handleUserChange} required /></label>
           {otpEnviado && <>
             <label className="login-recovery-field">Código OTP<input value={codigo} onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength="6" required /></label>
             <label className="login-recovery-field">Nueva contraseña<span className="password-field"><input type={recoveryPasswordVisible ? 'text' : 'password'} value={nuevaPassword} onChange={(e) => setNuevaPassword(e.target.value)} minLength="6" required /><button type="button" className="password-toggle" onClick={() => setRecoveryPasswordVisible((visible) => !visible)} aria-label={recoveryPasswordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{recoveryPasswordVisible ? <FiEyeOff /> : <FiEye />}</button></span></label>
@@ -165,7 +165,7 @@ function Login({ onLoginSuccess }) {
           <div className="login-email-field" style={{ display: 'flex', alignItems: 'center', border: '1px solid #E5E7EB', borderRadius: 4, overflow: 'hidden' }}>
             <input
               type="text"
-              placeholder="ej. sergio.alvarado"
+              placeholder="ej. nombre.apellido"
               value={usuarioPrefix}
               onChange={handleUserChange}
               required
@@ -179,7 +179,7 @@ function Login({ onLoginSuccess }) {
         
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
-          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Contraseña" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
+          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
         </div>
         
         <button type="submit" disabled={cargando} style={{ width: '100%', padding: 10, cursor: 'pointer', background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>

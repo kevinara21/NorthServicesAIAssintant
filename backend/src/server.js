@@ -2110,7 +2110,9 @@ app.get('/api/archivos', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
     const snapshot = await db.collection('archivos').where('activo', '==', true).get();
-    const archivos = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
+    const archivos = snapshot.docs
+      .map((documento) => ({ id: documento.id, ...documento.data() }))
+      .filter((archivo) => archivo.eliminado !== true);
     res.json({ ok: true, archivos });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -2121,7 +2123,7 @@ app.get('/api/archivos/:id/download', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
     const documento = await db.collection('archivos').doc(req.params.id).get();
-    if (!documento.exists || documento.data().activo !== true) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
+    if (!documento.exists || documento.data().activo !== true || documento.data().eliminado === true) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
     const item = documento.data();
     const raizArchivos = path.resolve(__dirname, '../storage/archivos');
     const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal);
@@ -2142,12 +2144,12 @@ app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
     const esAdministrador = req.user.rol === 'administrador';
     if (!esAdministrador && item.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' });
 
-    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: req.params.id });
-    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
-    const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal);
-    await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
-    await referencia.delete();
-    res.json({ ok: true, mensaje: 'Archivo y su información indexada fueron eliminados.' });
+    await referencia.update({
+      eliminado: true,
+      eliminadoPor: req.user.uid,
+      eliminadoEn: new Date(),
+    });
+    res.json({ ok: true, mensaje: 'Archivo movido a la papelera.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2161,20 +2163,21 @@ app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
 // ============================================================
 
 function validarUrl(texto) {
-  const valor = String(texto || '').trim();
+  const valor = String(texto || '').replace(/[\u0000-\u0020\u007F-\u00A0\u2000-\u200F\u2028\u2029\u202F\u205F\u3000\uFEFF]+/g, '').trim();
   try {
     const url = new URL(valor);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
     return url.toString();
-  } catch {
+  } catch (error) {
+    console.log(`[validarUrl] rechazada: ${JSON.stringify(valor)} (original: ${JSON.stringify(String(texto || ''))})`);
     return '';
   }
 }
 
-app.get('/api/eclipse-touch', verifyToken, async (req, res) => {
+app.get('/api/monitoreo', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
-    const snapshot = await db.collection('eclipseTouch').orderBy('fechaCreacion', 'desc').get();
+    const snapshot = await db.collection('monitoreoPozos').orderBy('fechaCreacion', 'desc').get();
     const enlaces = snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() }));
     res.json({ ok: true, enlaces });
   } catch (error) {
@@ -2182,18 +2185,20 @@ app.get('/api/eclipse-touch', verifyToken, async (req, res) => {
   }
 });
 
-app.post('/api/eclipse-touch', verifyToken, async (req, res) => {
+app.post('/api/monitoreo', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
     const nombrePozo = String(req.body.nombrePozo || '').trim();
     const lote = String(req.body.lote || '').trim();
+    const descripcion = String(req.body.descripcion || '').trim();
     const link = validarUrl(req.body.link);
     if (!nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
     if (!lote) return res.status(400).json({ ok: false, error: 'El lote es obligatorio.' });
     if (!link) return res.status(400).json({ ok: false, error: 'Ingresa un enlace válido que empiece con http:// o https://.' });
-    const referencia = await db.collection('eclipseTouch').add({
+    const referencia = await db.collection('monitoreoPozos').add({
       nombrePozo,
       lote,
+      descripcion,
       link,
       propietarioUid: req.user.uid,
       propietarioNombre: [req.user.nombre, req.user.apellido].filter(Boolean).join(' ') || req.user.email,
@@ -2202,16 +2207,16 @@ app.post('/api/eclipse-touch', verifyToken, async (req, res) => {
       fechaCreacion: new Date(),
       actualizadoEn: new Date(),
     });
-    res.status(201).json({ ok: true, enlace: { id: referencia.id, nombrePozo, lote, link } });
+    res.status(201).json({ ok: true, enlace: { id: referencia.id, nombrePozo, lote, descripcion, link } });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
 
-app.put('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
+app.put('/api/monitoreo/:id', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
-    const referencia = db.collection('eclipseTouch').doc(req.params.id);
+    const referencia = db.collection('monitoreoPozos').doc(req.params.id);
     const documento = await referencia.get();
     if (!documento.exists) return res.status(404).json({ ok: false, error: 'Enlace no encontrado.' });
     const item = documento.data();
@@ -2220,6 +2225,7 @@ app.put('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
     const datos = {
       nombrePozo: String(req.body.nombrePozo ?? item.nombrePozo ?? '').trim(),
       lote: String(req.body.lote ?? item.lote ?? '').trim(),
+      descripcion: String(req.body.descripcion ?? item.descripcion ?? '').trim(),
       link: validarUrl(req.body.link ?? item.link),
     };
     if (!datos.nombrePozo) return res.status(400).json({ ok: false, error: 'El nombre del pozo es obligatorio.' });
@@ -2232,10 +2238,10 @@ app.put('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
   }
 });
 
-app.delete('/api/eclipse-touch/:id', verifyToken, async (req, res) => {
+app.delete('/api/monitoreo/:id', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
-    const referencia = db.collection('eclipseTouch').doc(req.params.id);
+    const referencia = db.collection('monitoreoPozos').doc(req.params.id);
     const documento = await referencia.get();
     if (!documento.exists) return res.status(404).json({ ok: false, error: 'Enlace no encontrado.' });
     const item = documento.data();
@@ -2830,6 +2836,38 @@ ${preguntaLimpia}
 );
 
 // ============================================================
+// ROLES Y ÁREAS PÚBLICOS (para formulario de registro)
+// ============================================================
+
+app.get('/api/roles', async (req, res) => {
+  try {
+    const snapshot = await db.collection('users').get();
+    const roles = new Set();
+    snapshot.forEach((doc) => {
+      const rol = (doc.data().rol || '').trim();
+      if (rol) roles.add(rol);
+    });
+    res.json({ ok: true, roles: [...roles].sort() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/areas', async (req, res) => {
+  try {
+    const snapshot = await db.collection('users').get();
+    const areas = new Set();
+    snapshot.forEach((doc) => {
+      const area = (doc.data().area || '').trim();
+      if (area) areas.add(area);
+    });
+    res.json({ ok: true, areas: [...areas].sort() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
 // GESTIÓN DE USUARIOS
 // ============================================================
 
@@ -2921,6 +2959,8 @@ function normalizarDatosPozo(datos = {}) {
     diaInicioPeriodo,
     diaPago,
     estadoPago: datos.estadoPago === 'pagado' ? 'pagado' : 'no_pagado',
+    monto: Number(datos.monto) || 0,
+    contrasena: String(datos.contrasena || '').trim(),
   };
 }
 
@@ -2983,21 +3023,21 @@ function calcularEstadoPago(datos) {
   if (!diaPago || !fechaUltimoPago) return 'no_pagado';
 
   const fechaHoy = convertirFechaPago(obtenerFechaHoy());
-  const pagoEnMesActual = fechaUltimoPago.anio === fechaHoy.anio
-    && fechaUltimoPago.mes === fechaHoy.mes;
+  if (!fechaHoy) return 'no_pagado';
 
-  if (fechaHoy.dia < diaPago) {
-    if (pagoEnMesActual && fechaUltimoPago.dia <= fechaHoy.dia) return 'pagado';
+  const diffMeses = (fechaHoy.anio - fechaUltimoPago.anio) * 12 + (fechaHoy.mes - fechaUltimoPago.mes);
+  const diaPagado = fechaUltimoPago.dia;
+  const diaHoy = fechaHoy.dia;
 
-    const fechaMesAnterior = new Date(Date.UTC(fechaHoy.anio, fechaHoy.mes - 1, 1));
-    const pagoEnMesAnterior = fechaUltimoPago.anio === fechaMesAnterior.getUTCFullYear()
-      && fechaUltimoPago.mes === fechaMesAnterior.getUTCMonth();
-    return pagoEnMesAnterior && fechaUltimoPago.dia >= diaPago ? 'pagado' : 'no_pagado';
+  if (diaPagado <= diaPago) {
+    if (diffMeses === 0) return diaHoy <= diaPago ? 'pagado' : 'no_pagado';
+    if (diffMeses === 1) return diaHoy <= diaPago ? 'pagado' : 'no_pagado';
+    return 'no_pagado';
   }
 
-  return pagoEnMesActual && fechaUltimoPago.dia >= diaPago
-    ? 'pagado'
-    : 'no_pagado';
+  if (diffMeses === 0) return diaHoy > diaPago ? 'pagado' : 'no_pagado';
+  if (diffMeses === 1) return diaHoy <= diaPago ? 'pagado' : 'no_pagado';
+  return 'no_pagado';
 }
 
 app.get(
@@ -3131,6 +3171,83 @@ app.put(
     }
   }
 );
+
+// ============================================================
+// PAPELERA - ELEMENTOS ELIMINADOS RECIENTEMENTE
+// ============================================================
+
+app.get('/api/papelera', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const esAdmin = req.user.rol === 'administrador';
+    const snapshot = await db.collection('archivos').where('eliminado', '==', true).get();
+    const items = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      if (!esAdmin && data.propietarioUid !== req.user.uid) return;
+      items.push({
+        id: doc.id,
+        tipo: 'archivo',
+        nombre: data.nombre || data.nombreArchivo,
+        descripcion: data.descripcion || '',
+        propietarioNombre: data.propietarioNombre || data.propietarioEmail || 'Usuario',
+        propietarioUid: data.propietarioUid,
+        eliminadoEn: data.eliminadoEn,
+        estadoIndexacion: data.estadoIndexacion || '',
+      });
+    });
+    items.sort((a, b) => {
+      const fechaA = a.eliminadoEn?.toDate ? a.eliminadoEn.toDate() : new Date(a.eliminadoEn || 0);
+      const fechaB = b.eliminadoEn?.toDate ? b.eliminadoEn.toDate() : new Date(b.eliminadoEn || 0);
+      return fechaB - fechaA;
+    });
+    res.json({ ok: true, items });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/papelera/:id/restaurar', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const referencia = db.collection('archivos').doc(req.params.id);
+    const doc = await referencia.get();
+    if (!doc.exists) return res.status(404).json({ ok: false, error: 'Elemento no encontrado.' });
+    const data = doc.data();
+    const esAdmin = req.user.rol === 'administrador';
+    if (!esAdmin && data.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'No tienes permiso para restaurar este elemento.' });
+
+    await referencia.update({
+      eliminado: false,
+      eliminadoPor: null,
+      eliminadoEn: null,
+    });
+    res.json({ ok: true, mensaje: 'Elemento restaurado correctamente.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.delete('/api/papelera/:id/definitivo', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const referencia = db.collection('archivos').doc(req.params.id);
+    const doc = await referencia.get();
+    if (!doc.exists) return res.status(404).json({ ok: false, error: 'Elemento no encontrado.' });
+    const data = doc.data();
+    const esAdmin = req.user.rol === 'administrador';
+    if (!esAdmin && data.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'No tienes permiso para eliminar permanentemente este elemento.' });
+
+    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: req.params.id });
+    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
+    const rutaArchivo = path.resolve(__dirname, '..', data.rutaLocal);
+    await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
+    await referencia.delete();
+    res.json({ ok: true, mensaje: 'Elemento eliminado permanentemente.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 // ============================================================
 // INICIAR SERVIDOR

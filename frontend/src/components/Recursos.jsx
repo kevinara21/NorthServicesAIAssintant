@@ -7,6 +7,7 @@ export default function Recursos({ token, esAdministrador }) {
   const [recursos, setRecursos] = useState([]);
   const [busqueda, setBusqueda] = useState('');
   const [cargando, setCargando] = useState(true);
+  const [confirmacion, setConfirmacion] = useState({ visible: false, titulo: '', mensaje: '', onConfirm: null });
   const { notificarError, notificarExito } = useNotification();
 
   const cargarRecursos = async () => {
@@ -39,14 +40,21 @@ export default function Recursos({ token, esAdministrador }) {
   };
 
   const eliminar = async (recurso) => {
-    if (!window.confirm(`¿Eliminar ${recurso.nombre}? Se borrarán las dos descargas y sus vectores de la IA.`)) return;
-    try {
-      const respuesta = await apiFetch(`/api/admin/recursos/${recurso.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      const data = await respuesta.json();
-      if (!respuesta.ok) throw new Error(data.error || 'No se pudo eliminar el recurso.');
-      setRecursos((actual) => actual.filter((item) => item.id !== recurso.id));
-      notificarExito(data.mensaje, { titulo: 'Recurso eliminado' });
-    } catch (error) { notificarError(error.message, { titulo: 'No se pudo eliminar' }); }
+    setConfirmacion({
+      visible: true,
+      titulo: `¿Eliminar "${recurso.nombre}"?`,
+      mensaje: 'Se borrarán el software, el manual y toda su información indexada para la IA. Esta acción es permanente.',
+      onConfirm: async () => {
+        setConfirmacion({ visible: false });
+        try {
+          const respuesta = await apiFetch(`/api/admin/recursos/${recurso.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+          const data = await respuesta.json();
+          if (!respuesta.ok) throw new Error(data.error || 'No se pudo eliminar el recurso.');
+          setRecursos((actual) => actual.filter((item) => item.id !== recurso.id));
+          notificarExito(data.mensaje, { titulo: 'Recurso eliminado' });
+        } catch (error) { notificarError(error.message, { titulo: 'No se pudo eliminar' }); }
+      },
+    });
   };
 
   if (cargando) return <p>Cargando recursos autorizados...</p>;
@@ -67,5 +75,17 @@ export default function Recursos({ token, esAdministrador }) {
         </div>
       </article>)}
     </div>
+    {confirmacion.visible && (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setConfirmacion({ visible: false })}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: '28px 32px', maxWidth: 420, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: '1px solid #e2e8f0' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>{confirmacion.titulo}</div>
+          <p style={{ color: '#64748b', fontSize: 14, lineHeight: 1.6, margin: 0, marginBottom: 24 }}>{confirmacion.mensaje}</p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" onClick={() => setConfirmacion({ visible: false })} style={{ padding: '8px 18px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#374151', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Cancelar</button>
+            <button type="button" onClick={confirmacion.onConfirm} style={{ padding: '8px 18px', border: 'none', borderRadius: 6, background: '#DC2626', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>Sí, eliminar</button>
+          </div>
+        </div>
+      </div>
+    )}
   </section>;
 }

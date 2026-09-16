@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FiEye, FiEyeOff } from 'react-icons/fi';
 import { createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, setDoc } from 'firebase/firestore';
@@ -23,8 +23,29 @@ export default function Register({ alVolverAlLogin }) {
 
   const { notificarExito, notificarError, notificarAdvertencia } = useNotification();
 
-  const areasExistentes = ['Sistemas', 'Operaciones', 'Mantenimiento', 'Administración', 'Crear nueva área...'];
-  const rolesExistentes = ['Técnico', 'Supervisor', 'Administrador', 'Crear nuevo rol...'];
+  const [areasExistentes, setAreasExistentes] = useState(['Sistemas', 'Operaciones', 'Mantenimiento', 'Administración', 'Crear nueva área...']);
+  const [rolesExistentes, setRolesExistentes] = useState(['Técnico', 'Supervisor', 'Administrador', 'Crear nuevo rol...']);
+
+  useEffect(() => {
+    fetch('/api/roles')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.roles) && data.roles.length) {
+          const normalizados = data.roles.map((r) => r.charAt(0).toUpperCase() + r.slice(1));
+          setRolesExistentes([...new Set(normalizados), 'Crear nuevo rol...']);
+        }
+      })
+      .catch(() => {});
+    fetch('/api/areas')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.ok && Array.isArray(data.areas) && data.areas.length) {
+          const normalizados = data.areas.map((a) => a.charAt(0).toUpperCase() + a.slice(1));
+          setAreasExistentes([...new Set(normalizados), 'Crear nueva área...']);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const emailGenerado = (nombre && apellido) 
     ? `${nombre.trim().toLowerCase()}.${apellido.trim().toLowerCase()}@northservices.com.pe` 
@@ -103,7 +124,7 @@ export default function Register({ alVolverAlLogin }) {
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Nombre</label>
           <input
             type="text"
-            placeholder="Nombre (ej. Sergio)"
+            placeholder="Nombre"
             value={nombre}
             onChange={(e) => setNombre(e.target.value.replace(/\s+/g, ''))}
             required
@@ -115,7 +136,7 @@ export default function Register({ alVolverAlLogin }) {
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Apellido</label>
           <input
             type="text"
-            placeholder="Apellido (ej. Alvarado)"
+            placeholder="Apellido"
             value={apellido}
             onChange={(e) => setApellido(e.target.value.replace(/\s+/g, ''))}
             required
@@ -136,7 +157,7 @@ export default function Register({ alVolverAlLogin }) {
 
         <div>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
-          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Contraseña (mínimo 6 caracteres)" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
+          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Mínimo 6 caracteres" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
         </div>
 
         <div>

@@ -78,6 +78,31 @@
   padding: 0;
 }
 
+/* ========== SCROLLBARS DEL SISTEMA ========== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(221, 34, 38, 0) transparent;
+}
+*::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+html.is-scrolling *::-webkit-scrollbar-thumb,
+*:hover::-webkit-scrollbar-thumb {
+  background: #DD2226;
+}
+html.is-scrolling *,
+*:hover {
+  scrollbar-color: #DD2226 transparent;
+}
+
 html {
   scroll-behavior: smooth;
   font-size: 16px;

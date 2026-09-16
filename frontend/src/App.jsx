@@ -10,6 +10,21 @@ function AppContent() {
   const [cargando, setCargando] = useState(true);
   const { notificarAdvertencia } = useNotification();
 
+  // Muestra los scrollbars rojos del sistema solo mientras el usuario se desplaza
+  useEffect(() => {
+    let timer;
+    const manejarScrollGlobal = () => {
+      document.documentElement.classList.add('is-scrolling');
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => document.documentElement.classList.remove('is-scrolling'), 600);
+    };
+    window.addEventListener('scroll', manejarScrollGlobal, true);
+    return () => {
+      window.removeEventListener('scroll', manejarScrollGlobal, true);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   const handleLogout = useCallback(() => {
     setUsuario(null);
     setToken(null);

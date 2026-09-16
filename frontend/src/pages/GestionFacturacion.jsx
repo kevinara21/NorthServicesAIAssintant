@@ -16,6 +16,15 @@ function calcularDiaPago(diaInicio) {
   return dia >= 1 && dia <= 31 ? (dia === 1 ? 31 : dia - 1) : '';
 }
 
+function generarContrasena(longitud = 12) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  let resultado = '';
+  const arreglo = new Uint8Array(longitud);
+  crypto.getRandomValues(arreglo);
+  for (let i = 0; i < longitud; i++) resultado += chars[arreglo[i] % chars.length];
+  return resultado;
+}
+
 function crearPozoVacio() {
   const diaActual = new Date().getDate();
   return {
@@ -24,6 +33,8 @@ function crearPozoVacio() {
     diaInicioPeriodo: diaActual,
     diaPago: calcularDiaPago(diaActual),
     estadoPago: 'no_pagado',
+    monto: 0,
+    contrasena: generarContrasena(),
   };
 }
 
@@ -141,6 +152,8 @@ export default function GestionFacturacion({ token }) {
           <label>Inicio del periodo<input type="date" value={formulario.fechaInicioPeriodo} onChange={(event) => cambiarCampo('fechaInicioPeriodo', event.target.value)} required /></label>
           <label>Día de pago<input type="number" value={formulario.diaPago} readOnly /></label>
           <label className="billing-status-field">Estado de pago<select value={formulario.estadoPago} onChange={(event) => cambiarCampo('estadoPago', event.target.value)}><option value="no_pagado">No pagado</option><option value="pagado">Pagado</option></select></label>
+          <label>Monto (S/)<input type="number" step="0.01" min="0" value={formulario.monto || ''} onChange={(event) => cambiarCampo('monto', event.target.value)} placeholder="0.00" /></label>
+          <label>Contraseña<input value={formulario.contrasena || ''} onChange={(event) => cambiarCampo('contrasena', event.target.value)} placeholder="Contraseña Starlink" /></label>
           <div className="billing-form-actions"><button className="profile-primary-button" type="submit" disabled={guardando}>{editando ? <><FiSave /> Guardar cambios</> : <><FiPlus /> Agregar pozo</>}</button></div>
         </div>
         <p className="billing-immutable-period">El pago vence un día antes del inicio. Para inicios los días 29, 30 o 31, Starlink ajusta el cobro al día 28.</p>
@@ -153,9 +166,16 @@ export default function GestionFacturacion({ token }) {
               <td data-label="Ubicación"><strong>{pozo.nombrePozo}</strong></td>
               <td data-label="Correo">{pozo.correo || 'Sin correo'}</td>
               <td data-label="Identificadores"><small>KIT S/N: {pozo.codigoKit || '-'}<br />Serie antena: {pozo.serieAntena || pozo.codigo4Pba || '-'}</small></td>
-              <td data-label="Periodo">Día {pozo.diaInicioPeriodo || pozo.periodoInicio || '-'} de cada mes</td>
-              <td data-label="Pago"><span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span><small>Vence día {pozo.diaPago || pozo.fechaPago || '-'}</small>{pozo.fechaUltimoPago && <small>Último pago: {pozo.fechaUltimoPago}</small>}</td>
-              <td data-label="Acción"><button className="billing-edit-button" type="button" onClick={() => editarPozo(pozo)}><FiEdit2 /> Editar</button></td>
+              <td data-label="Periodo" style={{ fontSize: 13, lineHeight: 1.6 }}>
+                El servicio vence el día {pozo.diaPago || '-'}<br />
+                <small>Cada día {pozo.diaInicioPeriodo || pozo.periodoInicio || '-'} inicia un nuevo ciclo de facturación.</small>
+              </td>
+              <td data-label="Pago" style={{ fontSize: 13, lineHeight: 1.6 }}>
+                <span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span><br />
+                {pozo.monto > 0 && <small>Monto: S/ {Number(pozo.monto).toFixed(2)}</small>}
+                {pozo.fechaUltimoPago && <><br /><small>Último pago: {pozo.fechaUltimoPago}</small></>}
+              </td>
+              <td data-label="Acción"><button className="billing-edit-button" type="button" onClick={() => editarPozo(pozo)}><FiEdit2 /></button></td>
             </tr>
           ))}
         </tbody></table>
