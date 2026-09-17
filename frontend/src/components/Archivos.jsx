@@ -126,8 +126,8 @@ export default function Archivos({ token, usuario }) {
             </div>
           )}
         </label>
-        <label>Nombre <small>(opcional)</small><input value={nombre} onChange={(event) => setNombre(event.target.value)} disabled={cargando} /></label>
-        <label>Descripción <small>(opcional)</small><input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} /></label>
+        <label>Nombre<input value={nombre} onChange={(event) => setNombre(event.target.value)} disabled={cargando} /></label>
+        <label>Descripción<input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} /></label>
         <button className="profile-primary-button" type="submit" disabled={cargando}><FiUploadCloud /> {cargando ? 'Procesando…' : 'Subir archivo'}</button>
       </form>
       <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, archivo o autor…" /></label>

@@ -4,7 +4,7 @@ import { API_URL } from '../services/api';
 
 export default function SubirRecursos({ token, alCompletar }) {
   const [nombre, setNombre] = useState('');
-  const [version, setVersion] = useState('v1.0');
+  const [version, setVersion] = useState('');
   const [descripcion, setDescripcion] = useState('');
 
   const [archivoZip, setArchivoZip] = useState(null);
@@ -137,7 +137,7 @@ export default function SubirRecursos({ token, alCompletar }) {
           });
 
           setNombre('');
-          setVersion('v1.0');
+          setVersion('');
           setDescripcion('');
           setArchivoZip(null);
           setArchivoPdf(null);
@@ -243,7 +243,7 @@ export default function SubirRecursos({ token, alCompletar }) {
           gap: 8,
         }}
       >
-        <FiUploadCloud aria-hidden="true" style={{ color: '#DD2226', fontSize: 20 }} />
+        <FiUploadCloud aria-hidden="true" style={{ color: '#000000', fontSize: 20 }} />
         Publicación de Recursos
       </h3>
 
@@ -319,8 +319,11 @@ export default function SubirRecursos({ token, alCompletar }) {
 
           <input
             className="resource-field"
-            type="text"
-            placeholder="Versión (ej. v1.0)"
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            min="0"
+            placeholder="Versión (ej. 1.0)"
             value={version}
             onChange={(e) => setVersion(e.target.value)}
             required={!soloManual}

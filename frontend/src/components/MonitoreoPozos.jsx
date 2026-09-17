@@ -142,16 +142,16 @@ export default function MonitoreoPozos({ token, usuario, onCerrar }) {
 
           <form className="compact-upload-form" onSubmit={guardar}>
             <label>Pozo
-              <input value={nombrePozo} onChange={(event) => setNombrePozo(event.target.value)} disabled={cargando} placeholder="Ej. Pozo Norte 12" />
+              <input value={nombrePozo} onChange={(event) => setNombrePozo(event.target.value)} disabled={cargando} placeholder="Ej. GAV-1XD" />
             </label>
             <label>Lote
-              <input value={lote} onChange={(event) => setLote(event.target.value)} disabled={cargando} placeholder="Ej. Lote X" />
-            </label>
-            <label>Enlace
-              <input value={link} onChange={(event) => setLink(event.target.value)} disabled={cargando} placeholder="https://..." />
+              <input value={lote} onChange={(event) => setLote(event.target.value)} disabled={cargando} placeholder="Ej. Lote VII" />
             </label>
             <label>Descripción
               <input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} placeholder="Ej. Transmisión Sureshot" />
+            </label>
+            <label>Enlace
+              <input value={link} onChange={(event) => setLink(event.target.value)} disabled={cargando} placeholder="https://..." />
             </label>
             <button className="profile-primary-button" type="submit" disabled={cargando}><FiLink aria-hidden="true" /> {cargando ? 'Guardando…' : (editandoId ? 'Guardar cambios' : 'Publicar enlace')}</button>
           </form>

@@ -157,8 +157,7 @@ function Login({ onLoginSuccess }) {
     <div className="login-page">
       <form onSubmit={handleLogin}>
         <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
-        <h2 className="login-heading" style={{ color: '#000000', marginBottom: '0.5rem' }}>AI Assistant</h2>
-        <p className="login-subtitle" style={{ color: '#666666', fontSize: 14, marginBottom: '1.5rem' }}>Ingreso a plataforma corporativa</p>
+        <h2 className="login-heading" style={{ color: '#000000', marginBottom: '2rem' }}>AI Assistant</h2>
         
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Usuario corporativo</label>

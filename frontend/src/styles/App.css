@@ -251,7 +251,7 @@
 .library-search:focus-within { border-color: #DD2226; box-shadow: 0 0 0 3px rgba(221, 34, 38, .12); }
 .library-search input { width: 100%; min-height: 42px; border: 0; outline: 0; background: #fff; color: var(--color-text-main); font: inherit; }
 .library-search input::placeholder { color: #94a3b8; }
-.compact-upload-form { display: grid; grid-template-columns: minmax(190px, 1.35fr) minmax(150px, 1fr) minmax(180px, 1.4fr) auto; align-items: end; gap: 12px; margin-top: 18px; padding: 14px 16px; background: #fff; border: 1px solid var(--color-light-border); border-radius: 10px; box-shadow: var(--shadow-sm); }
+.compact-upload-form { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr auto; align-items: end; gap: 10px; margin-top: 18px; padding: 14px 16px; background: #fff; border: 1px solid var(--color-light-border); border-radius: 10px; box-shadow: var(--shadow-sm); }
 .compact-upload-form label { display: flex; flex-direction: column; gap: 5px; color: var(--color-text-main); font-size: 12px; font-weight: 700; }
 .compact-upload-form label small { display: inline; color: var(--color-text-muted); font-weight: 500; }
 .compact-upload-form input { width: 100%; min-height: 38px; padding: 8px 9px; border: 1px solid var(--color-light-border); border-radius: 5px; background: #fff; color: var(--color-text-main); font: inherit; font-size: 13px; }
@@ -293,7 +293,7 @@
 .company-inventory-links { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px; width: 100%; }
 .company-inventory-links a { justify-content: space-between; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); }
 .company-inventory-links a:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.company-inventory-links .company-inventory-link-button { justify-content: space-between; width: 100%; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); font: inherit; text-align: left; cursor: pointer; transition: all var(--transition-fast); }
+.company-inventory-links .company-inventory-link-button { display: inline-flex; align-items: center; justify-content: space-between; width: 100%; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); font: inherit; text-align: left; cursor: pointer; transition: all var(--transition-fast); }
 .company-inventory-links .company-inventory-link-button:hover { border-color: var(--color-primary); color: var(--color-primary); }
 .company-inventory-links span { display: flex; flex-direction: column; gap: 6px; }
 .company-inventory-links strong { font-size: 14px; }

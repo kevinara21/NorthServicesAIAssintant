@@ -840,17 +840,6 @@ export default function Chatbot({ token, uid }) {
             >
               Asistente Virtual IA
             </div>
-
-            <div
-              style={{
-                fontSize:
-                  '14px',
-              }}
-            >
-              Haz una pregunta
-              sobre los manuales
-              técnicos...
-            </div>
           </div>
         )}
 
@@ -1000,7 +989,7 @@ export default function Chatbot({ token, uid }) {
               e.target.value
             )
           }
-          placeholder="Ej. ¿Cómo resuelvo el Error 402?"
+          placeholder="Haz una pregunta sobre los manuales técnicos..."
           disabled={
             cargando
           }

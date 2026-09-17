@@ -16,15 +16,6 @@ function calcularDiaPago(diaInicio) {
   return dia >= 1 && dia <= 31 ? (dia === 1 ? 31 : dia - 1) : '';
 }
 
-function generarContrasena(longitud = 12) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
-  let resultado = '';
-  const arreglo = new Uint8Array(longitud);
-  crypto.getRandomValues(arreglo);
-  for (let i = 0; i < longitud; i++) resultado += chars[arreglo[i] % chars.length];
-  return resultado;
-}
-
 function crearPozoVacio() {
   const diaActual = new Date().getDate();
   return {
@@ -34,7 +25,7 @@ function crearPozoVacio() {
     diaPago: calcularDiaPago(diaActual),
     estadoPago: 'no_pagado',
     monto: 0,
-    contrasena: generarContrasena(),
+    contrasena: '',
   };
 }
 
@@ -138,7 +129,7 @@ export default function GestionFacturacion({ token }) {
     <section className="billing-page">
       <div className="billing-heading">
         <span className="dashboard-eyebrow">Administración</span>
-        <h1>Pago de Starlink</h1>
+        <h1>Pagos de Starlink</h1>
         <p>Consulta y actualiza el estado de pago. El pago se calcula automáticamente un día antes del inicio del periodo.</p>
       </div>
 
@@ -153,7 +144,7 @@ export default function GestionFacturacion({ token }) {
           <label>Día de pago<input type="number" value={formulario.diaPago} readOnly /></label>
           <label className="billing-status-field">Estado de pago<select value={formulario.estadoPago} onChange={(event) => cambiarCampo('estadoPago', event.target.value)}><option value="no_pagado">No pagado</option><option value="pagado">Pagado</option></select></label>
           <label>Monto (S/)<input type="number" step="0.01" min="0" value={formulario.monto || ''} onChange={(event) => cambiarCampo('monto', event.target.value)} placeholder="0.00" /></label>
-          <label>Contraseña<input value={formulario.contrasena || ''} onChange={(event) => cambiarCampo('contrasena', event.target.value)} placeholder="Contraseña Starlink" /></label>
+          <label>Contraseña<input value={formulario.contrasena || ''} onChange={(event) => cambiarCampo('contrasena', event.target.value)}/></label>
           <div className="billing-form-actions"><button className="profile-primary-button" type="submit" disabled={guardando}>{editando ? <><FiSave /> Guardar cambios</> : <><FiPlus /> Agregar pozo</>}</button></div>
         </div>
         <p className="billing-immutable-period">El pago vence un día antes del inicio. Para inicios los días 29, 30 o 31, Starlink ajusta el cobro al día 28.</p>
