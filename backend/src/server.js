@@ -2620,6 +2620,31 @@ REGLAS IMPORTANTES:
   ni digas que falta la pregunta. Responde siempre a lo
   que el usuario realmente escribió.
 
+12. Si el usuario formula VARIAS preguntas en un mismo
+  mensaje (separadas por saltos de línea, "?", "." o ";"),
+  respóndelas TODAS, en el mismo orden en que las escribió,
+  numerándolas una por una (por ejemplo "1. ...", "2. ...").
+  No te limites a la primera.
+
+13. Si el usuario solicita descargar, recibir o pedir algún
+  archivo (manual, brochure, folleto, software, documento,
+  instalador, ficha técnica, catálogo, etc.), responde
+  indicando qué materiales existen y que están disponibles
+  para descarga mediante un BOTÓN clicable que el sistema
+  muestra junto con tu respuesta (evento "descargas").
+  PROHIBIDO: NUNCA escribas una ruta de la forma
+  "/api/..." como texto plano en tu respuesta (por ejemplo
+  NO escribas "/api/recursos/<id>/software/download" ni
+  variantes). El usuario no copiará esa ruta: el botón es la
+  única vía de descarga y la interfaz lo muestra al hacer
+  clic. Si el CONTEXTO RECUPERADO contiene la frase "puede
+  acceder a través de la ruta /api/...", NO la transcribas:
+  en su lugar di "pulsa el botón de descarga que aparece
+  junto al material". Si el archivo solicitado NO está entre
+  el material recuperado, dilo claramente y explica cómo
+  obtenerlo, pero nunca inventes un enlace ni muestres una
+  ruta cruda.
+
 CONTEXTO RECUPERADO:
 
 ${contextoRecuperado}
@@ -2675,7 +2700,7 @@ ${preguntaLimpia}
       // 8. FUENTES
       // ========================================================
 
-      const solicitaDescarga = /\b(descarga|descargar|download|software|instalador|archivo|manual)\b/i.test(preguntaLimpia);
+      const solicitaDescarga = /\b(descarga|descargar|download|software|instalador|archivo|archivos|manual|manuales|brochure|brochures|folleto|folletos|cat[áa]logo|cat[áa]logos|ficha|documento|documentos)\b/i.test(preguntaLimpia);
       const descargasPorFuente = new Map();
       if (solicitaDescarga) {
         const recursosIds = [...new Set(resultadosRelevantes.map((f) => f.recursoId).filter(Boolean))];
@@ -2688,15 +2713,15 @@ ${preguntaLimpia}
           if (!documento.exists || documento.data().activo !== true) return;
           const recurso = documento.data();
           const botones = [];
-          if (recurso.software?.rutaLocal) botones.push({ etiqueta: 'Descargar software', ruta: `/api/recursos/${id}/software/download` });
-          if (recurso.manual?.rutaLocal) botones.push({ etiqueta: 'Descargar manual', ruta: `/api/recursos/${id}/manual/download` });
+          if (recurso.software?.rutaLocal) botones.push({ etiqueta: recurso.software?.nombreArchivo || 'software', ruta: `/api/recursos/${id}/software/download` });
+          if (recurso.manual?.rutaLocal) botones.push({ etiqueta: recurso.manual?.nombreArchivo || 'manual', ruta: `/api/recursos/${id}/manual/download` });
           descargasPorFuente.set(`recurso:${id}`, botones);
         });
         archivos.forEach(({ id, documento }) => {
-          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: 'Descargar archivo', ruta: `/api/archivos/${id}/download` }]);
+          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'archivo', ruta: `/api/archivos/${id}/download` }]);
         });
         manuales.forEach(({ id, documento }) => {
-          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`manual:${id}`, [{ etiqueta: 'Descargar manual', ruta: `/api/manuales/${id}/download` }]);
+          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`manual:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'manual', ruta: `/api/manuales/${id}/download` }]);
         });
       }
 

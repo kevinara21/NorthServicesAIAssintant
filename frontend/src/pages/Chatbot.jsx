@@ -136,10 +136,26 @@ export default function Chatbot({ token, uid }) {
     try {
       const respuesta = await fetch(`${API_URL}${ruta}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!respuesta.ok) throw new Error('No se pudo descargar el recurso solicitado.');
-      const url = URL.createObjectURL(await respuesta.blob());
+      const blob = await respuesta.blob();
+      const url = URL.createObjectURL(blob);
+
+      // Usar el nombre REAL del archivo del header Content-Disposition
+      // (el que envía el backend) en lugar de la etiqueta del botón.
+      const disposicion = respuesta.headers.get('Content-Disposition') || '';
+      const coincidencia = disposicion.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)["']?/i);
+      const nombreArchivoReal = coincidencia
+        ? decodeURIComponent(coincidencia[1].trim())
+        : (etiqueta || 'archivo');
+
+      const descripcion = respuesta.headers.get('Content-Disposition') || '';
+      const partes = descripcion.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)["']?/i);
+      const nombreReal = partes
+        ? decodeURIComponent(partes[1].trim())
+        : (etiqueta || 'archivo');
+
       const enlace = document.createElement('a');
       enlace.href = url;
-      enlace.download = etiqueta;
+      enlace.download = nombreReal;
       enlace.click();
       URL.revokeObjectURL(url);
     } catch (error) {
