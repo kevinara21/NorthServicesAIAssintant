@@ -805,10 +805,10 @@ async function generarContenidoGemini(
     'gemini-3.5-flash';
 
   // ==========================================================
-  // CONFIGURACIÓN
+  // CONFIGURACI�"N
   // ==========================================================
 
-  const REQUEST_TIMEOUT = 30000;
+  const REQUEST_TIMEOUT = 90000;
 
   const generationConfig = {
     maxOutputTokens: 256,
