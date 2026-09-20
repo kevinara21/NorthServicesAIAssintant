@@ -2145,22 +2145,114 @@ app.get('/api/archivos/:id/download', verifyToken, async (req, res) => {
   }
 });
 
+const DIAS_RETENCION_PAPELERA = 30;
+const MS_RETENCION_PAPELERA = DIAS_RETENCION_PAPELERA * 24 * 60 * 60 * 1000;
+
+function parseFechaFirestore(valor) {
+  if (!valor) return null;
+  if (valor instanceof Date) return Number.isNaN(valor.getTime()) ? null : valor;
+  if (typeof valor.toDate === 'function') {
+    const fecha = valor.toDate();
+    return Number.isNaN(fecha.getTime()) ? null : fecha;
+  }
+  if (typeof valor === 'object') {
+    const segundos = valor._seconds ?? valor.seconds;
+    if (typeof segundos === 'number') return new Date(segundos * 1000);
+  }
+  const fecha = new Date(valor);
+  return Number.isNaN(fecha.getTime()) ? null : fecha;
+}
+
+function fechaAISO(valor) {
+  const fecha = parseFechaFirestore(valor);
+  return fecha ? fecha.toISOString() : null;
+}
+
+function nombreUsuarioActual(user) {
+  return [user?.nombre, user?.apellido].filter(Boolean).join(' ') || user?.email || 'Usuario';
+}
+
+function puedeGestionarArchivo(user, item) {
+  return user.rol === 'administrador' || item.propietarioUid === user.uid;
+}
+
+async function moverArchivoAPapelera(id, user) {
+  const referencia = db.collection('archivos').doc(id);
+  const documento = await referencia.get();
+  if (!documento.exists) return { id, ok: false, error: 'Archivo no encontrado.' };
+  const item = documento.data();
+  if (item.eliminado === true) return { id, ok: false, error: 'El archivo ya está en la papelera.' };
+  if (!puedeGestionarArchivo(user, item)) return { id, ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' };
+  await referencia.update({
+    eliminado: true,
+    eliminadoPor: user.uid,
+    eliminadoPorNombre: nombreUsuarioActual(user),
+    eliminadoEn: new Date(),
+  });
+  return { id, ok: true };
+}
+
+async function eliminarArchivoPermanentemente(id, data) {
+  try {
+    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: id });
+  } catch (error) {
+    console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id}:`, error.message);
+  }
+  if (data?.rutaLocal) {
+    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
+    const rutaArchivo = path.resolve(__dirname, '..', data.rutaLocal);
+    await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
+  }
+  await db.collection('archivos').doc(id).delete();
+}
+
+async function purgarPapeleraExpirada() {
+  const snapshot = await db.collection('archivos').where('eliminado', '==', true).get();
+  const ahora = Date.now();
+  let purgados = 0;
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    const fecha = parseFechaFirestore(data.eliminadoEn);
+    if (!fecha || ahora - fecha.getTime() < MS_RETENCION_PAPELERA) continue;
+    try {
+      await eliminarArchivoPermanentemente(doc.id, data);
+      purgados += 1;
+    } catch (error) {
+      console.error(`[PAPELERA] No se pudo purgar ${doc.id}:`, error.message);
+    }
+  }
+  if (purgados) console.log(`[PAPELERA] Se eliminaron ${purgados} archivo(s) con más de ${DIAS_RETENCION_PAPELERA} días.`);
+  return purgados;
+}
+
 app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
-    const referencia = db.collection('archivos').doc(req.params.id);
-    const documento = await referencia.get();
-    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
-    const item = documento.data();
-    const esAdministrador = req.user.rol === 'administrador';
-    if (!esAdministrador && item.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' });
+    const resultado = await moverArchivoAPapelera(req.params.id, req.user);
+    if (!resultado.ok) return res.status(resultado.error === 'Archivo no encontrado.' ? 404 : 403).json({ ok: false, error: resultado.error });
+    res.json({ ok: true, mensaje: 'Archivo movido a la papelera. El contenido se mantiene disponible para la IA durante 30 días.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
-    await referencia.update({
-      eliminado: true,
-      eliminadoPor: req.user.uid,
-      eliminadoEn: new Date(),
+app.post('/api/archivos/lote/eliminar', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ ok: false, error: 'Selecciona al menos un archivo.' });
+    const resultados = [];
+    for (const id of ids) resultados.push(await moverArchivoAPapelera(id, req.user));
+    const procesados = resultados.filter((item) => item.ok).length;
+    const fallidos = resultados.filter((item) => !item.ok);
+    res.json({
+      ok: true,
+      procesados,
+      fallidos,
+      mensaje: procesados
+        ? `${procesados} archivo${procesados === 1 ? '' : 's'} enviado${procesados === 1 ? '' : 's'} a la papelera. El contenido se mantiene disponible para la IA.`
+        : 'No se pudo enviar ningún archivo a la papelera.',
     });
-    res.json({ ok: true, mensaje: 'Archivo movido a la papelera.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2493,12 +2585,114 @@ app.post(
       );
 
       // ========================================================
-      // 4. NO HAY INFORMACIÓN
+      // 4. CONSULTA STARLINK BOT
+      // ========================================================
+
+      const inicioStarlink = Date.now();
+      let contextoStarlink = '';
+
+      // Detectar si la pregunta está relacionada con Starlink
+      const palabrasClaveStarlink = ['starlink', 'internet', 'satelital', 'vencer', 'pago', 'facturación', 'servicio', 'antena', 'kit', 'conexión'];
+      const preguntaMinuscula = preguntaLimpia.toLowerCase();
+      const esPreguntaStarlink = palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
+
+      console.log(`[CHAT] Pregunta: "${preguntaLimpia}"`);
+      console.log(`[CHAT] ¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
+
+      if (esPreguntaStarlink) {
+        try {
+          console.log('[CHAT] Consultando colección starlink_bot...');
+          const mongoDb = getDB();
+          const datosStarlink = await mongoDb.collection('starlink_bot').find({}).toArray();
+          console.log(`[CHAT] Se encontraron ${datosStarlink.length} registros de Starlink`);
+          
+          if (datosStarlink.length > 0) {
+            const hoy = new Date();
+            const diaActual = hoy.getDate();
+            const mesActual = hoy.getMonth() + 1;
+            const añoActual = hoy.getFullYear();
+
+            // Calcular pozos que vencen pronto (próximos 7 días)
+            const pozosPorVencer = datosStarlink.filter(pozo => {
+              if (!pozo.diaPago || pozo.estadoPago === 'pagado') return false;
+              const diaPago = Number(pozo.diaPago);
+              const diasHastaPago = diaPago - diaActual;
+              return diasHastaPago >= 0 && diasHastaPago <= 7;
+            });
+
+            // Calcular pozos vencidos
+            const pozosVencidos = datosStarlink.filter(pozo => {
+              if (!pozo.diaPago || pozo.estadoPago === 'pagado') return false;
+              const diaPago = Number(pozo.diaPago);
+              return diaPago < diaActual;
+            });
+
+            contextoStarlink = `
+INFORMACIÓN DE STARLINK
+========================
+Total de equipos: ${datosStarlink.length}
+
+ESTADO DE PAGOS:
+- Equipos pagados: ${datosStarlink.filter(p => p.estadoPago === 'pagado').length}
+- Equipos no pagados: ${datosStarlink.filter(p => p.estadoPago === 'no_pagado').length}
+
+ESTADO DE SERVICIO:
+- Equipos activos: ${datosStarlink.filter(p => p.estadoActivo).length}
+- Equipos inactivos: ${datosStarlink.filter(p => !p.estadoActivo).length}
+
+${pozosPorVencer.length > 0 ? `
+⚠️ EQUIPOS POR VENCER (próximos 7 días):
+${pozosPorVencer.map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): Vence el día ${p.diaPago}, Monto: S/ ${p.monto}${!p.estadoActivo ? ' [INACTIVO]' : ''}`).join('\n')}
+` : ''}
+
+${pozosVencidos.length > 0 ? `
+🚨 EQUIPOS VENCIDOS:
+${pozosVencidos.map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): Venció el día ${p.diaPago}, Monto: S/ ${p.monto}${!p.estadoActivo ? ' [INACTIVO]' : ''}`).join('\n')}
+` : ''}
+
+${datosStarlink.filter(p => p.comentario && p.comentario.trim()).length > 0 ? `
+📝 COMENTARIOS DE EQUIPOS:
+${datosStarlink.filter(p => p.comentario && p.comentario.trim()).map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): ${p.comentario}`).join('\n')}
+` : ''}
+
+DETALLE DE EQUIPOS:
+${datosStarlink.map(p => `
+• ${p.ubicacion}
+  - Código KIT: ${p.codigoKit}
+  - Serie Antena: ${p.serieAntena}
+  - Correo: ${p.correo}
+  - Día de pago: ${p.diaPago}
+  - Estado: ${p.estadoPago === 'pagado' ? '✅ Pagado' : '❌ No pagado'}
+  - Servicio: ${p.estadoActivo ? '✅ Activo' : '❌ Inactivo'}
+  - Monto: S/ ${p.monto}
+  - Inicio periodo: ${p.fechaInicioPeriodo}
+  ${p.comentario ? `- Comentario: ${p.comentario}` : ''}
+`).join('\n')}
+`;
+          }
+        } catch (error) {
+          console.error('[CHAT] Error al consultar Starlink:', error.message);
+          console.error('[CHAT] Stack:', error.stack);
+        }
+      } else {
+        console.log('[CHAT] No se detectó pregunta de Starlink, usando solo RAG de manuales');
+      }
+
+      const tiempoStarlink = Date.now() - inicioStarlink;
+      console.log(`[CHAT] Starlink: ${tiempoStarlink} ms`);
+      console.log(`[CHAT] Contexto Starlink generado: ${contextoStarlink ? 'SÍ' : 'NO'}`);
+      if (contextoStarlink) {
+        console.log(`[CHAT] Longitud contexto Starlink: ${contextoStarlink.length} caracteres`);
+      }
+
+      // ========================================================
+      // 5. NO HAY INFORMACIÓN
       // ========================================================
 
       if (
         resultadosRelevantes.length ===
-        0
+        0 &&
+        !contextoStarlink
       ) {
         const tiempoTotal =
           Date.now() -
@@ -2580,6 +2774,11 @@ ${
             '\n\n'
           );
 
+      // Agregar contexto de Starlink si está disponible
+      const contextoCompleto = contextoStarlink 
+        ? `${contextoStarlink}\n\n${contextoRecuperado}`
+        : contextoRecuperado;
+
       const tiempoContexto =
         Date.now() -
         inicioContexto;
@@ -2592,34 +2791,39 @@ ${
 Eres el Asistente Virtual Oficial de North Services.
 
 Tu función es responder preguntas relacionadas con los manuales,
-procedimientos y documentación técnica disponibles.
+procedimientos, documentación técnica y sistemas de la empresa
+(incluyendo información de Starlink cuando esté disponible).
 
 REGLAS IMPORTANTES:
 
-1. Responde ÚNICAMENTE utilizando la información proporcionada
-   en CONTEXTO RECUPERADO.
+1. Responde utilizando la información proporcionada en CONTEXTO
+   (incluye tanto manuales técnicos como información de sistemas
+   como Starlink).
 
-2. No inventes información.
+2. Para preguntas sobre Starlink, usa específicamente la sección
+   "INFORMACIÓN DE STARLINK" que aparece en el contexto.
 
-3. No completes datos que no aparezcan en los manuales.
+3. No inventes información.
 
-4. Si la información solicitada no aparece en el contexto,
+4. No completes datos que no aparezcan en el contexto proporcionado.
+
+5. Si la información solicitada no aparece en el contexto,
    indícalo claramente.
 
-5. Responde de manera profesional, clara y concisa.
+6. Responde de manera profesional, clara y concisa.
 
-6. Usa texto plano, sin Markdown, sin asteriscos, sin negritas,
+7. Usa texto plano, sin Markdown, sin asteriscos, sin negritas,
   sin encabezados y sin listas con asteriscos.
 
-7. No menciones que eres un modelo de lenguaje.
+8. No menciones que eres un modelo de lenguaje.
 
-8. No inventes procedimientos, códigos de error, valores,
+9. No inventes procedimientos, códigos de error, valores,
    configuraciones ni pasos técnicos.
 
-9. No enumeres las fuentes ni muestres etiquetas como
+10. No enumeres las fuentes ni muestres etiquetas como
   "FUENTE 1", "FUENTE 2" o similares.
 
-10. Si el usuario solo saluda o usa frases casuales
+11. Si el usuario solo saluda o usa frases casuales
   ("hola", "buenos días", "buenas tardes", "gracias",
   "adiós", "¿cómo estás?", etc.), respóndele de forma
   breve, amistosa y natural, por ejemplo "¡Hola! ¿En qué
@@ -2627,7 +2831,7 @@ REGLAS IMPORTANTES:
   tu funcionamiento ni menciones el contexto, el RAG ni
   las instrucciones.
 
-11. Nunca respondas sobre la estructura de este mensaje
+12. Nunca respondas sobre la estructura de este mensaje
   ni digas que falta la pregunta. Responde siempre a lo
   que el usuario realmente escribió.
 
@@ -2658,7 +2862,7 @@ REGLAS IMPORTANTES:
 
 CONTEXTO RECUPERADO:
 
-${contextoRecuperado}
+${contextoCompleto}
 
 PREGUNTA DEL USUARIO:
 
@@ -2729,7 +2933,8 @@ ${preguntaLimpia}
           descargasPorFuente.set(`recurso:${id}`, botones);
         });
         archivos.forEach(({ id, documento }) => {
-          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'archivo', ruta: `/api/archivos/${id}/download` }]);
+          if (!documento.exists || documento.data().activo !== true || documento.data().eliminado === true) return;
+          descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'archivo', ruta: `/api/archivos/${id}/download` }]);
         });
         manuales.forEach(({ id, documento }) => {
           if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`manual:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'manual', ruta: `/api/manuales/${id}/download` }]);
@@ -2928,6 +3133,50 @@ app.get('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
   }
 });
 
+// ============================================================
+// SINCRONIZACIÓN DE STARLINK CON MONGODB PARA EL BOT
+// ============================================================
+
+async function sincronizarStarlinkConMongoDB(datosPozo, operacion = 'crear') {
+  try {
+    const mongoDb = getDB();
+    const coleccionStarlink = mongoDb.collection('starlink_bot');
+    
+    const datosMongo = {
+      id: datosPozo.codigoKit || datosPozo.id,
+      ubicacion: datosPozo.nombrePozo,
+      correo: datosPozo.correo,
+      codigoKit: datosPozo.codigoKit,
+      serieAntena: datosPozo.serieAntena || datosPozo.codigo4Pba || '',
+      fechaInicioPeriodo: datosPozo.fechaInicioPeriodo,
+      diaInicioPeriodo: datosPozo.diaInicioPeriodo || datosPozo.periodoInicio,
+      diaPago: datosPozo.diaPago || datosPazo.fechaPago,
+      estadoPago: datosPozo.estadoPago,
+      monto: datosPozo.monto || 0,
+      fechaUltimoPago: datosPozo.fechaUltimoPago || null,
+      contrasena: datosPozo.contrasena || '',
+      estadoActivo: datosPozo.estadoActivo !== false, // Por defecto true
+      comentario: datosPozo.comentario || '',
+      actualizadoEn: new Date(),
+    };
+
+    if (operacion === 'crear' || operacion === 'actualizar') {
+      await coleccionStarlink.updateOne(
+        { id: datosMongo.id },
+        { $set: datosMongo },
+        { upsert: true }
+      );
+      console.log(`[MONGODB] Starlink ${operacion}orrectamente: ${datosMongo.id}`);
+    } else if (operacion === 'eliminar') {
+      await coleccionStarlink.deleteOne({ id: datosMongo.id });
+      console.log(`[MONGODB] Starlink eliminado: ${datosMongo.id}`);
+    }
+  } catch (error) {
+    console.error(`[MONGODB] Error al sincronizar Starlink:`, error.message);
+    // No fallamos la operación principal si falla la sincronización con MongoDB
+  }
+}
+
 app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
   try {
     const datos = normalizarDatosPozo(req.body);
@@ -2938,6 +3187,10 @@ app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
       : datos;
     const referencia = db.collection('facturacionStarlink').doc(datos.codigoKit);
     await referencia.set({ ...datosConPago, creadoEn: FieldValue.serverTimestamp(), actualizadoEn: FieldValue.serverTimestamp() });
+    
+    // Sincronizar con MongoDB para el bot
+    await sincronizarStarlinkConMongoDB({ ...datosConPago, id: datos.codigoKit }, 'crear');
+    
     res.status(201).json({ ok: true, pozo: { id: datos.codigoKit, ...datosConPago } });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
@@ -2975,9 +3228,92 @@ app.put('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) =
       ...cambiosPago,
       actualizadoEn: FieldValue.serverTimestamp(),
     });
+    
+    // Sincronizar con MongoDB para el bot
+    await sincronizarStarlinkConMongoDB({ ...datos, id: req.params.id, fechaUltimoPago }, 'actualizar');
+    
     res.json({ ok: true, pozo: { id: req.params.id, ...datos, fechaUltimoPago } });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
+  }
+});
+
+// Endpoint para eliminar un pozo de Starlink
+app.delete('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const referencia = db.collection('facturacionStarlink').doc(req.params.id);
+    const documento = await referencia.get();
+    if (!documento.exists) return res.status(404).json({ ok: false, error: 'Pozo no encontrado.' });
+    
+    const datos = documento.data();
+    
+    // Sincronizar eliminación con MongoDB
+    await sincronizarStarlinkConMongoDB({ ...datos, id: req.params.id }, 'eliminar');
+    
+    await referencia.delete();
+    res.json({ ok: true, mensaje: 'Pozo eliminado correctamente.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Endpoint para sincronización manual de todos los datos con MongoDB
+app.post('/api/admin/starlink/sync-mongodb', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const snapshot = await db.collection('facturacionStarlink').get();
+    const pozos = snapshot.docs.map((documento) => {
+      const datos = documento.data();
+      return {
+        id: documento.id,
+        ...datos,
+        estadoPago: calcularEstadoPago(datos),
+      };
+    });
+    
+    // Actualizar registros existentes con los nuevos campos si no los tienen
+    for (const pozo of pozos) {
+      const actualizaciones = {};
+      if (pozo.estadoActivo === undefined) {
+        actualizaciones.estadoActivo = true; // Por defecto activo
+      }
+      if (pozo.comentario === undefined) {
+        actualizaciones.comentario = ''; // Por defecto vacío
+      }
+      
+      if (Object.keys(actualizaciones).length > 0) {
+        await db.collection('facturacionStarlink').doc(pozo.id).update(actualizaciones);
+        console.log(`[STARLINK] Actualizado registro ${pozo.id} con nuevos campos`);
+      }
+    }
+    
+    let sincronizados = 0;
+    let errores = 0;
+    
+    for (const pozo of pozos) {
+      try {
+        // Asegurar que los datos tengan los nuevos campos antes de sincronizar
+        const datosCompletos = {
+          ...pozo,
+          estadoActivo: pozo.estadoActivo !== false,
+          comentario: pozo.comentario || '',
+        };
+        await sincronizarStarlinkConMongoDB(datosCompletos, 'actualizar');
+        sincronizados++;
+      } catch (error) {
+        console.error(`Error sincronizando ${pozo.id}:`, error.message);
+        errores++;
+      }
+    }
+    
+    res.json({ 
+      ok: true, 
+      mensaje: `Sincronización completada: ${sincronizados} pozos sincronizados, ${errores} errores. Registros actualizados con nuevos campos.`,
+      sincronizados,
+      errores,
+      total: pozos.length
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
   }
 });
 
@@ -2997,6 +3333,8 @@ function normalizarDatosPozo(datos = {}) {
     estadoPago: datos.estadoPago === 'pagado' ? 'pagado' : 'no_pagado',
     monto: Number(datos.monto) || 0,
     contrasena: String(datos.contrasena || '').trim(),
+    estadoActivo: datos.estadoActivo !== false, // Por defecto true
+    comentario: String(datos.comentario || '').trim(),
   };
 }
 
@@ -3215,29 +3553,94 @@ app.put(
 app.get('/api/papelera', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
+    await purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar:', error.message));
     const esAdmin = req.user.rol === 'administrador';
     const snapshot = await db.collection('archivos').where('eliminado', '==', true).get();
     const items = [];
     snapshot.forEach((doc) => {
       const data = doc.data();
       if (!esAdmin && data.propietarioUid !== req.user.uid) return;
+      const eliminadoEn = fechaAISO(data.eliminadoEn);
+      const fecha = parseFechaFirestore(data.eliminadoEn);
+      const diasRestantes = fecha
+        ? Math.max(0, Math.ceil((fecha.getTime() + MS_RETENCION_PAPELERA - Date.now()) / (24 * 60 * 60 * 1000)))
+        : DIAS_RETENCION_PAPELERA;
       items.push({
         id: doc.id,
         tipo: 'archivo',
         nombre: data.nombre || data.nombreArchivo,
+        nombreArchivo: data.nombreArchivo || data.nombre || '',
         descripcion: data.descripcion || '',
         propietarioNombre: data.propietarioNombre || data.propietarioEmail || 'Usuario',
         propietarioUid: data.propietarioUid,
-        eliminadoEn: data.eliminadoEn,
+        eliminadoPor: data.eliminadoPor || '',
+        eliminadoPorNombre: data.eliminadoPorNombre || data.propietarioNombre || data.propietarioEmail || 'Usuario',
+        eliminadoEn,
+        diasRestantes,
         estadoIndexacion: data.estadoIndexacion || '',
       });
     });
-    items.sort((a, b) => {
-      const fechaA = a.eliminadoEn?.toDate ? a.eliminadoEn.toDate() : new Date(a.eliminadoEn || 0);
-      const fechaB = b.eliminadoEn?.toDate ? b.eliminadoEn.toDate() : new Date(b.eliminadoEn || 0);
-      return fechaB - fechaA;
+    items.sort((a, b) => new Date(b.eliminadoEn || 0) - new Date(a.eliminadoEn || 0));
+    res.json({ ok: true, items, diasRetencion: DIAS_RETENCION_PAPELERA });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/papelera/lote/restaurar', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ ok: false, error: 'Selecciona al menos un elemento.' });
+    let procesados = 0;
+    const fallidos = [];
+    for (const id of ids) {
+      const referencia = db.collection('archivos').doc(id);
+      const doc = await referencia.get();
+      if (!doc.exists) { fallidos.push({ id, error: 'Elemento no encontrado.' }); continue; }
+      const data = doc.data();
+      if (!puedeGestionarArchivo(req.user, data)) { fallidos.push({ id, error: 'Sin permiso.' }); continue; }
+      await referencia.update({
+        eliminado: false,
+        eliminadoPor: null,
+        eliminadoPorNombre: null,
+        eliminadoEn: null,
+      });
+      procesados += 1;
+    }
+    res.json({
+      ok: true,
+      procesados,
+      fallidos,
+      mensaje: procesados ? `${procesados} elemento${procesados === 1 ? '' : 's'} restaurado${procesados === 1 ? '' : 's'}.` : 'No se restauró ningún elemento.',
     });
-    res.json({ ok: true, items });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/papelera/lote/definitivo', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter(Boolean) : [];
+    if (!ids.length) return res.status(400).json({ ok: false, error: 'Selecciona al menos un elemento.' });
+    let procesados = 0;
+    const fallidos = [];
+    for (const id of ids) {
+      const referencia = db.collection('archivos').doc(id);
+      const doc = await referencia.get();
+      if (!doc.exists) { fallidos.push({ id, error: 'Elemento no encontrado.' }); continue; }
+      const data = doc.data();
+      if (!puedeGestionarArchivo(req.user, data)) { fallidos.push({ id, error: 'Sin permiso.' }); continue; }
+      await eliminarArchivoPermanentemente(id, data);
+      procesados += 1;
+    }
+    res.json({
+      ok: true,
+      procesados,
+      fallidos,
+      mensaje: procesados ? `${procesados} elemento${procesados === 1 ? '' : 's'} eliminado${procesados === 1 ? '' : 's'} permanentemente.` : 'No se eliminó ningún elemento.',
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -3256,6 +3659,7 @@ app.post('/api/papelera/:id/restaurar', verifyToken, async (req, res) => {
     await referencia.update({
       eliminado: false,
       eliminadoPor: null,
+      eliminadoPorNombre: null,
       eliminadoEn: null,
     });
     res.json({ ok: true, mensaje: 'Elemento restaurado correctamente.' });
@@ -3274,11 +3678,7 @@ app.delete('/api/papelera/:id/definitivo', verifyToken, async (req, res) => {
     const esAdmin = req.user.rol === 'administrador';
     if (!esAdmin && data.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'No tienes permiso para eliminar permanentemente este elemento.' });
 
-    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: req.params.id });
-    const raizArchivos = path.resolve(__dirname, '../storage/archivos');
-    const rutaArchivo = path.resolve(__dirname, '..', data.rutaLocal);
-    await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
-    await referencia.delete();
+    await eliminarArchivoPermanentemente(req.params.id, data);
     res.json({ ok: true, mensaje: 'Elemento eliminado permanentemente.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -3301,6 +3701,10 @@ connectDB()
       console.log(`[CONFIG] RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`);
       console.log(`[CONFIG] EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`);
     });
+    purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar al iniciar:', error.message));
+    setInterval(() => {
+      purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar:', error.message));
+    }, 60 * 60 * 1000);
   })
   .catch((error) => {
     console.error("Fallo al conectar con MongoDB Atlas:", error);

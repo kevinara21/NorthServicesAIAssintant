@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { FiCheckCircle, FiEdit3, FiFileText, FiPackage, FiPlus, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { API_URL } from '../services/api';
+import { useNotification } from '../context/NotificationContext';
 
 export default function SubirRecursos({ token, alCompletar }) {
+  const { notificarError, notificarExito } = useNotification();
   const [nombre, setNombre] = useState('');
   const [version, setVersion] = useState('');
   const [descripcion, setDescripcion] = useState('');
@@ -27,6 +29,15 @@ export default function SubirRecursos({ token, alCompletar }) {
     setArchivoZip(null);
     const input = document.getElementById('archivo-zip');
     if (input) input.value = '';
+  };
+
+  const validarArchivoZip = (archivo) => {
+    const extension = archivo.name.toLowerCase().substring(archivo.name.lastIndexOf('.'));
+    const extensionesPermitidas = ['.zip', '.rar'];
+    if (!extensionesPermitidas.includes(extension)) {
+      return { valido: false, error: `Solo se permiten archivos ZIP o RAR, no ${extension}.` };
+    }
+    return { valido: true };
   };
 
   const limpiarPdf = (e) => {
@@ -369,17 +380,34 @@ export default function SubirRecursos({ token, alCompletar }) {
               e.preventDefault();
               setArrastrandoZip(false);
               const file = e.dataTransfer.files?.[0];
-              if (file) setArchivoZip(file);
+              if (file) {
+                const validacion = validarArchivoZip(file);
+                if (validacion.valido) {
+                  setArchivoZip(file);
+                } else {
+                  notificarError(validacion.error, { titulo: 'Archivo no permitido' });
+                }
+              }
             }}
             onClick={() => document.getElementById('archivo-zip')?.click()}
           >
             <input
               id="archivo-zip"
               type="file"
-              accept=".zip,.rar,.exe"
+              accept=".zip,.rar"
               disabled={cargando}
               style={{ display: 'none' }}
-              onChange={(e) => setArchivoZip(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                const validacion = validarArchivoZip(file);
+                if (validacion.valido) {
+                  setArchivoZip(file);
+                } else {
+                  notificarError(validacion.error, { titulo: 'Archivo no permitido' });
+                  e.target.value = '';
+                }
+              }}
             />
 
             <div className="custom-upload-icon-circle">
@@ -387,7 +415,7 @@ export default function SubirRecursos({ token, alCompletar }) {
             </div>
 
             <div className="custom-upload-title">Instalador de software (opcional)</div>
-            <div className="custom-upload-subtitle">Formatos admitidos: ZIP, RAR, EXE</div>
+            <div className="custom-upload-subtitle">Formatos admitidos: ZIP, RAR</div>
 
             {archivoZip ? (
               <div className="custom-upload-file-info" onClick={(e) => e.stopPropagation()}>
