@@ -12,6 +12,7 @@ const zlib = require('zlib');
 const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
 const { connectDB, getDB } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
+const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
 
 const app = express();
 
@@ -138,6 +139,15 @@ async function crearOTP({ uid = null, telefono, email = null, proposito, canal =
     expiraEn: new Date(Date.now() + OTP_EXPIRATION_MINUTES * 60 * 1000),
   });
   try {
+    if (canal === 'correo') {
+      const envio = await enviarOtpCorporativo({ para: email, otp: codigo, minutosExpiracion: OTP_EXPIRATION_MINUTES });
+      if (!envio.ok) {
+        await referencia.delete();
+        throw new Error(envio.error || 'No se pudo enviar el código por correo corporativo.');
+      }
+      await referencia.update({ canal: 'correo', correoMessageId: envio.messageId });
+      return envio;
+    }
     const envio = canal === 'whatsapp'
       ? await enviarOTPWhatsApp(telefono, codigo)
       : await enviarOTPSMS(telefono, codigo);
@@ -1263,10 +1273,11 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
 app.post('/api/password/solicitar', async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
+    const canal = String(req.body.canal || 'sms').trim().toLowerCase();
     const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
     if (snapshot.empty) return res.status(400).json({ ok: false, error: 'No existe una cuenta con ese correo.' });
-    await crearOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, email, proposito: 'restablecer-password' });
-    res.json({ ok: true, mensaje: 'Código enviado por SMS.' });
+    await crearOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, email, proposito: 'restablecer-password', canal });
+    res.json({ ok: true, mensaje: canal === 'correo' ? 'Código enviado a tu correo corporativo.' : 'Código enviado por SMS.' });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
   }

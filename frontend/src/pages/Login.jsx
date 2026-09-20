@@ -18,6 +18,7 @@ function Login({ onLoginSuccess }) {
   const [codigo, setCodigo] = useState('');
   const [nuevaPassword, setNuevaPassword] = useState('');
   const [otpEnviado, setOtpEnviado] = useState(false);
+  const [canal, setCanal] = useState('correo');
 
   const { notificarExito, notificarError, notificarAdvertencia, notificarInfo } = useNotification();
 
@@ -95,7 +96,7 @@ function Login({ onLoginSuccess }) {
     const email = `${usuarioPrefix.trim()}@northservices.com.pe`;
     try {
       const ruta = otpEnviado ? '/api/password/restablecer' : '/api/password/solicitar';
-      const body = otpEnviado ? { email, codigo, nuevaPassword } : { email };
+      const body = otpEnviado ? { email, codigo, nuevaPassword } : { email, canal };
       const res = await apiFetch(ruta, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -107,7 +108,7 @@ function Login({ onLoginSuccess }) {
       
       if (!otpEnviado) {
         setOtpEnviado(true);
-        notificarInfo('Código de verificación enviado a tu teléfono corporativo.', {
+        notificarInfo('Código de verificación enviado a tu correo corporativo.', {
           titulo: 'Código OTP',
         });
       } else {
@@ -120,7 +121,7 @@ function Login({ onLoginSuccess }) {
           duracion: 6000,
         });
       }
-      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado por SMS.');
+      setError(otpEnviado ? 'Contraseña actualizada. Ya puedes iniciar sesión.' : 'Código enviado a tu correo corporativo.');
     } catch (err) {
       setError(err.message);
       notificarError(err.message, { titulo: 'Error al recuperar' });
@@ -139,7 +140,10 @@ function Login({ onLoginSuccess }) {
         <form className="login-recovery-form" onSubmit={handleRecovery}>
           <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
           <h2 className="login-heading">Recuperar contraseña</h2>
-          <p className="login-subtitle">Recibirás un código por SMS en tu teléfono verificado.</p>
+          <div className="login-canal-selector" role="radiogroup" aria-label="Cómo recibir el código">
+            <button type="button" className={`login-canal-option ${canal === 'correo' ? 'active' : ''}`} onClick={() => setCanal('correo')}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> Correo corporativo</button>
+            <button type="button" className={`login-canal-option ${canal === 'sms' ? 'active' : ''}`} onClick={() => setCanal('sms')}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18.5h2"/></svg> SMS</button>
+          </div>
           <label className="login-recovery-field">Usuario corporativo<input type="text" placeholder="ej. nombre.apellido" value={usuarioPrefix} onChange={handleUserChange} required /></label>
           {otpEnviado && <>
             <label className="login-recovery-field">Código OTP<input value={codigo} onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" maxLength="6" required /></label>

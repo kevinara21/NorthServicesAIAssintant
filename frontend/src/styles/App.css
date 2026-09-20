@@ -206,6 +206,12 @@
 .login-recovery-message { margin: 0; color: var(--color-primary); font-size: 13px; font-weight: 600; text-align: center; }
 .login-recovery-submit { width: 100%; min-height: 40px; margin-top: 2px; padding: 10px; border: 0; border-radius: var(--border-radius-sm); background: var(--color-primary); color: #FFFFFF !important; font: inherit; font-weight: 700; cursor: pointer; }
 .login-recovery-submit:disabled { cursor: wait; opacity: .65; }
+.login-canal-selector { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; margin: 4px 0; }
+.login-canal-option { display: flex; flex-direction: column; align-items: center; gap: 9px; width: 100%; min-height: 64px; padding: 12px 10px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast); }
+.login-canal-option svg { transition: color var(--transition-fast), transform var(--transition-fast); }
+.login-canal-option:hover { border-color: var(--color-primary); color: var(--color-primary-dark); }
+.login-canal-option:hover svg { transform: translateY(-1px); }
+.login-canal-option.active { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-alpha10); box-shadow: inset 0 0 0 1px var(--color-primary); }
 .register-page .login-logo { width: 350px; height: 150px; margin: 0 auto 18px; }
 .register-page label { display: block; color: #000000; font-size: 12px; font-weight: 600; }
 .register-page input, .register-page select { background: #FFFFFF !important; border: 1px solid var(--color-primary) !important; color: #000000 !important; }
