@@ -328,6 +328,8 @@
 .dashboard-quick-links button { display: flex; align-items: center; gap: 10px; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); font: inherit; font-weight: 600; text-align: left; cursor: pointer; box-shadow: var(--shadow-sm); transition: all var(--transition-fast); }
 .dashboard-quick-links button:hover { border-color: var(--color-primary); color: var(--color-primary); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .dashboard-quick-links button svg:last-child { margin-left: auto; }
+.dashboard-admin { margin-top: 8px; }
+.dashboard-admin .company-inventory-links { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .dashboard-menu-toggle, .dashboard-backdrop { display: none; }
 .floating-ai-button { position: fixed; right: 28px; bottom: 28px; z-index: 50; display: inline-flex; align-items: center; gap: 9px; border: 0; border-radius: 999px; padding: 13px 18px; background: var(--color-primary); color: var(--color-white); box-shadow: var(--shadow-lg); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; transition: transform var(--transition-fast), background var(--transition-fast); }
 .floating-ai-button:hover { background: var(--color-primary-dark); transform: translateY(-2px); }
@@ -1236,4 +1238,93 @@
 .markdown-bot li > p {
   margin: 0;
   padding: 0;
+}
+
+/* =========================================================
+   ARCHIVOS — TARJETAS DE ARCHIVO
+   ========================================================= */
+.file-list { display: grid; gap: 12px; margin-top: 12px; }
+.file-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 16px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
+.file-card.selected { background: #fef2f2; border-color: #fecaca; }
+.file-card-main { display: flex; align-items: flex-start; gap: 12px; flex: 1 1 auto; min-width: 0; }
+.file-card-checkbox { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 6px; accent-color: #DD2226; }
+.file-card-info { min-width: 0; }
+.file-card-info h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
+.file-card-info h3 svg { flex: 0 0 auto; color: var(--color-primary); }
+.file-card-info h3 span { min-width: 0; overflow-wrap: anywhere; }
+.file-card-info small { color: var(--color-text-muted); overflow-wrap: anywhere; }
+.file-card-info p { margin-bottom: 0; }
+.file-card-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.file-card-actions .profile-primary-button { width: auto; }
+
+/* =========================================================
+   PAPELERA — TABLA
+   ========================================================= */
+.trash-table-wrap { margin-bottom: 24px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+.trash-table { width: 100%; border-collapse: collapse; }
+.trash-table thead tr { background: #f8fafc; border-bottom: 1px solid #e2e8f0; text-align: left; }
+.trash-table th { padding: 16px 20px; font-size: 13px; font-weight: 600; color: #64748b; }
+.trash-table th.trash-check-col { width: 36px; }
+.trash-table tbody tr { border-bottom: 1px solid #f1f5f9; }
+.trash-table tbody tr.selected { background: #fef2f2; }
+.trash-table tbody tr:last-child { border-bottom: 0; }
+.trash-table td { padding: 16px 20px; vertical-align: middle; }
+.trash-checkbox { width: 16px; height: 16px; accent-color: #DD2226; }
+.trash-file-cell > div { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.trash-file-icon { flex: 0 0 auto; color: #94a3b8; font-size: 18px; }
+.trash-file-body { min-width: 0; }
+.trash-file-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.trash-file-desc { display: block; margin-top: 4px; color: #94a3b8; overflow-wrap: anywhere; }
+.trash-meta { font-size: 13px; color: #64748b; overflow-wrap: anywhere; }
+.trash-date { font-size: 13px; color: #64748b; white-space: nowrap; }
+.trash-date small { display: block; margin-top: 4px; color: #94a3b8; }
+.trash-countdown { font-variant-numeric: tabular-nums; }
+.trash-countdown.urgent { color: #DC2626; font-weight: 700; }
+.trash-progress { display: block; width: 100%; max-width: 160px; height: 4px; margin-top: 6px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+.trash-progress > span { display: block; height: 100%; background: #DC2626; border-radius: 999px; transition: width .4s linear; }
+.trash-actions { display: flex; gap: 8px; }
+.trash-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: none; border-radius: 6px; color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.trash-btn.restore { background: #16a34a; }
+.trash-btn.delete { background: #DC2626; }
+.trash-btn:disabled { cursor: not-allowed; opacity: .6; }
+.trash-empty { padding: 64px 24px; text-align: center; color: #94a3b8; }
+.trash-empty svg { font-size: 48px; margin-bottom: 16px; }
+.trash-empty p { margin: 0; font-size: 15px; }
+
+/* =========================================================
+   ARCHIVOS / PAPELERA — RESPONSIVE
+   ========================================================= */
+@media (max-width: 768px) {
+  .library-toolbar { gap: 8px; }
+  .library-search { flex: 1 1 100%; max-width: none; }
+  .library-select-toggle, .library-icon-button { min-height: 46px; width: 46px; }
+  .library-select-all { flex: 1 1 100%; white-space: normal; }
+
+  .file-card { padding: 14px; gap: 12px; }
+  .file-card-main { flex: 1 1 100%; }
+  .file-card-actions { flex: 1 1 100%; }
+  .file-card-actions button { flex: 1 1 0; justify-content: center; }
+
+  .trash-table-wrap { background: transparent; border: 0; overflow: visible; }
+  .trash-table thead { display: none; }
+  .trash-table, .trash-table tbody, .trash-table tr, .trash-table td { display: block; width: 100%; }
+  .trash-table tbody tr { margin-bottom: 12px; padding: 4px 14px 12px; border: 1px solid #e2e8f0; border-radius: var(--border-radius-md); background: #fff; }
+  .trash-table tbody tr:last-child { margin-bottom: 0; }
+  .trash-table td { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+  .trash-table td:last-child { border-bottom: 0; }
+  .trash-table td::before { content: attr(data-label); color: #64748b; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; }
+  .trash-date { white-space: normal; }
+  .trash-table td.trash-check-cell { grid-template-columns: minmax(0, 1fr); padding: 12px 0 2px; border-bottom: 0; }
+  .trash-table td.trash-check-cell::before { display: none; }
+  .trash-file-cell > div { align-items: flex-start; }
+  .trash-table td.trash-actions-cell { grid-template-columns: minmax(0, 1fr); }
+  .trash-actions-cell .trash-actions { width: 100%; }
+  .trash-actions-cell .trash-btn { flex: 1 1 0; justify-content: center; }
+  .trash-empty { padding: 48px 20px; background: #fff; border: 1px solid #e2e8f0; border-radius: var(--border-radius-md); }
+}
+
+@media (max-width: 480px) {
+  .library-select-toggle, .library-icon-button { min-height: 44px; width: 44px; }
+  .file-card { padding: 12px; }
+  .trash-table td { grid-template-columns: 80px minmax(0, 1fr); }
 }

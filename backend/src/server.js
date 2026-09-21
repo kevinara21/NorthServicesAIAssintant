@@ -821,7 +821,7 @@ async function generarContenidoGemini(
   const REQUEST_TIMEOUT = 90000;
 
   const generationConfig = {
-    maxOutputTokens: 256,
+    maxOutputTokens: 2048,
 
     thinkingConfig: {
       thinkingLevel: 'minimal'
@@ -2183,6 +2183,24 @@ async function moverArchivoAPapelera(id, user) {
   const item = documento.data();
   if (item.eliminado === true) return { id, ok: false, error: 'El archivo ya está en la papelera.' };
   if (!puedeGestionarArchivo(user, item)) return { id, ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' };
+  
+  // Migrar vectores de RAG a la colección de papelera
+  try {
+    const mongoDb = getDB();
+    const vectores = await mongoDb.collection('conocimientos_vectores').find({ archivoId: id }).toArray();
+    
+    if (vectores.length > 0) {
+      // Insertar en colección de papelera
+      await mongoDb.collection('conocimientos_vectores_papelera').insertMany(vectores, { ordered: false });
+      // Eliminar de colección activa
+      await mongoDb.collection('conocimientos_vectores').deleteMany({ archivoId: id });
+      console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} a la colección de papelera`);
+    }
+  } catch (error) {
+    console.error(`[PAPELERA] Error al migrar vectores del archivo ${id}:`, error.message);
+    // Continuamos con el proceso aunque falle la migración
+  }
+  
   await referencia.update({
     eliminado: true,
     eliminadoPor: user.uid,
@@ -2250,7 +2268,7 @@ app.post('/api/archivos/lote/eliminar', verifyToken, async (req, res) => {
       procesados,
       fallidos,
       mensaje: procesados
-        ? `${procesados} archivo${procesados === 1 ? '' : 's'} enviado${procesados === 1 ? '' : 's'} a la papelera. El contenido se mantiene disponible para la IA.`
+        ? `${procesados} archivo${procesados === 1 ? '' : 's'} enviado${procesados === 1 ? '' : 's'} a la papelera. El contenido no estará disponible para la IA.`
         : 'No se pudo enviar ningún archivo a la papelera.',
     });
   } catch (error) {
@@ -2592,7 +2610,8 @@ app.post(
       let contextoStarlink = '';
 
       // Detectar si la pregunta está relacionada con Starlink
-      const palabrasClaveStarlink = ['starlink', 'internet', 'satelital', 'vencer', 'pago', 'facturación', 'servicio', 'antena', 'kit', 'conexión'];
+      // Palabras clave más específicas para evitar falsos positivos
+      const palabrasClaveStarlink = ['starlink', 'internet satelital', 'vencer', 'pago starlink', 'facturación starlink', 'kit starlink', 'antena starlink', 'conexión satelital', 'equipo starlink'];
       const preguntaMinuscula = preguntaLimpia.toLowerCase();
       const esPreguntaStarlink = palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
 
@@ -2844,10 +2863,11 @@ REGLAS IMPORTANTES:
 13. Si el usuario solicita descargar, recibir o pedir algún
   archivo (manual, brochure, folleto, software, documento,
   instalador, ficha técnica, catálogo, etc.), responde
-  indicando qué materiales existen y que están disponibles
-  para descarga mediante un BOTÓN clicable que el sistema
-  muestra junto con tu respuesta (evento "descargas").
-  PROHIBIDO: NUNCA escribas una ruta de la forma
+  indicando qué materiales existen en el contexto proporcionado.
+  El sistema mostrará automáticamente los botones de descarga
+  correspondientes basándose en los documentos mencionados en
+  CONTEXTO RECUPERADO. No digas que no puedes crear botones,
+  simplemente indica qué archivos están disponibles.
   "/api/..." como texto plano en tu respuesta (por ejemplo
   NO escribas "/api/recursos/<id>/software/download" ni
   variantes). El usuario no copiará esa ruta: el botón es la
@@ -3600,6 +3620,24 @@ app.post('/api/papelera/lote/restaurar', verifyToken, async (req, res) => {
       if (!doc.exists) { fallidos.push({ id, error: 'Elemento no encontrado.' }); continue; }
       const data = doc.data();
       if (!puedeGestionarArchivo(req.user, data)) { fallidos.push({ id, error: 'Sin permiso.' }); continue; }
+      
+      // Restaurar vectores de RAG desde la colección de papelera
+      try {
+        const mongoDb = getDB();
+        const vectoresPapelera = await mongoDb.collection('conocimientos_vectores_papelera').find({ archivoId: id }).toArray();
+        
+        if (vectoresPapelera.length > 0) {
+          // Insertar en colección activa
+          await mongoDb.collection('conocimientos_vectores').insertMany(vectoresPapelera, { ordered: false });
+          // Eliminar de colección de papelera
+          await mongoDb.collection('conocimientos_vectores_papelera').deleteMany({ archivoId: id });
+          console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} a la colección activa`);
+        }
+      } catch (error) {
+        console.error(`[PAPELERA] Error al restaurar vectores del archivo ${id}:`, error.message);
+        // Continuamos con el proceso aunque falle la restauración
+      }
+      
       await referencia.update({
         eliminado: false,
         eliminadoPor: null,
@@ -3655,6 +3693,23 @@ app.post('/api/papelera/:id/restaurar', verifyToken, async (req, res) => {
     const data = doc.data();
     const esAdmin = req.user.rol === 'administrador';
     if (!esAdmin && data.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'No tienes permiso para restaurar este elemento.' });
+
+    // Restaurar vectores de RAG desde la colección de papelera
+    try {
+      const mongoDb = getDB();
+      const vectoresPapelera = await mongoDb.collection('conocimientos_vectores_papelera').find({ archivoId: req.params.id }).toArray();
+      
+      if (vectoresPapelera.length > 0) {
+        // Insertar en colección activa
+        await mongoDb.collection('conocimientos_vectores').insertMany(vectoresPapelera, { ordered: false });
+        // Eliminar de colección de papelera
+        await mongoDb.collection('conocimientos_vectores_papelera').deleteMany({ archivoId: req.params.id });
+        console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${req.params.id} a la colección activa`);
+      }
+    } catch (error) {
+      console.error(`[PAPELERA] Error al restaurar vectores del archivo ${req.params.id}:`, error.message);
+      // Continuamos con el proceso aunque falle la restauración
+    }
 
     await referencia.update({
       eliminado: false,

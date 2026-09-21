@@ -181,7 +181,7 @@ export default function GestionFacturacion({ token }) {
             className="profile-secondary-button" 
             onClick={sincronizarConMongoDB}
           >
-            <FiRefreshCw /> Sincronizar RAG
+            <FiRefreshCw /> Actualizar
           </button>
         </div>
       </div>

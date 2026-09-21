@@ -152,7 +152,7 @@ export default function Archivos({ token, usuario }) {
     setConfirmacion({
       visible: true,
       titulo: varios ? `¿Enviar ${elegibles.length} archivos a la papelera?` : `¿Enviar "${elegibles[0].nombre || elegibles[0].nombreArchivo}" a la papelera?`,
-      mensaje: 'Los archivos dejarán de verse aquí, pero el contenido se mantiene para la IA. Permanecen 30 días en la papelera antes de eliminarse de forma permanente.',
+      mensaje: 'Los archivos dejarán de verse aquí y el contenido dejará de estar disponible para la IA. Permanecen 30 días en la papelera antes de eliminarse de forma permanente.',
       etiqueta: varios ? 'Enviar a papelera' : 'Enviar a papelera',
       onConfirm: async () => {
         setConfirmacion({ visible: false });
@@ -177,7 +177,7 @@ export default function Archivos({ token, usuario }) {
     <section>
       <span className="dashboard-eyebrow">Contenido para IA</span>
       <h1>Archivos</h1>
-      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), Visio (.vsdx) y formatos de texto; los demás se guardan para descarga. No se permiten archivos ejecutables o scripts (PHP, Python, EXE, etc.) por seguridad. Al eliminar, el archivo va a la papelera 30 días y el contenido se mantiene para la IA.</p>
+      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), Visio (.vsdx) y formatos de texto; los demás se guardan para descarga. No se permiten archivos ejecutables o scripts (PHP, Python, EXE, etc.) por seguridad. Al eliminar, el archivo va a la papelera 30 días y el contenido deja de estar disponible para la IA.</p>
       
 
 
@@ -259,33 +259,33 @@ export default function Archivos({ token, usuario }) {
           </>
         )}
       </div>
-      <div style={{ display: 'grid', gap: 12, marginTop: 12 }}>
+      <div className="file-list">
         {archivosFiltrados.length === 0 ? <p>{busqueda ? 'No hay archivos que coincidan con la búsqueda.' : 'No hay archivos colaborativos todavía.'}</p> : archivosFiltrados.map((item) => {
           const puedeEliminar = puedeEliminarItem(item);
           const seleccionado = idsSeleccionados.includes(item.id);
-          return <article key={item.id} style={{ background: seleccionado ? '#fef2f2' : '#fff', padding: 16, borderRadius: 8, border: `1px solid ${seleccionado ? '#fecaca' : '#e5e7eb'}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, minWidth: 0, flex: 1 }}>
+          return <article key={item.id} className={`file-card${seleccionado ? ' selected' : ''}`}>
+            <div className="file-card-main">
               {modoSeleccion && (
-                <input type="checkbox" checked={seleccionado} onChange={() => alternarSeleccion(item.id)} style={{ marginTop: 6, width: 16, height: 16, accentColor: '#DD2226' }} />
+                <input type="checkbox" className="file-card-checkbox" checked={seleccionado} onChange={() => alternarSeleccion(item.id)} aria-label={`Seleccionar ${item.nombre || item.nombreArchivo}`} />
               )}
-              <div>
-                <h3 style={{ margin: 0, display: 'flex', gap: 8, alignItems: 'center' }}><FiFile /> {item.nombre || item.nombreArchivo}</h3>
+              <div className="file-card-info">
+                <h3><FiFile /> <span>{item.nombre || item.nombreArchivo}</span></h3>
                 <small>{item.nombreArchivo} · {formatearTamano(item.tamano)} · Subido por {item.propietarioNombre || item.propietarioEmail || 'Usuario'}</small>
-                <p style={{ marginBottom: 0 }}>{item.estadoIndexacion === 'completada' ? 'Disponible para el asistente IA.' : item.estadoIndexacion === 'sin_texto' ? 'Guardado; este formato no se puede indexar automáticamente.' : 'Procesamiento pendiente o con error.'}</p>
+                <p>{item.estadoIndexacion === 'completada' ? 'Disponible para el asistente IA.' : item.estadoIndexacion === 'sin_texto' ? 'Guardado; este formato no se puede indexar automáticamente.' : 'Procesamiento pendiente o con error.'}</p>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}><button type="button" className="profile-primary-button" onClick={() => descargar(item)}><FiDownload /></button>{puedeEliminar && <button type="button" className="billing-cancel" onClick={() => enviarAPapelera([item])}><FiTrash2 /></button>}</div>
+            <div className="file-card-actions"><button type="button" className="profile-primary-button" onClick={() => descargar(item)} aria-label="Descargar"><FiDownload /></button>{puedeEliminar && <button type="button" className="billing-cancel" onClick={() => enviarAPapelera([item])} aria-label="Enviar a papelera"><FiTrash2 /></button>}</div>
           </article>;
         })}
       </div>
       {confirmacion.visible && (
-      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setConfirmacion({ visible: false })}>
-        <div style={{ background: '#fff', borderRadius: 12, padding: '28px 32px', maxWidth: 420, width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: '1px solid #e2e8f0' }} onClick={(e) => e.stopPropagation()}>
-          <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 8 }}>{confirmacion.titulo}</div>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: 16 }} onClick={() => setConfirmacion({ visible: false })}>
+        <div style={{ background: '#fff', borderRadius: 12, padding: '24px', maxWidth: 420, width: '100%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', border: '1px solid #e2e8f0' }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a', marginBottom: 8, overflowWrap: 'anywhere' }}>{confirmacion.titulo}</div>
           <p style={{ color: '#64748b', fontSize: 14, lineHeight: 1.6, margin: 0, marginBottom: 24 }}>{confirmacion.mensaje}</p>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={() => setConfirmacion({ visible: false })} style={{ padding: '8px 18px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#374151', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Cancelar</button>
-            <button type="button" onClick={confirmacion.onConfirm} style={{ padding: '8px 18px', border: 'none', borderRadius: 6, background: '#DC2626', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>{confirmacion.etiqueta || 'Enviar a papelera'}</button>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => setConfirmacion({ visible: false })} style={{ padding: '10px 18px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#374151', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Cancelar</button>
+            <button type="button" onClick={confirmacion.onConfirm} style={{ padding: '10px 18px', border: 'none', borderRadius: 6, background: '#DC2626', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>{confirmacion.etiqueta || 'Enviar a papelera'}</button>
           </div>
         </div>
       </div>

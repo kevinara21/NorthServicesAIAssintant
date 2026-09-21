@@ -75,6 +75,12 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
     { id: 'facturacion', label: 'Starlink', icon: FiWifi },
   ];
 
+  const accesosAdmin = [
+    { id: 'publicar-recursos', label: 'Publicar recursos', icon: FiUploadCloud },
+    { id: 'usuarios', label: 'Gestionar usuarios', icon: FiUsers },
+    { id: 'facturacion', label: 'Gestionar Starlink', icon: FiWifi },
+  ];
+
   const cambiarVista = (vista) => {
     setVistaActiva(vista);
     setMenuAbierto(false);
@@ -105,6 +111,22 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
                   </button>
                 ))}
               </div>
+              {esAdministrador && (
+                <div className="dashboard-admin">
+                  <h3 className="dashboard-home-title">Administración</h3>
+                  <div className="company-inventory-links">
+                    {accesosAdmin.map(({ id, label, desc, icon: Icon }) => (
+                      <button type="button" className="company-inventory-link-button" key={id} onClick={() => cambiarVista(id)}>
+                        <span>
+                          <strong>{label}</strong>
+                          <small>{desc}</small>
+                        </span>
+                        <Icon aria-hidden="true" />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <aside className="company-pages">
               <span className="dashboard-eyebrow">Páginas</span>

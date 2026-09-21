@@ -177,7 +177,6 @@ export default function MonitoreoPozos({ token, usuario, onCerrar }) {
                     </div>
                   </div>
                   <div className="eclipse-card-actions">
-                    <button type="button" className="profile-primary-button" style={{ minHeight: 34, padding: '6px 12px' }} onClick={() => abrirEnlace(item)}><FiExternalLink aria-hidden="true" /> Abrir</button>
                     {puedeAdministrar && (
                       <>
                         <button type="button" className="billing-edit-button" onClick={() => empezarEdicion(item)}><FiEdit2 aria-hidden="true" /> Editar</button>
