@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
+import { FiCheckCircle, FiXCircle, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
+import OilLoader from '../components/common/OilLoader';
 
 export default function GestionUsuarios({ token }) {
   const [usuarios, setUsuarios] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [modalNuevo, setModalNuevo] = useState(null);
+  const [valorNuevo, setValorNuevo] = useState('');
 
   // =========================================================
   // CARGAR USUARIOS
@@ -33,6 +37,9 @@ export default function GestionUsuarios({ token }) {
     }
   };
 
+  // =========================================================
+  // CARGAR DATOS INICIALES
+  // =========================================================
   useEffect(() => {
     cargarUsuarios();
   }, [token]);
@@ -43,7 +50,7 @@ export default function GestionUsuarios({ token }) {
   const obtenerRolesDisponibles = () => {
     // Roles base con la escritura EXACTA que queremos mostrar
     const rolesBase = [
-      'Tecnico',
+      'Técnico',
       'Operador',
       'Administrador',
       'Ingeniero MWD'
@@ -58,6 +65,18 @@ export default function GestionUsuarios({ token }) {
 
     // Evitar duplicados respetando las mayúsculas originales
     return Array.from(new Set([...rolesBase, ...rolesEnDB]));
+  };
+
+  // =========================================================
+  // ÁREAS DISPONIBLES
+  // =========================================================
+  const obtenerAreasDisponibles = () => {
+    const areasEnDB = usuarios
+      .map((u) => u.area || u.departamento)
+      .filter((area) => typeof area === 'string' && area.trim() !== '' && area.trim() !== 'N/A')
+      .map((area) => area.trim());
+
+    return Array.from(new Set(areasEnDB));
   };
 
   // =========================================================
@@ -76,7 +95,7 @@ export default function GestionUsuarios({ token }) {
     // NO hacemos toLowerCase() al rol.
     // Firebase conservará:
     // "Ingeniero MWD"
-    // "Tecnico"
+    // "Técnico"
     // "Administrador"
     // etc.
     if (payload.rol) {
@@ -135,25 +154,43 @@ export default function GestionUsuarios({ token }) {
   };
 
   // =========================================================
+  // CAMBIO EN SELECT (ROL / ÁREA) — permite crear uno nuevo
+  // =========================================================
+  const manejarCambioSelect = (userId, campo, valor) => {
+    if (valor !== '__nuevo__') {
+      actualizarUsuario(userId, { [campo]: valor });
+      return;
+    }
+    setValorNuevo('');
+    setModalNuevo({ userId, campo });
+  };
+
+  const confirmarNuevo = () => {
+    if (!modalNuevo) return;
+    const limpio = valorNuevo.trim();
+    if (!limpio) return;
+    actualizarUsuario(modalNuevo.userId, { [modalNuevo.campo]: limpio });
+    setModalNuevo(null);
+    setValorNuevo('');
+  };
+
+  const cerrarModalNuevo = () => {
+    setModalNuevo(null);
+    setValorNuevo('');
+  };
+
+  // =========================================================
   // CARGANDO
   // =========================================================
   if (cargando) {
-    return (
-      <p
-        style={{
-          padding: '20px',
-          textAlign: 'center'
-        }}
-      >
-        Cargando gestión de usuarios...
-      </p>
-    );
+    return <OilLoader label="Cargando gestión de usuarios" inline />;
   }
 
   // =========================================================
   // ROLES
   // =========================================================
   const rolesDisponibles = obtenerRolesDisponibles();
+  const areasDisponibles = obtenerAreasDisponibles();
 
   // =========================================================
   // RENDER
@@ -228,10 +265,6 @@ export default function GestionUsuarios({ token }) {
               <th style={{ padding: '12px' }}>
                 Estado
               </th>
-
-              <th style={{ padding: '12px' }}>
-                Acciones
-              </th>
             </tr>
           </thead>
 
@@ -288,13 +321,46 @@ export default function GestionUsuarios({ token }) {
                   </td>
 
                   {/* ===============================
-                      ÁREA
+                      ÁREA (editable)
                   ================================ */}
                   <td
                     data-label="Área"
                     style={{ padding: '12px' }}
                   >
-                    {areaActual}
+                    <select
+                      value={areaActual}
+                      onChange={(e) =>
+                        manejarCambioSelect(
+                          userId,
+                          'area',
+                          e.target.value
+                        )
+                      }
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        border: '1px solid #cbd5e1',
+                        background: '#fff',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {!areasDisponibles.includes(areaActual) && (
+                        <option value={areaActual}>
+                          {areaActual}
+                        </option>
+                      )}
+                      {areasDisponibles.map((area) => (
+                        <option
+                          key={area}
+                          value={area}
+                        >
+                          {area}
+                        </option>
+                      ))}
+                      <option value="__nuevo__">
+                        + Nueva área…
+                      </option>
+                    </select>
                   </td>
 
                   {/* ===============================
@@ -307,11 +373,10 @@ export default function GestionUsuarios({ token }) {
                     <select
                       value={rolActual}
                       onChange={(e) =>
-                        actualizarUsuario(
+                        manejarCambioSelect(
                           userId,
-                          {
-                            rol: e.target.value
-                          }
+                          'rol',
+                          e.target.value
                         )
                       }
                       style={{
@@ -322,6 +387,11 @@ export default function GestionUsuarios({ token }) {
                         cursor: 'pointer'
                       }}
                     >
+                      {!rolesDisponibles.includes(rolActual) && (
+                        <option value={rolActual}>
+                          {rolActual}
+                        </option>
+                      )}
                       {rolesDisponibles.map((rol) => (
                         <option
                           key={rol}
@@ -330,124 +400,47 @@ export default function GestionUsuarios({ token }) {
                           {rol}
                         </option>
                       ))}
+                      <option value="__nuevo__">
+                        + Nuevo rol…
+                      </option>
                     </select>
                   </td>
 
                   {/* ===============================
-                      ESTADO
+                      ESTADO (toggle activo / inactivo)
                   ================================ */}
                   <td
                     data-label="Estado"
                     style={{ padding: '12px' }}
                   >
-                    <span
-                      style={{
-                        padding: '4px 8px',
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        fontWeight: 'bold',
-
-                        background:
-                          u.estado === 'activo'
-                            ? '#dcfce7'
-                            : u.estado === 'pendiente'
-                            ? '#fef3c7'
-                            : '#fee2e2',
-
-                        color:
-                          u.estado === 'activo'
-                            ? '#15803d'
-                            : u.estado === 'pendiente'
-                            ? '#b45309'
-                            : '#b91c1c'
-                      }}
+                    <button
+                      type="button"
+                      className={`user-toggle ${u.estado === 'activo' ? 'on' : 'off'}`}
+                      role="switch"
+                      aria-checked={u.estado === 'activo'}
+                      title={
+                        u.estado === 'activo'
+                          ? 'Activo — clic para dar de baja'
+                          : u.estado === 'pendiente'
+                          ? 'Pendiente de aprobación — clic para aprobar'
+                          : 'Inactivo — clic para reactivar'
+                      }
+                      aria-label={
+                        u.estado === 'activo'
+                          ? `Desactivar a ${u.nombre} ${u.apellido}`
+                          : `Activar a ${u.nombre} ${u.apellido}`
+                      }
+                      onClick={() =>
+                        actualizarUsuario(userId, {
+                          estado: u.estado === 'activo' ? 'inactivo' : 'activo'
+                        })
+                      }
                     >
-                      {u.estado}
-                    </span>
-                  </td>
-
-                  {/* ===============================
-                      ACCIONES
-                  ================================ */}
-                  <td
-                    data-label="Acciones"
-                    style={{ padding: '12px' }}
-                  >
-                    {/* PENDIENTE */}
-                    {u.estado === 'pendiente' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          actualizarUsuario(
-                            userId,
-                            {
-                              estado: 'activo'
-                            }
-                          )
-                        }
-                        style={{
-                          background: '#16a34a',
-                          color: '#fff',
-                          border: 'none',
-                          padding: '6px 12px',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontWeight: 500
-                        }}
-                      >
-                        Aprobar
-                      </button>
-                    )}
-
-                    {/* ACTIVO */}
-                    {u.estado === 'activo' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          actualizarUsuario(
-                            userId,
-                            {
-                              estado: 'inactivo'
-                            }
-                          )
-                        }
-                        style={{
-                          background: '#dc2626',
-                          color: '#fff',
-                          border: 'none',
-                          padding: '6px 12px',
-                          borderRadius: '4px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        Dar de Baja
-                      </button>
-                    )}
-
-                    {/* INACTIVO */}
-                    {u.estado === 'inactivo' && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          actualizarUsuario(
-                            userId,
-                            {
-                              estado: 'activo'
-                            }
-                          )
-                        }
-                        style={{
-                          background: '#2563eb',
-                          color: '#fff',
-                          border: 'none',
-                          padding: '6px 12px',
-                          borderRadius: '4px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        Reactivar
-                      </button>
-                    )}
+                      <span className="user-toggle-icon" aria-hidden="true">
+                        {u.estado === 'activo' ? <FiCheckCircle /> : <FiXCircle />}
+                      </span>
+                      <span className="user-toggle-knob" aria-hidden="true" />
+                    </button>
                   </td>
                 </tr>
               );
@@ -455,6 +448,78 @@ export default function GestionUsuarios({ token }) {
           </tbody>
         </table>
       </div>
+
+      {modalNuevo && (
+        <div
+          className="modal-overlay eclipse-modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={modalNuevo.campo === 'rol' ? 'Nuevo rol' : 'Nueva área'}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) cerrarModalNuevo();
+          }}
+        >
+          <div className="eclipse-modal catalog-eclipse-modal">
+            <header className="eclipse-modal-header">
+              <div>
+                <span className="dashboard-eyebrow">Gestión de usuarios</span>
+                <h2 style={{ margin: '4px 0 0', color: '#fff', fontSize: 20 }}>
+                  {modalNuevo.campo === 'rol' ? 'Nuevo rol' : 'Nueva área'}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="eclipse-modal-close"
+                onClick={cerrarModalNuevo}
+                aria-label="Cerrar"
+              >
+                <FiX aria-hidden="true" />
+              </button>
+            </header>
+
+            <div className="eclipse-modal-body">
+              <p className="eclipse-intro">
+                {modalNuevo.campo === 'rol'
+                  ? 'Escribe el nombre del rol que quieres asignar. Estará disponible para todos los usuarios.'
+                  : 'Escribe el nombre del área que quieres asignar. Estará disponible para todos los usuarios.'}
+              </p>
+              <input
+                autoFocus
+                type="text"
+                className="catalog-eclipse-input"
+                value={valorNuevo}
+                onChange={(e) => setValorNuevo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmarNuevo();
+                  if (e.key === 'Escape') cerrarModalNuevo();
+                }}
+                placeholder={
+                  modalNuevo.campo === 'rol'
+                    ? 'Ej. Supervisor de Campo'
+                    : 'Ej. Logística'
+                }
+              />
+              <div className="catalog-eclipse-actions">
+                <button
+                  type="button"
+                  className="catalog-eclipse-cancel"
+                  onClick={cerrarModalNuevo}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="catalog-eclipse-confirm"
+                  disabled={!valorNuevo.trim()}
+                  onClick={confirmarNuevo}
+                >
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

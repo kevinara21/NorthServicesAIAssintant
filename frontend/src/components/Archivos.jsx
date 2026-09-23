@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FiCheckSquare, FiDownload, FiFile, FiPaperclip, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
+import OilLoader from './common/OilLoader';
 
 function formatearTamano(bytes = 0) {
   if (!bytes) return '0 B';
@@ -19,6 +20,7 @@ export default function Archivos({ token, usuario }) {
   const [descripcion, setDescripcion] = useState('');
   const [busqueda, setBusqueda] = useState('');
   const [cargando, setCargando] = useState(false);
+  const [cargandoInicial, setCargandoInicial] = useState(true);
   const { notificarError, notificarExito, notificarInfo } = useNotification();
   const esAdministrador = usuario?.rol?.toLowerCase() === 'administrador';
   const [confirmacion, setConfirmacion] = useState({ visible: false, titulo: '', mensaje: '', etiqueta: 'Enviar a papelera', onConfirm: null });
@@ -32,6 +34,8 @@ export default function Archivos({ token, usuario }) {
       setArchivos(data.archivos || []);
     } catch (error) {
       notificarError(error.message, { titulo: 'No se pudieron cargar los archivos' });
+    } finally {
+      setCargandoInicial(false);
     }
   };
 
@@ -260,7 +264,7 @@ export default function Archivos({ token, usuario }) {
         )}
       </div>
       <div className="file-list">
-        {archivosFiltrados.length === 0 ? <p>{busqueda ? 'No hay archivos que coincidan con la búsqueda.' : 'No hay archivos colaborativos todavía.'}</p> : archivosFiltrados.map((item) => {
+        {cargandoInicial ? <OilLoader label="Cargando archivos" inline /> : archivosFiltrados.length === 0 ? <p>{busqueda ? 'No hay archivos que coincidan con la búsqueda.' : 'No hay archivos colaborativos todavía.'}</p> : archivosFiltrados.map((item) => {
           const puedeEliminar = puedeEliminarItem(item);
           const seleccionado = idsSeleccionados.includes(item.id);
           return <article key={item.id} className={`file-card${seleccionado ? ' selected' : ''}`}>

@@ -601,6 +601,7 @@
   .admin-users-table td::before { content: attr(data-label); color: #64748b; font-size: 11px; font-weight: 700; text-transform: uppercase; }
   .admin-users-table td select { width: 100%; max-width: none; min-height: 34px; }
   .admin-users-table td button { width: 100%; min-height: 36px; }
+  .admin-users-table td button.user-toggle { width: 64px; min-height: 30px; justify-self: start; }
   .resource-upload-panel { padding: 14px !important; }
   .resource-upload-panel h3 { font-size: 18px; line-height: 1.25; }
   .resource-main-fields, .resource-file-fields { grid-template-columns: 1fr !important; gap: 12px !important; }
@@ -1327,4 +1328,34 @@
   .library-select-toggle, .library-icon-button { min-height: 44px; width: 44px; }
   .file-card { padding: 12px; }
   .trash-table td { grid-template-columns: 80px minmax(0, 1fr); }
+  .admin-users-table td { grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
 }
+
+/* =========================================================
+   TOGGLE DE ESTADO (GESTIÓN DE USUARIOS)
+   ========================================================= */
+.user-toggle { position: relative; width: 64px; height: 30px; border: none; border-radius: 999px; cursor: pointer; transition: background var(--transition-fast); }
+.user-toggle.on { background: #16a34a; }
+.user-toggle.off { background: #dc2626; }
+.user-toggle-icon { position: absolute; top: 50%; transform: translateY(-50%); display: inline-flex; color: #fff; }
+.user-toggle-icon svg { width: 16px; height: 16px; }
+.user-toggle.on .user-toggle-icon { left: 9px; }
+.user-toggle.off .user-toggle-icon { right: 9px; }
+.user-toggle-knob { position: absolute; top: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: left var(--transition-fast); }
+.user-toggle.on .user-toggle-knob { left: 37px; }
+.user-toggle.off .user-toggle-knob { left: 3px; }
+.user-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* =========================================================
+   MODAL NUEVO ROL / ÁREA (estilo eclipse, igual a Starlink)
+   ========================================================= */
+.catalog-eclipse-modal { width: min(440px, 100%); }
+.catalog-eclipse-input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: var(--color-text-main); font: inherit; font-size: 14px; box-sizing: border-box; }
+.catalog-eclipse-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .15); }
+.catalog-eclipse-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.catalog-eclipse-actions button { min-height: 40px; padding: 10px 18px; border: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), opacity var(--transition-fast); }
+.catalog-eclipse-cancel { background: #f1f5f9; color: #475569; }
+.catalog-eclipse-cancel:hover { background: #e2e8f0; }
+.catalog-eclipse-confirm { background: var(--color-primary); color: #fff; }
+.catalog-eclipse-confirm:hover { background: var(--color-primary-dark); }
+.catalog-eclipse-confirm:disabled { opacity: .5; cursor: not-allowed; }

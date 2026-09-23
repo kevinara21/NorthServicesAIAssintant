@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FiBookOpen, FiBox, FiSearch, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
+import OilLoader from './common/OilLoader';
 
 export default function Recursos({ token, esAdministrador }) {
   const [recursos, setRecursos] = useState([]);
@@ -57,7 +58,7 @@ export default function Recursos({ token, esAdministrador }) {
     });
   };
 
-  if (cargando) return <p>Cargando recursos autorizados...</p>;
+  if (cargando) return <OilLoader label="Cargando recursos autorizados" inline />;
 
   return <section>
     <span className="dashboard-eyebrow">Biblioteca compartida</span>

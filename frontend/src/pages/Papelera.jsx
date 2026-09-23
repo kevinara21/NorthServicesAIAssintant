@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { FiCheckSquare, FiFile, FiRefreshCw, FiSearch, FiSquare, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
+import OilLoader from '../components/common/OilLoader';
 
 function parseFecha(fecha) {
   if (!fecha) return null;
@@ -149,7 +150,7 @@ export default function Papelera({ token, usuario }) {
     } finally { setProcesando(null); }
   };
 
-  if (cargando) return <p style={{ padding: 20, textAlign: 'center' }}>Cargando papelera...</p>;
+  if (cargando) return <OilLoader label="Cargando papelera" inline />;
 
   return (
     <section style={{ padding: '20px 0' }}>

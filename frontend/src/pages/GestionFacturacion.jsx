@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { FiEdit2, FiEye, FiEyeOff, FiPlus, FiRefreshCw, FiSave, FiX, FiCheckCircle, FiXCircle } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
+import OilLoader from '../components/common/OilLoader';
 
 function obtenerFechaActual() {
   const hoy = new Date();
@@ -162,7 +163,7 @@ export default function GestionFacturacion({ token }) {
     } finally { setGuardando(false); }
   };
 
-  if (cargando) return <p className="billing-loading">Cargando pozos y facturación...</p>;
+  if (cargando) return <OilLoader label="Cargando facturación de Starlink" inline />;
 
   return (
     <section className="billing-page">

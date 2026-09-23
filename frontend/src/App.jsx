@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { NotificationProvider, useNotification } from './context/NotificationContext';
 import Login from './pages/Login';
 import Dashboard from './components/Dashboard';
+import OilLoader from './components/common/OilLoader';
 import { apiFetch } from './services/api';
 
 function AppContent() {
@@ -100,21 +101,7 @@ function AppContent() {
   }, [handleLogout, notificarAdvertencia]);
 
   if (cargando) {
-    return (
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100vh',
-        background: '#F8F9FA',
-        color: '#475569',
-        fontFamily: 'var(--font-body, sans-serif)',
-        fontSize: '15px',
-        fontWeight: 500,
-      }}>
-        Cargando sistema...
-      </div>
-    );
+    return <OilLoader label="Cargando sistema" />;
   }
 
   return (
