@@ -958,7 +958,12 @@ async function generarContenidoGemini(
                         'No sumes, no compares y no tomes el maximo de otra fila o de otro documento. ' +
                         '(11) Si el usuario pide "el primer torque log", usa siempre el de fecha mas antigua segun el nombre ' +
                         'del archivo (Torque_Log_AAAAMMDD_HHMMSS) e indica el nombre exacto del que usaste. ' +
-                        '(12) Si dos documentos dan valores distintos, no elijas uno en silencio: enumera cada valor con su archivo.'
+                        '(12) Si dos documentos dan valores distintos, no elijas uno en silencio: enumera cada valor con su archivo. ' +
+                        '(13) MATERIALES DESCARGABLES: si el CONTEXTO indica "MATERIALES DESCARGABLES", confirma al usuario que ' +
+                        'los puede obtener con el boton de descarga que ya aparece en la interfaz. PROHIBIDO enumerar, listar o ' +
+                        'mencionar los nombres de esos archivos en tu respuesta (nada de ".zip", nada de ".pdf", nada del nombre ' +
+                        'del archivo). Responde algo como: "Los materiales descargables estan disponibles; puedes descargarlos ' +
+                        'con el boton correspondiente." y nada mas.'
                     }
                   ]
                 },
@@ -3465,7 +3470,7 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
             (f, index) => {
               const descargasFuente = obtenerDescargasFuente(f);
               const bloqueDescargas = descargasFuente.length
-                ? `\nMATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO (el sistema mostrará los botones de descarga automáticamente): ${descargasFuente.map((d) => d.etiqueta).join(', ')}. Estos archivos SÍ están disponibles para descarga: confirma al usuario que los obtendrá con el botón de descarga, NO digas que no se mencionan o que no están disponibles.\n`
+                ? `\nMATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO (el sistema ya muestra los botones de descarga en la interfaz): ${descargasFuente.map((d) => d.etiqueta).join(', ')}. REGLAS: (a) confirma al usuario que puede obtenerlos con el botón de descarga; (b) PROHIBIDO enumerar, listar o mencionar en tu respuesta los nombres de estos archivos (no digas ".zip", no digas ".pdf", no menciones los nombres de archivo); (c) no digas que no están disponibles ni que no se mencionan.\n`
                 : '';
               return `
 FUENTE ${index + 1}${index === 0 ? ' (PRIMERA Y PRIORITARIA: si el usuario pregunta por "el primer torque log", esta es la fuente que debes usar)' : ''}
@@ -3617,7 +3622,7 @@ REGLAS IMPORTANTES:
 
 13. Si el usuario solicita descargar o recibir algún archivo (manual, brochure, software, etc.), indica únicamente los materiales disponibles en CONTEXTO RECUPERADO. No inventes rutas ni escribas "/api/...". Indícale que use el botón de descarga correspondiente.
 
-13b. Cuando una FUENTE incluya "MATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO", confirma que el material está disponible para descarga mediante el botón correspondiente.
+13b. Si el CONTEXTO indica "MATERIALES DESCARGABLES", confirma que el usuario puede obtenerlos con el botón de descarga que ya aparece en la interfaz. PROHIBIDO enumerar o mencionar los nombres de esos archivos (nada de ".zip", ".pdf" ni el nombre del archivo).
 
 CONTEXTO RECUPERADO:
 
