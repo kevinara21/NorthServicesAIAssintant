@@ -30,7 +30,7 @@ import Papelera from '../pages/Papelera';
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-export default function Dashboard({ usuario, token, onLogout, onUsuarioActualizado }) {
+export default function Dashboard({ usuario, token, onLogout, tiempoSesionTexto, onUsuarioActualizado }) {
 const [vistaActiva, setVistaActiva] = useState('inicio');
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
@@ -224,7 +224,7 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
         <div className="dashboard-sidebar-footer">
           <button type="button" className="dashboard-logout" onClick={onLogout}>
             <FiLogOut aria-hidden="true" />
-            <span>Cerrar sesión</span>
+            <span>Cerrar Sesión - {tiempoSesionTexto || '180:00'} min</span>
           </button>
         </div>
       </aside>

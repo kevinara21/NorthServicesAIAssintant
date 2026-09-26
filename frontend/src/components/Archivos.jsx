@@ -186,17 +186,17 @@ export default function Archivos({ token, usuario }) {
 
 
       {modalSubirAbierto && (
-        <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Subir archivo" onClick={(event) => { if (event.target === event.currentTarget) setModalSubirAbierto(false); }}>
-          <div className="eclipse-modal">
-            <header className="eclipse-modal-header">
+        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Subir archivo" onClick={(event) => { if (event.target === event.currentTarget) setModalSubirAbierto(false); }}>
+          <div className="modal-monitoreo-pozo">
+            <header className="modal-monitoreo-pozo-header">
               <div>
                 <span className="dashboard-eyebrow">Subir archivo</span>
               </div>
-              <button type="button" className="eclipse-modal-close" onClick={() => setModalSubirAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setModalSubirAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
             </header>
 
-            <div className="eclipse-modal-body">
-              <p className="eclipse-intro">Sube archivos de documentación para que estén disponibles para el asistente IA. Solo se permiten formatos de documento y no archivos ejecutables o scripts por seguridad.</p>
+            <div className="modal-monitoreo-pozo-body">
+              <p className="modal-monitoreo-pozo-intro">Sube archivos de documentación para que estén disponibles para el asistente IA. Solo se permiten formatos de documento y no archivos ejecutables o scripts por seguridad.</p>
 
               <form className="modal-upload-form" onSubmit={subir}>
                 <label className="compact-upload-file">Archivo

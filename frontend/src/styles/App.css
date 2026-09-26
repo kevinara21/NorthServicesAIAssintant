@@ -317,10 +317,10 @@
 .company-overview a:hover, .company-inventory-links a:hover { color: var(--color-primary-dark); }
 .company-overview svg, .company-inventory-links svg { width: 16px; height: 16px; }
 .company-inventory-links { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px; width: 100%; }
-.company-inventory-links a { justify-content: space-between; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); }
-.company-inventory-links a:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.company-inventory-links a { justify-content: space-between; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); transition: all var(--transition-fast); }
+.company-inventory-links a:hover { border-color: var(--color-primary); color: var(--color-primary); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .company-inventory-links .company-inventory-link-button { display: inline-flex; align-items: center; justify-content: space-between; width: 100%; min-height: 86px; padding: 18px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-main); box-shadow: var(--shadow-sm); font: inherit; text-align: left; cursor: pointer; transition: all var(--transition-fast); }
-.company-inventory-links .company-inventory-link-button:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.company-inventory-links .company-inventory-link-button:hover { border-color: var(--color-primary); color: var(--color-primary); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .company-inventory-links span { display: flex; flex-direction: column; gap: 6px; }
 .company-inventory-links strong { font-size: 14px; }
 .company-inventory-links small { width: 100%; max-width: none; color: var(--color-text-muted); font-size: 12px; font-weight: 400; line-height: 1.4; }
@@ -868,17 +868,17 @@
 }
 
 /* =========================================================
-   ECLIPSE TOUCH MODAL
+   MODAL MONITOREO DE POZO (namespace global de modales)
    ========================================================= */
-.eclipse-modal-overlay { z-index: 3000; align-items: flex-start; padding: 32px 16px; overflow-y: auto; }
-.eclipse-modal { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--border-radius-lg); background: var(--color-white); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28); animation: scaleIn var(--transition-medium); }
-.eclipse-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 22px; background: var(--color-black); color: var(--color-white); }
-.eclipse-modal-header h2 { margin: 2px 0 0; color: var(--color-white); font-size: 20px; }
-.eclipse-modal-header .dashboard-eyebrow { color: var(--color-primary-light); }
-.eclipse-modal-close { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: var(--border-radius-sm); background: transparent; color: var(--color-white); cursor: pointer; transition: background var(--transition-fast); }
-.eclipse-modal-close:hover { background: var(--color-primary); color: #fff; }
-.eclipse-modal-close svg { width: 18px; height: 18px; }
-.eclipse-modal-body { padding: 20px 22px 24px; overflow-y: auto; }
+.modal-monitoreo-pozo-overlay { z-index: 3000; align-items: flex-start; padding: 32px 16px; overflow-y: auto; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
+.modal-monitoreo-pozo { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--border-radius-lg); background: var(--color-white); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28); animation: scaleIn var(--transition-medium); }
+.modal-monitoreo-pozo-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 22px; background: var(--color-black); color: var(--color-white); }
+.modal-monitoreo-pozo-header h2 { margin: 2px 0 0; color: var(--color-white); font-size: 20px; }
+.modal-monitoreo-pozo-header .dashboard-eyebrow { color: var(--color-primary-light); }
+.modal-monitoreo-pozo-close { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: var(--border-radius-sm); background: transparent; color: var(--color-white); cursor: pointer; transition: background var(--transition-fast); }
+.modal-monitoreo-pozo-close:hover { background: var(--color-primary); color: #fff; }
+.modal-monitoreo-pozo-close svg { width: 18px; height: 18px; }
+.modal-monitoreo-pozo-body { padding: 20px 22px 24px; overflow-y: auto; }
 .modal-upload-form { display: flex; flex-direction: column; gap: 14px; }
 .modal-upload-form label { display: flex; flex-direction: column; gap: 6px; color: var(--color-text-main); font-size: 12px; font-weight: 700; }
 .modal-upload-form input { width: 100%; min-height: 40px; padding: 10px 12px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-sm); background: #fff; color: var(--color-text-main); font: inherit; font-size: 13px; }
@@ -1200,16 +1200,22 @@
     width: 100%;
   }
 }
-.eclipse-intro { margin: 0 0 16px; font-size: 14px; color: var(--color-text-muted); }
-.eclipse-list { display: grid; gap: 12px; margin-top: 20px; }
-.eclipse-card { background: #fff; padding: 16px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); box-shadow: var(--shadow-sm); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.eclipse-card h3 { margin: 0; display: flex; gap: 8px; align-items: center; font-size: 16px; }
-.eclipse-card h3 svg { color: var(--color-primary); }
-.eclipse-card small { color: var(--color-text-muted); }
-.eclipse-card-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 0; border: 0; background: transparent; color: var(--color-primary); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
-.eclipse-card-link:hover { color: var(--color-primary-dark); text-decoration: underline; }
-.eclipse-card-link svg { width: 15px; height: 15px; flex: 0 0 auto; }
-.eclipse-card-actions { display: flex; align-items: center; gap: 8px; }
+.modal-monitoreo-pozo-intro { margin: 0 0 16px; font-size: 14px; color: var(--color-text-muted); }
+.modal-monitoreo-pozo-list { display: grid; gap: 12px; margin-top: 20px; }
+.modal-monitoreo-pozo-card { background: #fff; padding: 16px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); box-shadow: var(--shadow-sm); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.modal-monitoreo-pozo-card h3 { margin: 0; display: flex; gap: 8px; align-items: center; font-size: 16px; }
+.modal-monitoreo-pozo-card h3 svg { color: var(--color-primary); }
+.modal-monitoreo-pozo-card small { color: var(--color-text-muted); }
+.modal-monitoreo-pozo-card-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 0; border: 0; background: transparent; color: var(--color-primary); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.modal-monitoreo-pozo-card-link:hover { color: var(--color-primary-dark); text-decoration: underline; }
+.modal-monitoreo-pozo-card-link svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.modal-monitoreo-pozo-card-actions { display: flex; align-items: center; gap: 8px; }
+.btn-monitoreo-pozo-primary { min-height: 40px; padding: 10px 18px; border: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; background: var(--color-primary); color: #fff; transition: background var(--transition-fast), opacity var(--transition-fast); }
+.btn-monitoreo-pozo-primary:hover { background: var(--color-primary-dark); }
+.btn-monitoreo-pozo-primary:disabled { opacity: .5; cursor: not-allowed; }
+.btn-monitoreo-pozo-danger { min-height: 40px; padding: 10px 18px; border: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; background: #DC2626; color: #fff; transition: background var(--transition-fast), opacity var(--transition-fast); }
+.btn-monitoreo-pozo-danger:hover { background: #B91C1C; }
+.btn-monitoreo-pozo-danger:disabled { opacity: .5; cursor: not-allowed; }
 
 /* =========================================================
    LISTAS DEL CHATBOT
@@ -1347,15 +1353,33 @@
 .user-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
 /* =========================================================
-   MODAL NUEVO ROL / ÁREA (estilo eclipse, igual a Starlink)
+   MODAL NUEVO ROL / ÁREA (namespace .modal-monitoreo-pozo)
    ========================================================= */
-.catalog-eclipse-modal { width: min(440px, 100%); }
-.catalog-eclipse-input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: var(--color-text-main); font: inherit; font-size: 14px; box-sizing: border-box; }
-.catalog-eclipse-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .15); }
-.catalog-eclipse-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.catalog-eclipse-actions button { min-height: 40px; padding: 10px 18px; border: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), opacity var(--transition-fast); }
-.catalog-eclipse-cancel { background: #f1f5f9; color: #475569; }
-.catalog-eclipse-cancel:hover { background: #e2e8f0; }
-.catalog-eclipse-confirm { background: var(--color-primary); color: #fff; }
-.catalog-eclipse-confirm:hover { background: var(--color-primary-dark); }
-.catalog-eclipse-confirm:disabled { opacity: .5; cursor: not-allowed; }
+.modal-monitoreo-pozo-catalog { width: min(440px, 100%); }
+.modal-monitoreo-pozo-input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: var(--color-text-main); font: inherit; font-size: 14px; box-sizing: border-box; }
+.modal-monitoreo-pozo-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .15); }
+.modal-monitoreo-pozo-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.modal-monitoreo-pozo-actions button { min-height: 40px; padding: 10px 18px; border: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: background var(--transition-fast), opacity var(--transition-fast); }
+.btn-monitoreo-pozo-cancel { background: #f1f5f9; color: #475569; }
+.btn-monitoreo-pozo-cancel:hover { background: #e2e8f0; }
+
+/* =========================================================
+   BANNER SIN CONEXIÓN A INTERNET (2A)
+   ========================================================= */
+.banner-sin-conexion { position: fixed; top: 0; left: 0; right: 0; z-index: 4000; padding: 12px 18px; background: var(--color-primary); color: #fff; font-size: 14px; font-weight: 700; text-align: center; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); animation: slideDown var(--transition-medium); }
+
+/* =========================================================
+   MODAL DE INACTIVIDAD (2B)
+   ========================================================= */
+.modal-monitoreo-pozo-inactividad { width: min(480px, 100%); }
+.inactividad-overlay { align-items: center; justify-content: center; padding: 16px; overflow: hidden; }
+.modal-monitoreo-pozo-inactividad .modal-monitoreo-pozo-header h2 { display: flex; align-items: center; gap: 8px; }
+.modal-monitoreo-pozo-inactividad .modal-monitoreo-pozo-header h2 svg { color: var(--color-primary-light); }
+.inactividad-barra { width: 100%; height: 10px; margin-top: 18px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+.inactividad-barra-relleno { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--color-primary), var(--color-primary-dark)); transition: width 1s linear; }
+.inactividad-contador { margin: 12px 0 0; text-align: center; font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--color-text-main); }
+
+/* =========================================================
+   AVISO DE CIERRE POR ACTIVIDAD SOSPECHOSA (2D)
+   ========================================================= */
+.login-aviso-cierre { margin: 0 0 16px; padding: 10px 12px; border: 1px solid rgba(220, 38, 38, 0.35); border-radius: 6px; background: rgba(220, 38, 38, 0.08); color: #B91C1C; font-size: 13px; font-weight: 600; text-align: center; }

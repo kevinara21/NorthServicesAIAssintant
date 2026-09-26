@@ -1,6 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { API_URL } from '../services/api';
 
+// ============================================================================
+// Mapeo de entorno / Dev Logger
+// ============================================================================
+// Solo imprime mensajes de depuración cuando la app corre en desarrollo
+// (vite dev / import.meta.env.DEV === true). En producción estos calls son
+// no-ops y no generan ni overhead ni salida en consola.
+const IS_DEV = Boolean(import.meta.env?.DEV);
+
+const logDebug = IS_DEV
+  ? (...args) => console.log('[CHATBOT]', ...args)
+  : () => {};
+
+// Bandera a nivel módulo: el log de carga se imprime UNA SOLA VEZ por
+// recarga real de la página, sin importar re-montajes de React 19.
+let chatbotLogImpreso = false;
+
+// ============================================================================
+// Helpers de formato
+// ============================================================================
 function limpiarFormatoRespuesta(texto) {
   return texto
     .replace(/\*\*(.*?)\*\*/g, '$1')
@@ -62,26 +81,25 @@ function renderizarTextoEnriquecido(texto) {
   return fragmentos;
 }
 
+// ============================================================================
+// Componente principal
+// ============================================================================
 export default function Chatbot({ token, uid }) {
-  // =========================================================
-  // PRUEBA: confirma que ESTE Chatbot.jsx está siendo cargado
-  // =========================================================
-  console.log('====================================');
-  console.log('[CHATBOT] Chatbot.jsx CARGADO');
-  console.log('[CHATBOT] API_URL:', API_URL);
-  console.log('====================================');
+  // Log de carga (solo 1 vez por vida de la página y solo en dev)
+  useEffect(() => {
+    if (chatbotLogImpreso) return;
+    chatbotLogImpreso = true;
+    logDebug('====================================');
+    logDebug('Chatbot.jsx CARGADO');
+    logDebug('API_URL:', API_URL);
+    logDebug('====================================');
+  }, []);
 
   const [pregunta, setPregunta] = useState('');
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(false);
 
-  // =========================================================
-  // PERSISTENCIA DEL HISTORIAL
-  // El chat se guarda por usuario en localStorage para que al
-  // cerrar el panel o recargar la página no se pierda la
-  // conversación. Solo el botón "Limpiar" borra el historial.
-  // =========================================================
-
+  // Persistencia del historial por usuario
   const claveHistorial = `chat_historial_${uid || 'anonimo'}`;
 
   useEffect(() => {
@@ -109,13 +127,7 @@ export default function Chatbot({ token, uid }) {
     }
   }, [historial, claveHistorial]);
 
-  // =========================================================
-  // SCROLL DEL CHAT
-  // Al abrir o generar respuestas, se mantiene anclado al final
-  // (último mensaje). Si el usuario sube para leer lo anterior,
-  // no se lo arrastra hacia abajo.
-  // =========================================================
-
+  // Scroll automático al final (solo si el usuario no está leyendo arriba)
   const contenedorChatRef = useRef(null);
   const cercaDelFinalRef = useRef(true);
 
@@ -132,6 +144,7 @@ export default function Chatbot({ token, uid }) {
     if (cercaDelFinalRef.current) contenedor.scrollTop = contenedor.scrollHeight;
   }, [historial]);
 
+  // Descarga de fuentes (archivos adjuntos)
   const descargarFuente = async (ruta, etiqueta) => {
     try {
       const respuesta = await fetch(`${API_URL}${ruta}`, { headers: { Authorization: `Bearer ${token}` } });
@@ -139,8 +152,6 @@ export default function Chatbot({ token, uid }) {
       const blob = await respuesta.blob();
       const url = URL.createObjectURL(blob);
 
-      // Usar el nombre REAL del archivo del header Content-Disposition
-      // (el que envía el backend) en lugar de la etiqueta del botón.
       const disposicion = respuesta.headers.get('Content-Disposition') || '';
       const coincidencia = disposicion.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)["']?/i);
       const nombreArchivoReal = coincidencia
@@ -163,40 +174,33 @@ export default function Chatbot({ token, uid }) {
     }
   };
 
-  // =========================================================
-  // ENVÍO DE MENSAJE
-  // =========================================================
+  // =========================================================================
+  // Envío de mensaje + stream SSE
+  // =========================================================================
   const manejarEnvio = async (e) => {
     e.preventDefault();
 
-    console.log('====================================');
-    console.log('[CHATBOT] manejarEnvio() EJECUTADO');
-    console.log('[CHATBOT] Pregunta actual:', pregunta);
-    console.log('====================================');
+    logDebug('====================================');
+    logDebug('manejarEnvio() EJECUTADO');
+    logDebug('Pregunta actual:', pregunta);
+    logDebug('====================================');
 
     if (!pregunta.trim()) {
-      console.log('[CHATBOT] Pregunta vacía');
+      logDebug('Pregunta vacía, se ignora.');
       return;
     }
 
     if (cargando) {
-      console.log('[CHATBOT] Ya existe una consulta en proceso');
+      logDebug('Ya existe una consulta en proceso, se ignora.');
       return;
     }
 
     const consultaUsuario = pregunta.trim();
-
-    console.log(
-      '[CHATBOT] Consulta enviada:',
-      consultaUsuario
-    );
+    logDebug('Consulta enviada:', consultaUsuario);
 
     setPregunta('');
     setCargando(true);
 
-    // =======================================================
-    // AGREGAR MENSAJES AL HISTORIAL
-    // =======================================================
     setHistorial((prev) => [
       ...prev,
       {
@@ -212,50 +216,29 @@ export default function Chatbot({ token, uid }) {
     ]);
 
     try {
-      // =====================================================
-      // FETCH
-      // =====================================================
-      console.log(
-        '[CHATBOT] Enviando POST a:',
-        `${API_URL}/api/chat`
-      );
-
-      console.log(
-        '[CHATBOT] Token disponible:',
-        token ? 'SÍ' : 'NO'
-      );
+      logDebug('Enviando POST a:', `${API_URL}/api/chat`);
+      logDebug('Token disponible:', token ? 'SÍ' : 'NO');
 
       const res = await fetch(
         `${API_URL}/api/chat`,
         {
           method: 'POST',
-
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-
           body: JSON.stringify({
             pregunta: consultaUsuario,
           }),
         }
       );
 
-      // =====================================================
-      // RESPUESTA HTTP
-      // =====================================================
-      console.log('====================================');
-      console.log('[CHATBOT] RESPUESTA HTTP RECIBIDA');
-      console.log('[CHATBOT] Status:', res.status);
-      console.log(
-        '[CHATBOT] Status Text:',
-        res.statusText
-      );
-      console.log(
-        '[CHATBOT] Content-Type:',
-        res.headers.get('content-type')
-      );
-      console.log('====================================');
+      logDebug('====================================');
+      logDebug('RESPUESTA HTTP RECIBIDA');
+      logDebug('Status:', res.status);
+      logDebug('Status Text:', res.statusText);
+      logDebug('Content-Type:', res.headers.get('content-type'));
+      logDebug('====================================');
 
       if (!res.ok) {
         let mensaje = `Error HTTP ${res.status}`;
@@ -281,425 +264,173 @@ export default function Chatbot({ token, uid }) {
         throw new Error(mensaje);
       }
 
-      // =====================================================
-      // COMPROBAR STREAM
-      // =====================================================
       if (!res.body) {
-        console.error(
-          '[CHATBOT] res.body NO EXISTE'
-        );
-
-        throw new Error(
-          'El servidor no devolvió un stream de respuesta.'
-        );
+        console.error('[CHATBOT] res.body NO EXISTE');
+        throw new Error('El servidor no devolvió un stream de respuesta.');
       }
 
-      console.log(
-        '[CHATBOT] res.body existe correctamente'
-      );
+      logDebug('res.body existe correctamente.');
 
       const reader = res.body.getReader();
-
-      const decoder = new TextDecoder(
-        'utf-8'
-      );
-
+      const decoder = new TextDecoder('utf-8');
       let buffer = '';
 
-      // =====================================================
-      // FUNCIÓN PARA ACTUALIZAR EL ÚLTIMO MENSAJE DEL BOT
-      // =====================================================
-      const actualizarUltimoBot = (
-        callback
-      ) => {
+      // Mutación del último mensaje del bot en el historial
+      const actualizarUltimoBot = (callback) => {
         setHistorial((prev) => {
-          if (prev.length === 0) {
-            return prev;
-          }
+          if (prev.length === 0) return prev;
 
-          const nuevoHistorial = [
-            ...prev,
-          ];
-
-          const ultimoIndex =
-            nuevoHistorial.length - 1;
-
-          const ultimo =
-            nuevoHistorial[ultimoIndex];
+          const nuevoHistorial = [...prev];
+          const ultimoIndex = nuevoHistorial.length - 1;
+          const ultimo = nuevoHistorial[ultimoIndex];
 
           if (ultimo.emisor !== 'bot') {
-            console.warn(
-              '[CHATBOT] El último mensaje no es del bot'
-            );
-
+            console.warn('[CHATBOT] El último mensaje no es del bot');
             return prev;
           }
 
-          nuevoHistorial[
-            ultimoIndex
-          ] = callback(ultimo);
-
+          nuevoHistorial[ultimoIndex] = callback(ultimo);
           return nuevoHistorial;
         });
       };
 
-      // =====================================================
-      // PROCESAR EVENTO SSE
-      // =====================================================
-      const procesarEvento = (
-        evento
-      ) => {
-        console.log(
-          '------------------------------------'
-        );
+      // Procesa UN evento SSE ya parseado (separado por \n\n)
+      const procesarEvento = (evento) => {
+        const lineas = evento.split(/\r?\n/);
 
-        console.log(
-          '[CHATBOT] Evento SSE recibido:'
-        );
+        for (const linea of lineas) {
+          const lineaLimpia = linea.trim();
+          if (!lineaLimpia.startsWith('data:')) continue;
 
-        console.log(evento);
-
-        console.log(
-          '------------------------------------'
-        );
-
-        const lineas =
-          evento.split(/\r?\n/);
-
-        for (
-          const linea of lineas
-        ) {
-          const lineaLimpia =
-            linea.trim();
-
-          if (
-            !lineaLimpia.startsWith(
-              'data:'
-            )
-          ) {
-            continue;
-          }
-
-          const contenido =
-            lineaLimpia
-              .substring(5)
-              .trim();
-
-          if (!contenido) {
-            continue;
-          }
-
-          console.log(
-            '[CHATBOT] DATA:',
-            contenido
-          );
+          const contenido = lineaLimpia.substring(5).trim();
+          if (!contenido) continue;
 
           let data;
-
           try {
-            data = JSON.parse(
-              contenido
-            );
+            data = JSON.parse(contenido);
           } catch (error) {
-            console.error(
-              '[CHATBOT] ERROR PARSEANDO JSON SSE:',
-              error
-            );
-
-            console.error(
-              '[CHATBOT] Contenido problemático:',
-              contenido
-            );
-
+            console.error('[CHATBOT] ERROR PARSEANDO JSON SSE:', error);
+            console.error('[CHATBOT] Contenido problemático:', contenido);
             continue;
           }
 
-          console.log(
-            '[CHATBOT] Evento tipo:',
-            data.tipo
-          );
+          logDebug('Evento SSE tipo:', data.tipo);
 
-          // =================================================
-          // TEXTO
-          // =================================================
-          if (
-            data.tipo === 'texto'
-          ) {
-            console.log(
-              '[CHATBOT] TEXTO RECIBIDO:',
-              data.texto
-            );
-
-            actualizarUltimoBot(
-              (ultimo) => ({
-                ...ultimo,
-
-                texto:
-                  ultimo.texto +
-                  (data.texto || ''),
-              })
-            );
+          // --- TEXTO ---------------------------------------------------------
+          if (data.tipo === 'texto') {
+            actualizarUltimoBot((ultimo) => ({
+              ...ultimo,
+              texto: ultimo.texto + (data.texto || ''),
+            }));
           }
 
-          // =================================================
-          // FUENTES
-          // =================================================
-          if (
-            data.tipo === 'fuentes'
-          ) {
-            console.log(
-              '[CHATBOT] FUENTES RECIBIDAS:',
-              data.fuentes
-            );
-
-            actualizarUltimoBot(
-              (ultimo) => ({
-                ...ultimo,
-
-                fuentes:
-                  data.fuentes || [],
-              })
-            );
+          // --- REINICIAR TEXTO ----------------------------------------------
+          if (data.tipo === 'texto_reset') {
+            logDebug('TEXTO_RESET: limpiando respuesta parcial.');
+            actualizarUltimoBot((ultimo) => ({
+              ...ultimo,
+              texto: '',
+            }));
           }
 
-          // =================================================
-          // MÉTRICAS
-          // =================================================
-          if (
-            data.tipo === 'metricas'
-          ) {
-            console.log(
-              '[CHATBOT] MÉTRICAS RECIBIDAS:',
-              data.metricas
-            );
-
-            actualizarUltimoBot(
-              (ultimo) => ({
-                ...ultimo,
-
-                metricas:
-                  data.metricas ||
-                  null,
-              })
-            );
+          // --- FUENTES -------------------------------------------------------
+          if (data.tipo === 'fuentes') {
+            logDebug('FUENTES RECIBIDAS:', data.fuentes);
+            actualizarUltimoBot((ultimo) => ({
+              ...ultimo,
+              fuentes: data.fuentes || [],
+            }));
           }
 
-          // =================================================
-          // ERROR
-          // =================================================
-          if (
-            data.tipo === 'error'
-          ) {
+          // --- MÉTRICAS ------------------------------------------------------
+          if (data.tipo === 'metricas') {
+            logDebug('MÉTRICAS RECIBIDAS:', data.metricas);
+            actualizarUltimoBot((ultimo) => ({
+              ...ultimo,
+              metricas: data.metricas || null,
+            }));
+          }
+
+          // --- ERROR (evento tipificado) ------------------------------------
+          if (data.tipo === 'error') {
             console.error(
               '[CHATBOT] ERROR ENVIADO POR BACKEND:',
               data.error
             );
 
-            actualizarUltimoBot(
-              (ultimo) => ({
-                ...ultimo,
-
-                texto:
-                  data.error ||
-                  'Ocurrió un error al procesar la consulta.',
-              })
-            );
+            actualizarUltimoBot((ultimo) => ({
+              ...ultimo,
+              texto:
+                data.error ||
+                'Ocurrió un error al procesar la consulta.',
+            }));
           }
 
-          // =================================================
-          // FIN
-          // =================================================
-          if (
-            data.tipo === 'fin'
-          ) {
-            console.log(
-              '[CHATBOT] EVENTO FIN RECIBIDO'
-            );
-
+          // --- FIN -----------------------------------------------------------
+          if (data.tipo === 'fin') {
+            logDebug('EVENTO FIN RECIBIDO');
             setCargando(false);
           }
         }
       };
 
-      // =====================================================
-      // LEER STREAM
-      // =====================================================
-      console.log(
-        '[CHATBOT] INICIANDO LECTURA DEL STREAM'
-      );
+      logDebug('INICIANDO LECTURA DEL STREAM');
 
       while (true) {
-        console.log(
-          '[CHATBOT] Ejecutando reader.read()...'
-        );
+        const { value, done } = await reader.read();
 
-        const {
-          value,
-          done,
-        } = await reader.read();
-
-        console.log(
-          '[CHATBOT] reader.read() resultado:',
-          {
-            done,
-            bytes: value
-              ? value.length
-              : 0,
-          }
-        );
-
-        // ===================================================
-        // STREAM TERMINADO
-        // ===================================================
+        // Stream terminado
         if (done) {
-          console.log(
-            '[CHATBOT] STREAM TERMINADO'
-          );
-
+          logDebug('STREAM TERMINADO');
           break;
         }
 
-        // ===================================================
-        // DECODIFICAR CHUNK
-        // ===================================================
-        const textoRecibido =
-          decoder.decode(
-            value,
-            {
-              stream: true,
-            }
-          );
-
-        console.log(
-          '[CHATBOT] CHUNK RECIBIDO:',
-          JSON.stringify(
-            textoRecibido
-          )
-        );
-
+        // Decodificar chunk
+        const textoRecibido = decoder.decode(value, { stream: true });
         buffer += textoRecibido;
 
-        // ===================================================
-        // SEPARAR EVENTOS SSE
-        // ===================================================
-        const eventos =
-          buffer.split(
-            /\r?\n\r?\n/
-          );
+        // Separar eventos SSE
+        const eventos = buffer.split(/\r?\n\r?\n/);
+        buffer = eventos.pop() || '';
 
-        // El último puede estar incompleto
-        buffer =
-          eventos.pop() || '';
-
-        for (
-          const evento of eventos
-        ) {
-          if (
-            evento.trim()
-          ) {
-            procesarEvento(
-              evento
-            );
-          }
+        for (const evento of eventos) {
+          if (evento.trim()) procesarEvento(evento);
         }
       }
 
-      // =====================================================
-      // DECODIFICAR RESTO DEL STREAM
-      // =====================================================
+      // Decodificar resto del buffer que haya quedado colgado
       buffer += decoder.decode();
 
-      if (
-        buffer.trim()
-      ) {
-        console.log(
-          '[CHATBOT] BUFFER FINAL:',
-          buffer
-        );
-
-        procesarEvento(
-          buffer
-        );
+      if (buffer.trim()) {
+        logDebug('BUFFER FINAL:', buffer);
+        procesarEvento(buffer);
       }
 
-      // =====================================================
-      // FINAL NORMAL
-      // =====================================================
-      console.log(
-        '===================================='
-      );
-
-      console.log(
-        '[CHATBOT] CONSULTA TERMINADA CORRECTAMENTE'
-      );
-
-      console.log(
-        '===================================='
-      );
+      logDebug('====================================');
+      logDebug('CONSULTA TERMINADA CORRECTAMENTE');
+      logDebug('====================================');
 
       setCargando(false);
-
     } catch (error) {
-      // =====================================================
-      // ERROR
-      // =====================================================
-      console.error(
-        '===================================='
-      );
-
-      console.error(
-        '[CHATBOT] ERROR REAL'
-      );
-
-      console.error(
-        '[CHATBOT] Nombre:',
-        error?.name
-      );
-
-      console.error(
-        '[CHATBOT] Mensaje:',
-        error?.message
-      );
-
-      console.error(
-        '[CHATBOT] Error:',
-        error
-      );
-
-      console.error(
-        '[CHATBOT] Stack:',
-        error?.stack
-      );
-
-      console.error(
-        '===================================='
-      );
+      // ERROR REAL: sí se debe imprimir en producción para trazabilidad
+      console.error('====================================');
+      console.error('[CHATBOT] ERROR REAL');
+      console.error('[CHATBOT] Nombre:', error?.name);
+      console.error('[CHATBOT] Mensaje:', error?.message);
+      console.error('[CHATBOT] Error:', error);
+      console.error('[CHATBOT] Stack:', error?.stack);
+      console.error('====================================');
 
       setHistorial((prev) => {
-        if (prev.length === 0) {
-          return prev;
-        }
+        if (prev.length === 0) return prev;
 
-        const nuevoHistorial = [
-          ...prev,
-        ];
+        const nuevoHistorial = [...prev];
+        const ultimoIndex = nuevoHistorial.length - 1;
+        const ultimo = nuevoHistorial[ultimoIndex];
 
-        const ultimoIndex =
-          nuevoHistorial.length - 1;
-
-        const ultimo =
-          nuevoHistorial[
-            ultimoIndex
-          ];
-
-        if (
-          ultimo.emisor === 'bot'
-        ) {
-          nuevoHistorial[
-            ultimoIndex
-          ] = {
+        if (ultimo.emisor === 'bot') {
+          nuevoHistorial[ultimoIndex] = {
             ...ultimo,
-
             texto:
               `Error: ${
                 error?.message ||
@@ -715,20 +446,15 @@ export default function Chatbot({ token, uid }) {
     }
   };
 
-  // =========================================================
-  // LIMPIAR CHAT
-  // =========================================================
+  // Limpiar historial (solo cuando no hay request en vuelo)
   const limpiarChat = () => {
-    if (cargando) {
-      return;
-    }
-
+    if (cargando) return;
     setHistorial([]);
   };
 
-  // =========================================================
-  // INTERFAZ
-  // =========================================================
+  // =========================================================================
+  // Render
+  // =========================================================================
   return (
     <div
       style={{
@@ -741,45 +467,24 @@ export default function Chatbot({ token, uid }) {
       <div
         style={{
           display: 'flex',
-          justifyContent:
-            'space-between',
+          justifyContent: 'space-between',
           alignItems: 'center',
           marginBottom: '8px',
         }}
       >
-        {historial.length >
-          0 && (
+        {historial.length > 0 && (
           <button
             type="button"
-            onClick={
-              limpiarChat
-            }
-            disabled={
-              cargando
-            }
+            onClick={limpiarChat}
+            disabled={cargando}
             style={{
-              padding:
-                '7px 12px',
-
-              border:
-                '1px solid #d1d5db',
-
-              background:
-                '#fff',
-
-              color:
-                '#374151',
-
-              borderRadius:
-                '6px',
-
-              cursor:
-                cargando
-                  ? 'not-allowed'
-                  : 'pointer',
-
-              fontSize:
-                '13px',
+              padding: '7px 12px',
+              border: '1px solid #d1d5db',
+              background: '#fff',
+              color: '#374151',
+              borderRadius: '6px',
+              cursor: cargando ? 'not-allowed' : 'pointer',
+              fontSize: '13px',
             }}
           >
             Limpiar
@@ -787,297 +492,185 @@ export default function Chatbot({ token, uid }) {
         )}
       </div>
 
-      {/* ===================================================
-          ÁREA DEL CHAT
-      =================================================== */}
+      {/* Área del chat */}
       <div
         ref={contenedorChatRef}
         onScroll={manejarScrollChat}
         style={{
           height: '400px',
-
-          border:
-            '1px solid #cbd5e1',
-
-          borderRadius:
-            '8px',
-
-          padding:
-            '15px',
-
-          overflowY:
-            'auto',
-
-          background:
-            '#f8fafc',
-
-          display:
-            'flex',
-
-          flexDirection:
-            'column',
-
-          gap:
-            '12px',
-
-          boxSizing:
-            'border-box',
+          border: '1px solid #cbd5e1',
+          borderRadius: '8px',
+          padding: '15px',
+          overflowY: 'auto',
+          background: '#f8fafc',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px',
+          boxSizing: 'border-box',
         }}
       >
-        {/* CHAT VACÍO */}
-        {historial.length ===
-          0 && (
+        {/* Chat vacío */}
+        {historial.length === 0 && (
           <div
             style={{
-              color:
-                '#94a3b8',
-
-              textAlign:
-                'center',
-
-              marginTop:
-                '190px',
+              color: '#94a3b8',
+              textAlign: 'center',
+              marginTop: '190px',
             }}
           >
             <div
               style={{
-                fontSize:
-                  '16px',
-
-                fontWeight:
-                  600,
-
-                color:
-                  '#64748b',
-
-                marginBottom:
-                  '6px',
+                fontSize: '16px',
+                fontWeight: 600,
+                color: '#64748b',
+                marginBottom: '6px',
               }}
             >
-              Asistente Virtual IA
+              North Services AI Assistant
             </div>
           </div>
         )}
 
-        {/* MENSAJES */}
-        {historial.map(
-          (msg, i) => {
-            const esUsuario =
-              msg.emisor ===
-              'usuario';
+        {/* Mensajes */}
+        {historial.map((msg, i) => {
+          const esUsuario = msg.emisor === 'usuario';
 
-            return (
+          return (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: esUsuario ? 'flex-end' : 'flex-start',
+              }}
+            >
               <div
-                key={i}
                 style={{
-                  display:
-                    'flex',
-
-                  flexDirection:
-                    'column',
-
-                  alignItems:
+                  background:
+                    esUsuario ? '#DD2226' : '#ffffff',
+                  color:
+                    esUsuario ? '#ffffff' : '#0f172a',
+                  padding: '10px 13px',
+                  borderRadius:
                     esUsuario
-                      ? 'flex-end'
-                      : 'flex-start',
+                      ? '12px 12px 3px 12px'
+                      : '12px 12px 12px 3px',
+                  maxWidth: '82%',
+                  lineHeight: 1.55,
+                  fontSize: '14px',
+                  whiteSpace: 'pre-wrap',
+                  border:
+                    esUsuario ? 'none' : '1px solid #e2e8f0',
+                  boxShadow:
+                    esUsuario
+                      ? 'none'
+                      : '0 1px 2px rgba(0,0,0,0.04)',
                 }}
               >
-                {/* MENSAJE */}
-                <div
-                  style={{
-                    background:
-                      esUsuario
-                        ? '#DD2226'
-                        : '#ffffff',
+                {msg.texto ? renderizarTextoEnriquecido(msg.texto) : (
+                  <span
+                    style={{
+                      color: '#64748b',
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    Generando respuesta...
+                  </span>
+                )}
+              </div>
 
-                    color:
-                      esUsuario
-                        ? '#ffffff'
-                        : '#0f172a',
-
-                    padding:
-                      '10px 13px',
-
-                    borderRadius:
-                      esUsuario
-                        ? '12px 12px 3px 12px'
-                        : '12px 12px 12px 3px',
-
-                    maxWidth:
-                      '82%',
-
-                    lineHeight:
-                      1.55,
-
-                    fontSize:
-                      '14px',
-
-                    whiteSpace:
-                      'pre-wrap',
-
-                    border:
-                      esUsuario
-                        ? 'none'
-                        : '1px solid #e2e8f0',
-
-                    boxShadow:
-                      esUsuario
-                        ? 'none'
-                        : '0 1px 2px rgba(0,0,0,0.04)',
-                  }}
-                >
-                  {msg.texto ? renderizarTextoEnriquecido(msg.texto) : (
-                    <span
+              {!esUsuario &&
+                msg.fuentes
+                  ?.flatMap((fuente) => fuente.descargas || [])
+                  .filter(
+                    (descarga, indice, lista) =>
+                      lista.findIndex((item) => item.ruta === descarga.ruta) ===
+                      indice
+                  )
+                  .map((descarga) => (
+                    <button
+                      type="button"
+                      key={descarga.ruta}
+                      onClick={() =>
+                        descargarFuente(descarga.ruta, descarga.etiqueta)
+                      }
                       style={{
-                        color:
-                          '#64748b',
-
-                        fontStyle:
-                          'italic',
+                        marginTop: 8,
+                        marginRight: 8,
+                        border: 'none',
+                        borderRadius: 5,
+                        padding: '7px 10px',
+                        background: '#DD2226',
+                        color: '#fff',
+                        cursor: 'pointer',
+                        fontWeight: 600,
                       }}
                     >
-                      Generando respuesta...
-                    </span>
-                  )}
-                </div>
+                      {descarga.etiqueta}
+                    </button>
+                  ))}
+            </div>
+          );
+        })}
 
-                {!esUsuario && msg.fuentes?.flatMap((fuente) => fuente.descargas || []).filter((descarga, indice, lista) => lista.findIndex((item) => item.ruta === descarga.ruta) === indice).map((descarga) => (
-                  <button
-                    type="button"
-                    key={descarga.ruta}
-                    onClick={() => descargarFuente(descarga.ruta, descarga.etiqueta)}
-                    style={{ marginTop: 8, marginRight: 8, border: 'none', borderRadius: 5, padding: '7px 10px', background: '#DD2226', color: '#fff', cursor: 'pointer', fontWeight: 600 }}
-                  >
-                    {descarga.etiqueta}
-                  </button>
-                ))}
-
-              </div>
-            );
-          }
-        )}
-
-        {/* PROCESANDO */}
+        {/* Procesando */}
         {cargando && (
           <div
             style={{
-              alignSelf:
-                'flex-start',
-
-              color:
-                '#64748b',
-
-              fontSize:
-                '13px',
-
-              paddingLeft:
-                '4px',
+              alignSelf: 'flex-start',
+              color: '#64748b',
+              fontSize: '13px',
+              paddingLeft: '4px',
             }}
-          >
-          </div>
+          />
         )}
       </div>
 
-      {/* ===================================================
-          FORMULARIO
-      =================================================== */}
+      {/* Formulario */}
       <form
-        onSubmit={
-          manejarEnvio
-        }
+        onSubmit={manejarEnvio}
         style={{
-          display:
-            'flex',
-
-          gap:
-            '10px',
-
-          marginTop:
-            '10px',
+          display: 'flex',
+          gap: '10px',
+          marginTop: '10px',
         }}
       >
         <input
           className="chat-message-input"
           type="text"
           value={pregunta}
-          onChange={(e) =>
-            setPregunta(
-              e.target.value
-            )
-          }
+          onChange={(e) => setPregunta(e.target.value)}
           placeholder="Haz una pregunta sobre los manuales técnicos..."
-          disabled={
-            cargando
-          }
+          disabled={cargando}
           style={{
             flex: 1,
-
-            padding:
-              '11px 12px',
-
-            border:
-              '1px solid #cbd5e1',
-
-            borderRadius:
-              '6px',
-
-            outline:
-              'none',
-
-            fontSize:
-              '14px',
-
-            color:
-              '#0f172a',
-
-            boxSizing:
-              'border-box',
-
-            background:
-              cargando
-                ? '#f8fafc'
-                : '#fff',
+            padding: '11px 12px',
+            border: '1px solid #cbd5e1',
+            borderRadius: '6px',
+            outline: 'none',
+            fontSize: '14px',
+            color: '#0f172a',
+            boxSizing: 'border-box',
+            background: cargando ? '#f8fafc' : '#fff',
           }}
         />
 
         <button
           type="submit"
-          disabled={
-            cargando ||
-            !pregunta.trim()
-          }
+          disabled={cargando || !pregunta.trim()}
           style={{
-            padding:
-              '10px 18px',
-
+            padding: '10px 18px',
             background:
-              cargando ||
-              !pregunta.trim()
-                ? '#B5181C'
-                : '#DD2226',
-
-            color:
-              '#fff',
-
-            border:
-              'none',
-
-            borderRadius:
-              '6px',
-
+              cargando || !pregunta.trim() ? '#B5181C' : '#DD2226',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '6px',
             cursor:
-              cargando ||
-              !pregunta.trim()
-                ? 'not-allowed'
-                : 'pointer',
-
-            fontWeight:
-              600,
+              cargando || !pregunta.trim() ? 'not-allowed' : 'pointer',
+            fontWeight: 600,
           }}
         >
-          {cargando
-            ? 'Generando...'
-            : 'Enviar'}
+          {cargando ? 'Generando...' : 'Enviar'}
         </button>
       </form>
     </div>

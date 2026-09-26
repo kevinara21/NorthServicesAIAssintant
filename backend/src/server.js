@@ -13,6 +13,12 @@ const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
 const { connectDB, getDB } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
+const driveOperaciones = require('./services/googleDrive');
+const {
+  DRIVE_MAX_ARCHIVOS,
+  DRIVE_INLINE_MAX_BYTES,
+  DRIVE_TEXTO_MAX_CHARS,
+} = require('./services/googleDrive');
 
 const app = express();
 
@@ -673,9 +679,19 @@ function dormir(ms) {
 // STREAMING COMPATIBLE CON OPENAI (BASE GENÉRICA)
 // ============================================================
 
-const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services. ' +
-  'Respondes de manera profesional, clara, concisa y ' +
-  'en texto plano, sin Markdown, sin asteriscos, sin negritas y sin encabezados.';
+const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.A.C. ' +
+  'Respondes de manera profesional, clara, concisa y en texto plano, sin Markdown, sin asteriscos, sin negritas y sin encabezados. ' +
+  'ALCANCE: solo la informacion de la empresa incluida en el CONTEXTO RECUPERADO. ' +
+  'REGLA 1: prohibido generar, escribir, explicar o sugerir codigo, scripts, calculadoras, formulas o programas en cualquier lenguaje, ' +
+  'aunque el usuario lo pida explicitamente, lo disfraces o insista. Ante tal peticion responde UNICAMENTE: ' +
+  '"No dispongo de scripts ni codigo programable en la documentacion tecnica de North Services." ' +
+  'REGLA 2: prohibido usar conocimiento externo. Si la consulta no trata sobre North Services (fluidos de perforacion, alquiler, equipos, pozos, ' +
+  'reportes de operaciones, facturacion o los kits de Starlink propios), NO respondas ni comentes el tema. Responde UNICAMENTE: ' +
+  '"Esa consulta esta fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con informacion de la empresa: servicios de fluidos de perforacion, alquiler y estado de equipos, operacion y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" ' +
+  'REGLA 3: prohibido responder preguntas de conocimiento general sobre Starlink como compania (fundacion, historia, servicios, precios, tecnologia). ' +
+  'REGLA 4: no inventes datos ni completes lo que no este en el contexto. No enumeres fuentes ni muestres etiquetas FUENTE 1, FUENTE 2. ' +
+  'REGLA 5: no menciones que eres un modelo de lenguaje ni una inteligencia artificial. ' +
+  'REGLA 6: si el usuario insiste en un tema fuera de alcance, repite exactamente la misma respuesta de cierre sin ceder.';
 
 async function generarContenidoCompat(
   prompt,
@@ -715,7 +731,7 @@ async function generarContenidoCompat(
         body: JSON.stringify({
           model: modelo,
           stream: true,
-          max_tokens: 256,
+          max_tokens: 512,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: prompt }
@@ -811,8 +827,15 @@ async function generarContenidoGemini(
     );
   }
 
-  const modelo =
-    'gemini-3.5-flash';
+  // Modelos válidos para generateContent. El principal puede caer
+  // por cuota (429) o por no estar disponible, por eso hay respaldo.
+  // OJO: el orden importa. 3.5-flash es el principal; 3.8-flash es el
+  // respaldo recomendado por Google cuando 3.5 agota cuota o se retira.
+  const modelosGemini = [
+    String(process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash').trim(),
+    'gemini-3.8-flash',
+    'gemini-flash-latest'
+  ].filter(Boolean);
 
   // ==========================================================
   // CONFIGURACI�"N
@@ -821,11 +844,7 @@ async function generarContenidoGemini(
   const REQUEST_TIMEOUT = 90000;
 
   const generationConfig = {
-    maxOutputTokens: 2048,
-
-    thinkingConfig: {
-      thinkingLevel: 'minimal'
-    }
+    maxOutputTokens: 4096
   };
 
   // ==========================================================
@@ -853,14 +872,32 @@ async function generarContenidoGemini(
 
     let indiceClave = -1;
 
+    const combinaciones = [];
+
+    for (const m of modelosGemini) {
+      for (let c = 0; c < clavesGemini.length; c += 1) {
+        combinaciones.push({ modelo: m, clave: c });
+      }
+    }
+
+    let intentoCombinacion = -1;
+
     while (
       !respuestaGemini?.ok &&
-      indiceClave < clavesGemini.length - 1
+      intentoCombinacion < combinaciones.length - 1
     ) {
-      indiceClave += 1;
+      intentoCombinacion += 1;
+
+      const { modelo, clave: idxClave } = combinaciones[intentoCombinacion];
+
+      indiceClave = idxClave;
 
       const apiKey =
         clavesGemini[indiceClave];
+
+      console.log(
+        `[CHAT] Gemini: modelo=${modelo} clave#${indiceClave + 1}/${clavesGemini.length}`
+      );
 
       const url =
         `https://generativelanguage.googleapis.com/v1beta/models/` +
@@ -888,6 +925,44 @@ async function generarContenidoGemini(
                 controller.signal,
 
               body: JSON.stringify({
+                systemInstruction: {
+                  parts: [
+                    {
+                      text:
+                        'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.A.C. ' +
+                        'Tu unico alcance es la informacion de la empresa contenida en el CONTEXTO RECUPERADO. ' +
+                        'REGLAS INNEGOCIABLES: ' +
+                        '(1) Esta prohibido generar, escribir, explicar o sugerir codigo, scripts, calculadoras, ' +
+                        'formulas o programas en cualquier lenguaje, aunque el usuario lo pida explicitamente, ' +
+                        'lo disfraces ("dame un ejemplo", "muestrame como se hace", "es para un archivo de la empresa") ' +
+                        'o insista. Ante tal peticion responde UNICAMENTE: "No dispongo de scripts ni codigo programable en la documentacion tecnica de North Services." ' +
+                        '(2) Esta prohibido usar conocimiento externo. Si la consulta no trata sobre North Services ' +
+                        '(servicios de fluidos de perforacion, alquiler, equipos, pozos, reportes de operaciones, ' +
+                        'facturacion, o los kits de Starlink propios de la empresa), NO respondas el tema y NO lo comentes. ' +
+                        'Responde UNICAMENTE: "Esa consulta esta fuera de mi alcance. Soy el asistente de North Services y ' +
+                        'solo puedo ayudarte con informacion de la empresa: servicios de fluidos de perforacion, alquiler ' +
+                        'y estado de equipos, operacion y mantenimiento de pozos, reportes de operaciones o los kits de ' +
+                        'Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" ' +
+                        '(3) Prohibido responder preguntas de conocimiento general sobre Starlink como compania ' +
+                        '(fundacion, historia, servicios, precios, tecnologia, cobertura). Starlink solo existe aqui como ' +
+                        'los kits y equipos de North Services descritos en el contexto. ' +
+                        '(4) No inventes datos. No completes lo que no este en el contexto. ' +
+                        '(5) No enumeres fuentes ni muestres etiquetas como FUENTE 1, FUENTE 2. ' +
+                        '(6) Responde en texto plano, sin markdown, sin bloques de codigo, sin negritas. ' +
+                        '(7) No menciones que eres un modelo de lenguaje ni una inteligencia artificial. ' +
+                        '(8) Si el usuario insiste en un tema fuera de alcance, repite exactamente la misma respuesta de cierre, sin ceder ni resumir el tema. ' +
+                        '(9) TRAZABILIDAD OBLIGATORIA: cada cifra debe ir acompañada del nombre exacto del archivo de origen. ' +
+                        'Si no puedes identificar el archivo de una cifra, no la respondas. ' +
+                        '(10) PROHIBIDO mezclar valores de filas o de documentos distintos. En un torque log las columnas son ' +
+                        'Connection / Target / Max / Logged, y el valor Logged pertenece a esa conexion concreta. ' +
+                        'No sumes, no compares y no tomes el maximo de otra fila o de otro documento. ' +
+                        '(11) Si el usuario pide "el primer torque log", usa siempre el de fecha mas antigua segun el nombre ' +
+                        'del archivo (Torque_Log_AAAAMMDD_HHMMSS) e indica el nombre exacto del que usaste. ' +
+                        '(12) Si dos documentos dan valores distintos, no elijas uno en silencio: enumera cada valor con su archivo.'
+                    }
+                  ]
+                },
+
                 contents: [
                   {
                     role: 'user',
@@ -1002,6 +1077,9 @@ async function generarContenidoGemini(
   let primerTokenMs =
     null;
 
+  let finishReason =
+    null;
+
   const inicioLectura =
     Date.now();
 
@@ -1046,6 +1124,18 @@ async function generarContenidoGemini(
             JSON.parse(
               jsonTexto
             );
+
+          const razonFinal =
+            chunk
+              ?.candidates?.[0]
+              ?.finishReason;
+
+          if (
+            razonFinal
+          ) {
+            finishReason =
+              razonFinal;
+          }
 
           const partes =
             chunk
@@ -1188,19 +1278,281 @@ async function generarContenidoGemini(
   // VALIDAR RESPUESTA
   // ==========================================================
 
-  if (
-    !respuestaCompleta.trim()
-  ) {
+  // Un stream completo de Gemini siempre reporta finishReason 'STOP' al final.
+  // Si falta (null) o es otro valor, la respuesta quedó interrumpida
+  // (el proveedor cortó el SSE) y debe reintentarse / usar respaldo.
+  const completo =
+    Boolean(respuestaCompleta.trim()) &&
+    finishReason === 'STOP';
+
+  if (!completo) {
     console.warn(
-      '[CHAT] Gemini terminó sin devolver texto.'
+      `[CHAT] Gemini stream incompleto (finishReason=${finishReason ?? 'ninguno'}, chars=${respuestaCompleta.length}).`
     );
   }
 
   return {
     respuestaCompleta,
 
-    primerTokenMs
+    primerTokenMs,
+
+    finishReason,
+
+    completo
   };
+}
+
+// ============================================================
+// GOOGLE DRIVE - REPORTES DE OPERACIONES (RAG HÍBRIDO)
+// ============================================================
+
+// Los reportes pueden ser diarios, semanales o por corrida; no se asume una
+// secuencia diaria. Se detecta cualquier consulta sobre reportes de operaciones.
+const PALABRAS_CLAVE_REPORTES = [
+  'reporte', 'reportes', 'torque log', 'torque logs', 'torque',
+  'casing', 'revestimiento', 'daily report', 'weekly report',
+  'reporte semanal', 'reporte de pozo', 'reporte de campo',
+  'reporte operacional', 'reportes de operación', 'reportes de operacion',
+  'survey report', 'parte diario', 'informe diario', 'avance diario',
+  'producción diaria', 'produccion diaria'
+];
+
+function esPreguntaReportesOperaciones(pregunta) {
+  const texto = (pregunta || '').toLowerCase();
+  return PALABRAS_CLAVE_REPORTES.some((palabra) => texto.includes(palabra));
+}
+
+// Llamada no-streaming a Gemini que admite PDFs en modo buffer (inline_data).
+// Reintenta con backoff ante 429/503 (alta demanda / rate limit).
+async function geminiExtraerDePdf(partes, { reintentos = 3 } = {}) {
+  const claves = obtenerClavesGemini();
+  if (!claves.length) throw new Error('GEMINI_API_KEY no está configurada.');
+
+  const dormir = (ms) => new Promise((resolver) => setTimeout(resolver, ms));
+  let ultimoError = null;
+
+  for (let intento = 0; intento < reintentos; intento++) {
+    for (const clave of claves) {
+      // La indexacion desde Drive usa un modelo propio para no
+      // agotar la cuota del modelo del chat (y viceversa).
+      const modeloDrive = String(
+        process.env.GEMINI_DRIVE_MODEL || 'gemini-3.8-flash'
+      ).trim();
+
+      const url =
+        `https://generativelanguage.googleapis.com/v1beta/models/` +
+        `${modeloDrive}:generateContent?key=${clave}`;
+      try {
+        const respuesta = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: partes }],
+            generationConfig: {
+              maxOutputTokens: 2048
+            }
+          })
+        });
+        if (!respuesta.ok) {
+          const cuerpo = await respuesta.text();
+          ultimoError = new Error(`Gemini respondió ${respuesta.status}: ${cuerpo}`);
+          // Reintentable: alta demanda o límite de tasa.
+          if (respuesta.status === 429 || respuesta.status === 503) break;
+          continue;
+        }
+        const data = await respuesta.json();
+        const texto = data?.candidates?.[0]?.content?.parts
+          ?.map((parte) => parte.text)
+          .filter(Boolean)
+          .join('\n');
+        if (texto && texto.trim()) return texto.trim();
+        ultimoError = new Error('Gemini no devolvió texto en la extracción del PDF.');
+      } catch (error) {
+        ultimoError = error;
+      }
+    }
+    if (intento < reintentos - 1) {
+      const espera = 2000 * (intento + 1);
+      console.warn(`[DRIVE] Gemini extracción falló (intento ${intento + 1}); reintentando en ${espera} ms...`);
+      await dormir(espera);
+    }
+  }
+  throw ultimoError || new Error('No se pudo extraer información del PDF con Gemini.');
+}
+
+/**
+ * Lee los reportes de operaciones (PDF) de la carpeta compartida de Operaciones
+ * vía Drive API en modo buffer/media y los pasa a Gemini para extracción de
+ * tablas y resumen. Devuelve un bloque de contexto de texto (o '' si no aplica).
+ */
+async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
+  try {
+    // Si el usuario pide "el primer torque log", Drive debe responder
+    // por orden de subida (createdTime asc), no por modificación.
+    const pidePrimero = /primer|primero|mas antiguo|más antiguo|inicial/i.test(
+      String(pregunta || '')
+    ) && /torque/i.test(String(pregunta || ''));
+
+    const orden = pidePrimero ? 'nombre_fecha' : 'modificados';
+
+    if (pidePrimero) {
+      console.log(
+        '[CHAT] Drive: requesting orden "nombre_fecha" (primer torque log por fecha del nombre)'
+      );
+    }
+
+    if (typeof enviarEvento === 'function') {
+      enviarEvento({ tipo: 'estado', mensaje: 'Consultando reportes de operaciones en Drive...' });
+    }
+
+    const archivos = await driveOperaciones.listarReportesPdf({
+    maxResultados: 500,
+    pregunta,
+    orden
+  });
+    if (!archivos.length) {
+      console.log('[DRIVE] No hay PDFs en la carpeta de Operaciones.');
+      return '';
+    }
+
+    // Resumen por carpeta: responde preguntas de conteo/disponibilidad
+    // (p. ej. "¿cuántos torque log hay?") incluso si Gemini no está disponible.
+    const porCarpeta = new Map();
+    for (const archivo of archivos) {
+      const clave = archivo.carpeta || '(raíz)';
+      porCarpeta.set(clave, (porCarpeta.get(clave) || 0) + 1);
+    }
+    const resumenCarpetas = Array.from(porCarpeta.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([carpeta, total]) => `- ${carpeta}: ${total} archivo(s)`)
+      .join('\n');
+
+    const catalogo = archivos
+      .map((archivo, indice) => {
+        const fecha = archivo.modifiedTime
+          ? new Date(archivo.modifiedTime).toLocaleDateString('es-PE')
+          : 'sin fecha';
+        return `${indice + 1}. ${archivo.name} [${archivo.carpeta || '(raíz)'}] (modificado: ${fecha})`;
+      })
+      .join('\n');
+
+    const bloqueCatalogo =
+`CATÁLOGO DE ARCHIVOS EN LA CARPETA COMPARTIDA DE OPERACIONES (Google Drive)
+Total de documentos PDF: ${archivos.length}
+
+RESUMEN POR CARPETA:
+${resumenCarpetas}
+
+LISTADO COMPLETO:
+${catalogo}`;
+
+    // Priorizar PDFs cuyo nombre coincida con términos de la pregunta.
+    // Se normaliza (sin separadores, minúsculas) y se singulariza para que
+    // "torques" coincida con "Torque_Log", "reportes" con "Reporte", etc.
+    const normalizarToken = (texto) =>
+      texto
+        .toLowerCase()
+        .replace(/[^a-z0-9ñ]/g, '')
+        .replace(/es$|s$/, '');
+
+    const tokensPregunta = (pregunta || '')
+      .toLowerCase()
+      .split(/[^a-z0-9áéíóúñ]+/i)
+      .filter((token) => token.length >= 4)
+      .map(normalizarToken)
+      .filter((token) => token.length >= 3);
+
+    const puntaje = (nombre) => {
+      const nombreNorm = normalizarToken(nombre || '');
+      return tokensPregunta.reduce(
+        (acc, token) => (nombreNorm.includes(token) ? acc + 1 : acc),
+        0
+      );
+    };
+
+    const seleccionados = archivos
+      .map((archivo) => ({ archivo, score: puntaje(archivo.name) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, DRIVE_MAX_ARCHIVOS)
+      .map((item) => item.archivo);
+
+    const partes = [];
+    const nombresUsados = [];
+    const textosRespaldo = [];
+
+    for (const archivo of seleccionados) {
+      try {
+        const buffer = await driveOperaciones.descargarArchivoBuffer(archivo.id);
+        nombresUsados.push(archivo.name);
+
+        if (buffer.length <= DRIVE_INLINE_MAX_BYTES) {
+          partes.push({
+            inlineData: { mimeType: 'application/pdf', data: buffer.toString('base64') }
+          });
+        } else {
+          const texto = await driveOperaciones.extraerTextoPdf(buffer);
+          partes.push({ text: `DOCUMENTO: ${archivo.name}\n${texto.slice(0, DRIVE_TEXTO_MAX_CHARS)}` });
+        }
+
+        // Respaldo en texto plano por si la extracción con Gemini falla (503, etc.).
+        try {
+          const textoPlano = await driveOperaciones.extraerTextoPdf(buffer);
+          if (textoPlano && textoPlano.trim()) {
+            textosRespaldo.push(`DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}`);
+          }
+        } catch {
+          // sin respaldo de texto para este archivo
+        }
+      } catch (errorArchivo) {
+        console.error(`[DRIVE] Error leyendo ${archivo.name}:`, errorArchivo.message);
+      }
+    }
+
+    if (!nombresUsados.length) {
+      // Aun sin poder leer contenidos, el catálogo responde preguntas de conteo.
+      return `
+INFORMACIÓN DE REPORTES DE OPERACIONES (Google Drive)
+=============================================================
+${bloqueCatalogo}
+
+(No se pudo descargar el contenido de los PDFs en esta consulta.)
+`;
+    }
+
+    partes.push({
+      text:
+        `A partir de los reportes de operaciones adjuntos (archivos: ${nombresUsados.join(', ')}), ` +
+        `extrae las tablas de datos relevantes y elabora un resumen estructurado que responda a la ` +
+        `siguiente consulta. Incluye cifras, fechas, pozos, casing/torque y cualquier valor numérico ` +
+        `exactamente como aparece en los documentos. No inventes datos. ` +
+        `Usa texto plano, sin Markdown.\n\nCONSULTA: ${pregunta}`
+    });
+
+    let contenido;
+    try {
+      contenido = await geminiExtraerDePdf(partes);
+    } catch (errorExtraccion) {
+      // Respaldo: si Gemini está saturado (503), aportar el texto plano extraído
+      // de los PDFs para que el modelo principal (u Ollama) pueda responder.
+      console.warn('[DRIVE] Extracción con Gemini falló, usando texto plano de respaldo:', errorExtraccion.message);
+      contenido = textosRespaldo.length
+        ? `EXTRACCIÓN AUTOMÁTICA NO DISPONIBLE. CONTENIDO EN TEXTO PLANO DE LOS PDFs:\n\n${textosRespaldo.join('\n\n')}`
+        : 'No se pudo extraer el contenido de los PDFs en esta consulta.';
+    }
+
+    return `
+INFORMACIÓN DE REPORTES DE OPERACIONES (Google Drive)
+=============================================================
+${bloqueCatalogo}
+
+Documentos revisados en detalle: ${nombresUsados.join(', ')}
+
+${contenido}
+`;
+  } catch (error) {
+    console.error('[DRIVE] Error obteniendo reportes de operaciones:', error.message);
+    return '';
+  }
 }
 
 // ============================================================
@@ -2412,6 +2764,72 @@ app.post(
       const preguntaLimpia =
         pregunta.trim();
 
+      // --------------------------------------------------------
+      // FILTRO DETERMINISTA DE ALCANCE (antes de llamar al modelo)
+      // --------------------------------------------------------
+
+      const CIERRE_FUERA_DE_ALCANCE =
+        'Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?';
+
+      const CIERRE_SIN_CODIGO =
+        'No dispongo de scripts ni código programable en la documentación técnica de North Services.';
+
+      const normalizar = t => t
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+
+      const pNorm = normalizar(preguntaLimpia);
+
+      const pideCodigo = [
+        'script', 'scripts', 'codigo', 'programa', 'programar',
+        'python', 'javascript', 'java ', 'javascript', 'sql',
+        'bash', 'powershell', 'html', 'css', 'json', 'algoritmo',
+        'algoritmos', 'funcion', 'clase', 'base de datos', 'pandas',
+        'numpy', 'react', 'node', 'api ', 'backend', 'frontend',
+        'calculadora', 'formula', 'diagrama de flujo', 'pseudocodigo',
+        'hazme un programa', 'escribe un programa'
+      ].some(t => pNorm.includes(t));
+
+      // Starlink como compañía (fundación/historia/etc.) y otros
+      // temas generales de conocimiento externo.
+      const fueraDeAlcance = [
+        'cuando se fundo', 'cuando fue fundad', 'fecha de fundacion',
+        'quien fundo', 'historia de starlink', 'fundada en', 'fundado en',
+        'starlink fue', 'starlink es una empresa', 'satelite', 'cobertura',
+        'orbital', 'musks', 'elon musk', 'spacex',
+        'presidente de', 'ceo de', 'quien es el', 'biografia',
+        'fibonacci', 'ecuacion', 'integral', 'derivada', 'teorema',
+        'paises', 'capital de', 'presidente de mexico', 'loteria',
+        'horoscopo', 'receta de', 'futbol', 'clima de', 'dolar',
+        'bitcoin', 'acciones', 'personas famosos'
+      ].some(t => pNorm.includes(t));
+
+      if (pideCodigo || fueraDeAlcance) {
+        const mensajeFuera = pideCodigo && !fueraDeAlcance
+          ? CIERRE_SIN_CODIGO
+          : CIERRE_FUERA_DE_ALCANCE;
+
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.flushHeaders && res.flushHeaders();
+
+        res.write(
+          `data: ${JSON.stringify({
+            tipo: 'texto',
+            texto: mensajeFuera
+          })}\n\n`
+        );
+
+        console.log(
+          `[CHAT] Consulta fuera de alcance bloqueada: "${preguntaLimpia}"`
+        );
+
+        return res.end();
+      }
+
       if (
         req.user.estado !==
         'activo'
@@ -2598,6 +3016,156 @@ app.post(
               RAG_SCORE_THRESHOLD
         );
 
+      // --------------------------------------------------------
+      // ORDEN POR FECHA REAL DE ARCHIVO (para torque logs)
+      // El score de similitud NO implica orden temporal: dos
+      // torque logs distintos tienen scores casi idénticos. Si el
+      // usuario pide "el primer torque log", se ordena por la fecha
+      // del nombre de archivo (AAAAMMDD_HHMMSS) y no por score.
+      // --------------------------------------------------------
+
+      const fechaDesdeNombre = nombre => {
+        const m = String(
+          nombre || ''
+        ).match(/(\d{4})(\d{2})(\d{2})[_-]?(\d{2})?(\d{2})?(\d{2})?/);
+
+        if (m) {
+          return `${m[1]}-${m[2]}-${m[3]}T${m[4] || '00'}:${m[5] || '00'}:${m[6] || '00'}`;
+        }
+
+        const m2 = String(
+          nombre || ''
+        ).match(/(\d{4})[-_](\d{2})[-_](\d{2})/);
+
+        if (m2) {
+          return `${m2[1]}-${m2[2]}-${m2[3]}T00:00:00`;
+        }
+
+        return null;
+      };
+
+      const esTorqueLog = nombre => /torque[\s_-]?log/i.test(
+        String(nombre || '')
+      );
+
+      const pidePrimerLog =
+        /primer|primero|primer torque|mas antiguo|más antiguo|inicial/i.test(
+          preguntaLimpia
+        ) &&
+        /torque/i.test(
+          preguntaLimpia
+        );
+
+      if (pidePrimerLog) {
+        // -------------------------------------------------------------
+        // "el primer torque log SUBIDO" = el que se subió primero.
+        // Se resuelve contra la colección 'archivos' usando creadoEn
+        // (orden real de subida), no por el nombre ni por el score.
+        // -------------------------------------------------------------
+        let nombreMasAntiguoSubido = null;
+
+        try {
+          const torqueDocs = await getDB()
+            .collection('archivos')
+            .find({
+              nombre: {
+                $regex: 'torque[\\s_-]?log',
+                $options: 'i'
+              }
+            })
+            .sort({ creadoEn: 1 })
+            .limit(1)
+            .toArray();
+
+          if (
+            torqueDocs.length > 0 &&
+            torqueDocs[0].nombre
+          ) {
+            nombreMasAntiguoSubido = torqueDocs[0].nombre;
+            console.log(
+              `[CHAT] Primer torque log SUBIDO (por creadoEn): ${nombreMasAntiguoSubido}`
+            );
+          }
+        } catch (errorSubida) {
+          console.error(
+            `[CHAT] No se pudo resolver orden de subida: ${errorSubida.message}`
+          );
+        }
+
+        if (nombreMasAntiguoSubido) {
+          resultadosRelevantes.sort((a, b) => {
+            if (a.nombreManual === nombreMasAntiguoSubido) return -1;
+            if (b.nombreManual === nombreMasAntiguoSubido) return 1;
+
+            const fa = fechaDesdeNombre(a.nombreManual);
+            const fb = fechaDesdeNombre(b.nombreManual);
+
+            if (fa && fb) return fa.localeCompare(fb);
+            if (fa) return -1;
+            if (fb) return 1;
+
+            return (
+              (b.score || 0) - (a.score || 0)
+            );
+          });
+        } else {
+        const conFecha = resultadosRelevantes
+          .map(fila => ({
+            fila,
+            fecha: fechaDesdeNombre(fila.nombreManual)
+          }))
+          .filter(x => x.fecha);
+
+        if (conFecha.length > 0) {
+          conFecha.sort(
+            (a, b) => a.fecha.localeCompare(b.fecha)
+          );
+
+          const primero = conFecha[0].fila;
+          const nombrePrimero = primero.nombreManual;
+
+          const tienePrimeraFecha = esTorqueLog(nombrePrimero);
+
+          if (tienePrimeraFecha) {
+            console.log(
+              `[CHAT] "Primer torque log" resuelto por fecha: ${nombrePrimero} (${conFecha[0].fecha})`
+            );
+
+            resultadosRelevantes.sort((a, b) => {
+              if (a.nombreManual === nombrePrimero) return -1;
+              if (b.nombreManual === nombrePrimero) return 1;
+              const fa = fechaDesdeNombre(a.nombreManual);
+              const fb = fechaDesdeNombre(b.nombreManual);
+
+              if (fa && fb) return fa.localeCompare(fb);
+              if (fa) return -1;
+              if (fb) return 1;
+
+              return (
+                (b.score || 0) - (a.score || 0)
+              );
+            });
+          }
+        }
+        }
+      } else {
+        // Sin pedido explícito de "el primero": aun así, ordena por
+        // fecha cuando el nombre la tiene, para que el orden del
+        // contexto sea cronológico y no aleatorio por score.
+        resultadosRelevantes.sort((a, b) => {
+          const fa = fechaDesdeNombre(a.nombreManual);
+          const fb = fechaDesdeNombre(b.nombreManual);
+
+          if (fa && fb) return fa.localeCompare(fb);
+          if (fa) return -1;
+          if (fb) return 1;
+
+          return (
+            (b.score || 0) - (a.score || 0)
+          );
+        });
+      }
+
       console.log(
         `[CHAT] Resultados relevantes: ${resultadosRelevantes.length}`
       );
@@ -2609,9 +3177,27 @@ app.post(
       const inicioStarlink = Date.now();
       let contextoStarlink = '';
 
-      // Detectar si la pregunta está relacionada con Starlink
-      // Palabras clave más específicas para evitar falsos positivos
-      const palabrasClaveStarlink = ['starlink', 'internet satelital', 'vencer', 'pago starlink', 'facturación starlink', 'kit starlink', 'antena starlink', 'conexión satelital', 'equipo starlink'];
+      // Detectar si la pregunta está relacionada con Starlink.
+      //
+      // NOTA: la lista incluye términos que normalmente NO irían con
+      // "Starlink" pero que el usuario usa para referirse a un equipo
+      // específico (ej: "fluidos", "perforación", "oficinas", "lote vii",
+      // nombre de ubicación/comentario). Esto es intencional: después
+      // de consultar la BD, si ningún equipo coincide por esos términos,
+      // el contextoStarlink se genera igual pero con un preámbulo que
+      // le dice al LLM "esta información corresponde a kits Starlink",
+      // y si la pregunta no era de Starlink, simplemente no la usa.
+      const palabrasClaveStarlink = [
+        'starlink', 'internet satelital', 'vencer', 'pago starlink',
+        'facturación starlink', 'kit starlink', 'antena starlink',
+        'conexión satelital', 'equipo starlink', 'kit', 'antena',
+        'codigo kit', 'código kit', 'serie antena', 'equipo',
+        'pago', 'pagado', 'no pagado', 'vencido', 'factura', 'facturación',
+        'fluido', 'fluidos', 'linea de fluidos', 'línea de fluidos',
+        'perforacion', 'perforación', 'direccional', 'pozo', 'pozos',
+        'ubicacion', 'ubicación', 'oficinas', 'lote', 'campo', 'yacimiento',
+        'fecha ultimo pago', 'fecha último pago', 'inicio periodo',
+      ];
       const preguntaMinuscula = preguntaLimpia.toLowerCase();
       const esPreguntaStarlink = palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
 
@@ -2631,6 +3217,30 @@ app.post(
             const mesActual = hoy.getMonth() + 1;
             const añoActual = hoy.getFullYear();
 
+            // ============================================================
+            // MATCHING INTELIGENTE
+            // Filtra los equipos que tienen alguna coincidencia real con
+            // la pregunta (comentario, ubicación, código, serie, correo,
+            // estadoPago) para destacar al LLM los kits relevantes.
+            // ============================================================
+            const tokensPregunta = preguntaMinuscula
+              .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+              .split(/[^a-z0-9]+/i)
+              .filter(t => t.length >= 3);
+
+            const coincideEquipo = (pozo) => {
+              const campos = [
+                pozo.ubicacion, pozo.codigoKit, pozo.serieAntena,
+                pozo.comentario, pozo.correo, pozo.estadoPago,
+              ].filter(Boolean).join(' ')
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase();
+
+              return tokensPregunta.some(tok => campos.includes(tok));
+            };
+
+            const equiposRelevantes = datosStarlink.filter(coincideEquipo);
+
             // Calcular pozos que vencen pronto (próximos 7 días)
             const pozosPorVencer = datosStarlink.filter(pozo => {
               if (!pozo.diaPago || pozo.estadoPago === 'pagado') return false;
@@ -2646,12 +3256,44 @@ app.post(
               return diaPago < diaActual;
             });
 
-            contextoStarlink = `
-INFORMACIÓN DE STARLINK
-========================
-Total de equipos: ${datosStarlink.length}
+            const estadoTxt = (p) => (
+              p.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'
+            );
+            const servicioTxt = (p) => (
+              p.estadoActivo ? 'Activo' : 'Inactivo'
+            );
 
-ESTADO DE PAGOS:
+            const renderFichaEquipo = (p, idx) => `
+FICHA EQUIPO ${idx + 1}:
+  - Nombre/Ubicación: ${p.ubicacion}
+  - Código KIT: ${p.codigoKit}
+  - Serie Antena: ${p.serieAntena}
+  - Correo: ${p.correo}
+  - Día de pago: ${p.diaPago}
+  - Estado Pago: ${estadoTxt(p)} (valor BD: ${p.estadoPago})
+  - Servicio: ${servicioTxt(p)}
+  - Monto: S/ ${p.monto}
+  - Fecha inicio periodo: ${p.fechaInicioPeriodo || '-'}
+  - Fecha último pago: ${p.fechaUltimoPago || '-'}
+  - Comentario: ${p.comentario ? p.comentario : '(sin comentario)'}
+`;
+
+            contextoStarlink = `
+INFORMACIÓN DE STARLINK (KITS / EQUIPOS SATELITALES)
+====================================================
+Total de equipos registrados: ${datosStarlink.length}
+
+CÓMO RESPONDER A PREGUNTAS DE ESTA SECCIÓN:
+- Primero identifica en PREGUNTA DEL USUARIO qué equipo se consulta.
+- Compara con COMENTARIO, UBICACIÓN, CÓDIGO KIT y SERIE ANTENA.
+- Cuando encuentres el equipo correcto, responde directamente
+  usando ESTADO PAGO, UBICACIÓN y COMENTARIO del mismo, NO inventes
+  datos ni reutilices cifras de otros kits.
+- Si la pregunta es SOBRE PAGO de un kit específico, indica
+  explícitamente el valor de estadoPago de ese equipo, su
+  ubicación, su código KIT y si corresponde comentario.
+
+ESTADO DE PAGOS GENERAL:
 - Equipos pagados: ${datosStarlink.filter(p => p.estadoPago === 'pagado').length}
 - Equipos no pagados: ${datosStarlink.filter(p => p.estadoPago === 'no_pagado').length}
 
@@ -2660,33 +3302,29 @@ ESTADO DE SERVICIO:
 - Equipos inactivos: ${datosStarlink.filter(p => !p.estadoActivo).length}
 
 ${pozosPorVencer.length > 0 ? `
-⚠️ EQUIPOS POR VENCER (próximos 7 días):
+EQUIPOS POR VENCER (próximos 7 días):
 ${pozosPorVencer.map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): Vence el día ${p.diaPago}, Monto: S/ ${p.monto}${!p.estadoActivo ? ' [INACTIVO]' : ''}`).join('\n')}
 ` : ''}
 
 ${pozosVencidos.length > 0 ? `
-🚨 EQUIPOS VENCIDOS:
+EQUIPOS VENCIDOS:
 ${pozosVencidos.map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): Venció el día ${p.diaPago}, Monto: S/ ${p.monto}${!p.estadoActivo ? ' [INACTIVO]' : ''}`).join('\n')}
 ` : ''}
 
-${datosStarlink.filter(p => p.comentario && p.comentario.trim()).length > 0 ? `
-📝 COMENTARIOS DE EQUIPOS:
-${datosStarlink.filter(p => p.comentario && p.comentario.trim()).map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): ${p.comentario}`).join('\n')}
+${equiposRelevantes.length > 0 ? `
+EQUIPOS QUE COINCIDEN CON LA PREGUNTA "${preguntaLimpia}":
+${equiposRelevantes.map(renderFichaEquipo).join('\n')}
 ` : ''}
 
-DETALLE DE EQUIPOS:
-${datosStarlink.map(p => `
-• ${p.ubicacion}
-  - Código KIT: ${p.codigoKit}
-  - Serie Antena: ${p.serieAntena}
-  - Correo: ${p.correo}
-  - Día de pago: ${p.diaPago}
-  - Estado: ${p.estadoPago === 'pagado' ? '✅ Pagado' : '❌ No pagado'}
-  - Servicio: ${p.estadoActivo ? '✅ Activo' : '❌ Inactivo'}
-  - Monto: S/ ${p.monto}
-  - Inicio periodo: ${p.fechaInicioPeriodo}
-  ${p.comentario ? `- Comentario: ${p.comentario}` : ''}
-`).join('\n')}
+${datosStarlink.filter(p => p.comentario && p.comentario.trim()).length > 0 ? `
+   COMENTARIOS DE EQUIPOS (tómalos como identificador principal
+   cuando la pregunta mencione "fluido", "fluidos", "perforación",
+   "lote", "oficinas", etc.):
+${datosStarlink.filter(p => p.comentario && p.comentario.trim()).map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}) | COMENTARIO: ${p.comentario}`).join('\n')}
+` : ''}
+
+DETALLE COMPLETO DE EQUIPOS:
+${datosStarlink.map(renderFichaEquipo).join('\n')}
 `;
           }
         } catch (error) {
@@ -2705,13 +3343,29 @@ ${datosStarlink.map(p => `
       }
 
       // ========================================================
+      // 4B. REPORTES DE OPERACIONES (GOOGLE DRIVE)
+      // ========================================================
+
+      const inicioDrive = Date.now();
+      let contextoDrive = '';
+      const esPreguntaReportes = esPreguntaReportesOperaciones(preguntaLimpia);
+      console.log(`[CHAT] ¿Es pregunta de reportes?: ${esPreguntaReportes}`);
+
+      if (esPreguntaReportes) {
+        contextoDrive = await obtenerContextoReportesOperaciones(preguntaLimpia, enviarEvento);
+        console.log(`[CHAT] Drive: ${Date.now() - inicioDrive} ms`);
+        console.log(`[CHAT] Contexto Drive generado: ${contextoDrive ? 'SÍ' : 'NO'}`);
+      }
+
+      // ========================================================
       // 5. NO HAY INFORMACIÓN
       // ========================================================
 
       if (
         resultadosRelevantes.length ===
         0 &&
-        !contextoStarlink
+        !contextoStarlink &&
+        !contextoDrive
       ) {
         const tiempoTotal =
           Date.now() -
@@ -2759,181 +3413,11 @@ ${datosStarlink.map(p => `
       }
 
       // ========================================================
-      // 5. CONTEXTO
+      // 4C. DESCARGAS LIGADAS A LOS DOCUMENTOS RECUPERADOS
       // ========================================================
-
-      const inicioContexto =
-        Date.now();
-
-      const contextoRecuperado =
-        resultadosRelevantes
-          .map(
-            (f, index) =>
-              `
-FUENTE ${index + 1}
-Documento: ${
-                f.nombreManual ||
-                'Manual'
-              }
-Sección: ${
-                f.titulo_seccion ||
-                'Sin sección'
-              }
-Relevancia: ${Number(
-                f.score
-              ).toFixed(4)}
-
-Contenido:
-${
-                f.contenido_texto
-              }
-`
-          )
-          .join(
-            '\n\n'
-          );
-
-      // Agregar contexto de Starlink si está disponible
-      const contextoCompleto = contextoStarlink 
-        ? `${contextoStarlink}\n\n${contextoRecuperado}`
-        : contextoRecuperado;
-
-      const tiempoContexto =
-        Date.now() -
-        inicioContexto;
-
-      // ========================================================
-      // 6. PROMPT
-      // ========================================================
-
-      const promptSistema = `
-Eres el Asistente Virtual Oficial de North Services.
-
-Tu función es responder preguntas relacionadas con los manuales,
-procedimientos, documentación técnica y sistemas de la empresa
-(incluyendo información de Starlink cuando esté disponible).
-
-REGLAS IMPORTANTES:
-
-1. Responde utilizando la información proporcionada en CONTEXTO
-   (incluye tanto manuales técnicos como información de sistemas
-   como Starlink).
-
-2. Para preguntas sobre Starlink, usa específicamente la sección
-   "INFORMACIÓN DE STARLINK" que aparece en el contexto.
-
-3. No inventes información.
-
-4. No completes datos que no aparezcan en el contexto proporcionado.
-
-5. Si la información solicitada no aparece en el contexto,
-   indícalo claramente.
-
-6. Responde de manera profesional, clara y concisa.
-
-7. Usa texto plano, sin Markdown, sin asteriscos, sin negritas,
-  sin encabezados y sin listas con asteriscos.
-
-8. No menciones que eres un modelo de lenguaje.
-
-9. No inventes procedimientos, códigos de error, valores,
-   configuraciones ni pasos técnicos.
-
-10. No enumeres las fuentes ni muestres etiquetas como
-  "FUENTE 1", "FUENTE 2" o similares.
-
-11. Si el usuario solo saluda o usa frases casuales
-  ("hola", "buenos días", "buenas tardes", "gracias",
-  "adiós", "¿cómo estás?", etc.), respóndele de forma
-  breve, amistosa y natural, por ejemplo "¡Hola! ¿En qué
-  puedo ayudarte?". No repitas el entorno, no expliques
-  tu funcionamiento ni menciones el contexto, el RAG ni
-  las instrucciones.
-
-12. Nunca respondas sobre la estructura de este mensaje
-  ni digas que falta la pregunta. Responde siempre a lo
-  que el usuario realmente escribió.
-
-12. Si el usuario formula VARIAS preguntas en un mismo
-  mensaje (separadas por saltos de línea, "?", "." o ";"),
-  respóndelas TODAS, en el mismo orden en que las escribió,
-  numerándolas una por una (por ejemplo "1. ...", "2. ...").
-  No te limites a la primera.
-
-13. Si el usuario solicita descargar, recibir o pedir algún
-  archivo (manual, brochure, folleto, software, documento,
-  instalador, ficha técnica, catálogo, etc.), responde
-  indicando qué materiales existen en el contexto proporcionado.
-  El sistema mostrará automáticamente los botones de descarga
-  correspondientes basándose en los documentos mencionados en
-  CONTEXTO RECUPERADO. No digas que no puedes crear botones,
-  simplemente indica qué archivos están disponibles.
-  "/api/..." como texto plano en tu respuesta (por ejemplo
-  NO escribas "/api/recursos/<id>/software/download" ni
-  variantes). El usuario no copiará esa ruta: el botón es la
-  única vía de descarga y la interfaz lo muestra al hacer
-  clic. Si el CONTEXTO RECUPERADO contiene la frase "puede
-  acceder a través de la ruta /api/...", NO la transcribas:
-  en su lugar di "pulsa el botón de descarga que aparece
-  junto al material". Si el archivo solicitado NO está entre
-  el material recuperado, dilo claramente y explica cómo
-  obtenerlo, pero nunca inventes un enlace ni muestres una
-  ruta cruda.
-
-CONTEXTO RECUPERADO:
-
-${contextoCompleto}
-
-PREGUNTA DEL USUARIO:
-
-${preguntaLimpia}
-`;
-
-      enviarEvento({
-        tipo:
-          'estado',
-
-        mensaje:
-          'Generando respuesta...'
-      });
-
-      // ========================================================
-      // 7. GEMINI (con respaldo Ollama local)
-      // ========================================================
-
-      const inicioGemini = Date.now();
-      let resultadoGemini;
-
-      try {
-        resultadoGemini =
-          await generarContenidoGemini(promptSistema, enviarEvento);
-      } catch (errorGemini) {
-        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
-
-        enviarEvento({
-          tipo: 'estado',
-          mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
-        });
-
-        try {
-          resultadoGemini =
-            await generarContenidoOllama(promptSistema, enviarEvento);
-        } catch (errorOllama) {
-          console.error(`[CHAT] Ollama falló: ${errorOllama.message}`);
-          throw errorGemini;
-        }
-      }
-
-      const tiempoGemini = Date.now() - inicioGemini;
-
-      const firstTokenMs =
-        resultadoGemini.primerTokenMs
-          ? resultadoGemini.primerTokenMs - inicioGemini
-          : null;
-
-      // ========================================================
-      // 8. FUENTES
-      // ========================================================
+      // Cada documento recuperado de MongoDB puede tener un archivo o software
+      // ligado. Se resuelve ANTES de armar el contexto para que el modelo sepa
+      // que esos materiales SÍ están disponibles y no responda "no se menciona".
 
       const solicitaDescarga = /\b(descarga|descargar|download|software|instalador|archivo|archivos|manual|manuales|brochure|brochures|folleto|folletos|cat[áa]logo|cat[áa]logos|ficha|documento|documentos)\b/i.test(preguntaLimpia);
       const descargasPorFuente = new Map();
@@ -2961,15 +3445,274 @@ ${preguntaLimpia}
         });
       }
 
+      const obtenerDescargasFuente = (f) =>
+        f.recursoId
+          ? (descargasPorFuente.get(`recurso:${f.recursoId}`) || [])
+          : (f.archivoId
+            ? (descargasPorFuente.get(`archivo:${f.archivoId}`) || [])
+            : (descargasPorFuente.get(`manual:${f.manualId}`) || []));
+
+      // ========================================================
+      // 5. CONTEXTO
+      // ========================================================
+
+      const inicioContexto =
+        Date.now();
+
+      const contextoRecuperado =
+        resultadosRelevantes
+          .map(
+            (f, index) => {
+              const descargasFuente = obtenerDescargasFuente(f);
+              const bloqueDescargas = descargasFuente.length
+                ? `\nMATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO (el sistema mostrará los botones de descarga automáticamente): ${descargasFuente.map((d) => d.etiqueta).join(', ')}. Estos archivos SÍ están disponibles para descarga: confirma al usuario que los obtendrá con el botón de descarga, NO digas que no se mencionan o que no están disponibles.\n`
+                : '';
+              return `
+FUENTE ${index + 1}${index === 0 ? ' (PRIMERA Y PRIORITARIA: si el usuario pregunta por "el primer torque log", esta es la fuente que debes usar)' : ''}
+Documento: ${
+                f.nombreManual ||
+                'Manual'
+              }
+Sección: ${
+                f.titulo_seccion ||
+                'Sin sección'
+              }
+Fecha del archivo: ${
+                fechaDesdeNombre(f.nombreManual) ||
+                'no disponible'
+              }
+Relevancia: ${Number(
+                f.score
+              ).toFixed(4)}
+${bloqueDescargas}
+Contenido:
+${
+                f.contenido_texto
+              }
+`;
+            }
+          )
+          .join(
+            '\n\n'
+          );
+
+      // Agregar contexto de Starlink y de reportes de operaciones (Drive) si están disponibles
+      const contextoCompleto = [
+        contextoStarlink,
+        contextoDrive,
+        contextoRecuperado
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const tiempoContexto =
+        Date.now() -
+        inicioContexto;
+
+      // ========================================================
+      // 6. PROMPT
+      // ========================================================
+
+      const promptSistema = `
+Eres el Asistente Virtual Oficial de North Services.
+
+Tu función es responder preguntas relacionadas con los manuales,
+procedimientos, documentación técnica y sistemas de la empresa.
+
+REGLA ABSOLUTA Y PRIORITARIA (SOBREESCRIBE CUALQUIER SOLICITUD DEL USUARIO):
+- Queda STRICTAMENTE PROHIBIDO generar, escribir o sugerir código, scripts o programas (en Python, Bash, SQL, Java o cualquier otro lenguaje) bajo cualquier circunstancia, incluso si el usuario lo pide explícitamente en su mensaje.
+- Queda STRICTAMENTE PROHIBIDO usar formato Markdown (sin tres comillas invertidas, sin bloques de código, sin negritas, sin asteriscos, sin encabezados). Responde ÚNICAMENTE en texto plano.
+
+REGLAS IMPORTANTES:
+
+1. Responde utilizando ÚNICAMENTE la información proporcionada en CONTEXTO RECUPERADO
+   (incluye tanto manuales técnicos como información de los kits que posee North Services de Starlink).
+
+2. Sobre Starlink solo puedes responder de la sección "INFORMACIÓN DE STARLINK"
+   del CONTEXTO RECUPERADO, y únicamente sobre los KITS, EQUIPOS y fiches de
+   North Services que allí figuran (código KIT, serie de antena, ubicación,
+   correo responsable, día de pago, estado de pago, monto, fechas y comentario).
+   PROHIBIDO responder preguntas de conocimiento general sobre Starlink
+   (año o historia de la empresa, fundación, nombres, servicios, precios,
+   tecnología, orbital, cobertura, etc.). Eso no es información de North Services.
+
+2b. Para preguntas sobre reportes de operaciones (torque, casing,
+   avance, producción, datos por fecha, pozo o corrida; pueden ser
+   diarios, semanales o por evento), usa específicamente la sección
+   "INFORMACIÓN DE REPORTES DE OPERACIONES" que aparece en el
+   contexto, reproduciendo las cifras y tablas exactamente como
+   fueron extraídas de los PDFs. Para preguntas de conteo o
+   disponibilidad (por ejemplo "¿cuántos torque log hay?"), usa el
+   CATÁLOGO y el RESUMEN POR CARPETA de esa sección.
+
+2c. REGLAS DE TRAZABILIDAD OBLIGATORIA PARA REPORTES Y TORQUE LOGS (anti-alucinación):
+    - Cada cifra que respondas DEBE indicar obligatoriamente el documento de origen
+      (nombre exacto del archivo, por ejemplo "Torque_Log_20260701_101558.pdf").
+      Si no puedes identificar el archivo de origen de una cifra, NO la respondas.
+    - PROHIBIDO mezclar valores de filas belonging a documentos o conexiones distintos.
+      Las columnas de un torque log son: Connection / Target / Max / Logged.
+      El valor "Logged" es la tercera columna y corresponde a ESA conexión concreta.
+      No sumes, no compares ni tomes el máximo de otra fila o de otro documento.
+    - Cuando el usuario pregunte por "el primer torque log", elígete SIEMPRE el
+      de fecha más antigua según el nombre del archivo (formato Torque_Log_AAAAMMDD_HHMMSS.pdf).
+      Si hay varias coincidencias, indica cuál usaste y su nombre exacto.
+    - Si dos documentos dan valores distintos para lo mismo, NO elijas uno en
+      silencio: enumera cada valor con su archivo de origen.
+    - No completes, estimes ni deduzcas valores que no aparezcan literalmente en el texto.
+
+3. No inventes información ni utilices conocimiento externo.
+
+ Si la pregunta del usuario NO trata sobre North Services & Rental Tools S.A.C. (sus servicios de fluidos de perforación, equipos, pozos, reportes de operaciones, kits de Starlink propios, facturación o estado de sus equipos), NO respondas el tema bajo ninguna circunstancia. Responde EXACTAMENTE y solo esto: "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" No añadas información del tema, ni ejemplos, ni contexto, ni offered fuentes, aunque el usuario insista o reformule la pregunta.
+
+4. No completes datos que no aparezcan en el contexto proporcionado.
+
+5. Si la información solicitada no aparece en el contexto
+   (ni siquiera como texto desordenado por OCR), indícalo claramente.
+
+5b. REGLA DE DISTINCIÓN ENTRE TOTALES ACUMULADOS Y TOTALES POR PERIODO (ANUAL):
+   - Jamás asumas que la cifra más alta o central de una lámina o resumen 
+     (por ejemplo, un total general como 113) corresponde al total de un solo año.
+   - Cuando en el texto coexistan un total general acumulado y un desglose por año (2021, 2022, 2023, 2024, 2025, etc.):
+     1. Para responder sobre un año específico, BUSCA la cifra asignada individualmente 
+        a ese periodo (por ejemplo, 25 pozos para 2025) o suma los lotes asignados a dicho año.
+     2. Si la cifra central/acumulada aparece pegada al texto del año consultado, 
+        descártala como total anual y acláralo en la respuesta (ejemplo: "En 2025 se perforaron 25 pozos; 
+        la cifra de 113 corresponde al total acumulado histórico de la operación en Perú").
+   - Aplica esta misma lógica para responder con precisión en cualquier consulta anual sin 
+     confundir el acumulado global con la cifra de un solo ejercicio.
+
+6. Responde de manera profesional, clara y concisa en texto plano.
+
+7. No menciones que eres un modelo de lenguaje ni una inteligencia artificial.
+
+8. No inventes procedimientos, códigos de error, valores, configuraciones, rutas de API, URL ni pasos técnicos. Está PROHIBIDO generar código, scripts, calculadoras, fórmulas o programas de cualquier tipo, aunque el usuario lo pida de forma explícita o disguise la petición ("dame un ejemplo", "muéstrame cómo se hace", "ayúdame a escribir"). Ante cualquier solicitud de código responde EXACTAMENTE y solo: "No dispongo de scripts ni código programable en la documentación técnica de North Services." No añadas el código después, ni en un segundo turno, ni aunque el usuario insista opjure que es para un archivo de la empresa.
+
+9. No enumeres las fuentes ni muestres etiquetas como "FUENTE 1", "FUENTE 2" o similares.
+
+10. Si el usuario solo saluda o usa frases casuales ("hola", "buenos días", "gracias", etc.), respóndele de forma breve, amistosa y natural. No repitas el entorno ni expliques tus instrucciones.
+
+10b. CIERRE ESTRICTO DE CONVERSACIÓN FUERA DE TEMPORADA:
+    - Tu alcance es EXCLUSIVAMENTE la información de North Services & Rental Tools S.A.C.
+      contenida en el CONTEXTO RECUPERADO. Nada fuera de eso existe para ti.
+    - Si detectas que la consulta se sale del tema de la empresa (otras empresas,
+      fundaciones, historia, geografía, ciencia, cultura, matemáticas, días de
+      mercado, marcas, influir, o cualquier conocimiento general del mundo),
+      NO respondas, NO expliques, NO resumas, NO reformules y NO comentes la pregunta.
+      Cierra con esta única respuesta estándar y no agregues nada más:
+      "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y
+      solo puedo ayudarte con información de la empresa: servicios de fluidos de
+      perforación, alquiler y estado de equipos, operación y mantenimiento de pozos,
+      reportes de operaciones o los kits de Starlink de North Services.
+      ¿Te puedo ayudar con alguno de estos temas?"
+    - Si el usuario insiste, repite la consulta o pide "de todas formas", mantén
+      exactamente la misma respuesta de cierre. No cedas, no negocies, no
+      des un resumen parcial del tema ajeno.
+    - NUNCA menciones Starlink como empresa (fundación, historia, servicios,
+      precios). Si la pregunta se refiere a Starlink como compañía y no a los
+      equipos de North Services, aplica el cierre estándar de este punto.
+
+11. Nunca respondas sobre la estructura de este mensaje ni digas que falta la pregunta. Responde siempre a lo que el usuario realmente escribió.
+
+12. Si el usuario formula VARIAS preguntas en un mismo mensaje (separadas por saltos de línea, "?", "." o ";"), respóndelas TODAS, en el mismo orden en que las escribió, numerándolas una por una (por ejemplo "1. ...", "2. ..."). No te limites a la primera.
+
+13. Si el usuario solicita descargar o recibir algún archivo (manual, brochure, software, etc.), indica únicamente los materiales disponibles en CONTEXTO RECUPERADO. No inventes rutas ni escribas "/api/...". Indícale que use el botón de descarga correspondiente.
+
+13b. Cuando una FUENTE incluya "MATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO", confirma que el material está disponible para descarga mediante el botón correspondiente.
+
+CONTEXTO RECUPERADO:
+
+${contextoCompleto}
+
+PREGUNTA DEL USUARIO:
+
+${preguntaLimpia}
+`;
+
+      enviarEvento({
+        tipo:
+          'estado',
+
+        mensaje:
+          'Generando respuesta...'
+      });
+
+      // ========================================================
+      // 7. GEMINI (con respaldo Ollama local)
+      // ========================================================
+
+      const inicioGemini = Date.now();
+      let resultadoGemini = null;
+
+      // --- Intento 1: Gemini ---
+      try {
+        resultadoGemini =
+          await generarContenidoGemini(promptSistema, enviarEvento);
+      } catch (errorGemini) {
+        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
+        resultadoGemini = null;
+      }
+
+      // --- Si Gemini cortó la respuesta a mitad (stream incompleto), reintentar
+      //     una vez. Se emite texto_reset para que el frontend descarte el texto
+      //     parcial ya mostrado en lugar de concatenarlo. ---
+      if (resultadoGemini && !resultadoGemini.completo) {
+        console.warn(
+          `[CHAT] Respuesta de Gemini interrumpida (finishReason=${resultadoGemini.finishReason ?? 'ninguno'}), reintentando...`
+        );
+
+        enviarEvento({ tipo: 'texto_reset' });
+
+        try {
+          const reintento =
+            await generarContenidoGemini(promptSistema, enviarEvento);
+
+          if (reintento.completo) {
+            resultadoGemini = reintento;
+          } else {
+            console.warn('[CHAT] El reintento de Gemini también quedó incompleto.');
+          }
+        } catch (errorReintento) {
+          console.error(`[CHAT] Reintento de Gemini falló: ${errorReintento.message}`);
+        }
+      }
+
+      // --- Si no hay una respuesta completa de Gemini, caer al servidor local. ---
+      if (!resultadoGemini || !resultadoGemini.completo) {
+        enviarEvento({ tipo: 'texto_reset' });
+
+        enviarEvento({
+          tipo: 'estado',
+          mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
+        });
+
+        try {
+          resultadoGemini =
+            await generarContenidoOllama(promptSistema, enviarEvento);
+        } catch (errorOllama) {
+          console.error(`[CHAT] Ollama falló: ${errorOllama.message}`);
+          throw new Error('No fue posible completar la consulta.');
+        }
+      }
+
+      const tiempoGemini = Date.now() - inicioGemini;
+
+      const firstTokenMs =
+        resultadoGemini.primerTokenMs
+          ? resultadoGemini.primerTokenMs - inicioGemini
+          : null;
+
+      // ========================================================
+      // 8. FUENTES
+      // ========================================================
+      // solicitaDescarga, descargasPorFuente y obtenerDescargasFuente ya se
+      // calcularon en la sección 4C (antes del contexto) para que el modelo
+      // conozca los materiales ligados. Aquí solo se emiten al frontend.
+
       const fuentes = resultadosRelevantes.map((f) => ({
         documento: f.nombreManual || 'Manual',
         seccion: f.titulo_seccion || 'Sin sección',
         relevancia: Number(f.score || 0),
-        descargas: f.recursoId
-          ? (descargasPorFuente.get(`recurso:${f.recursoId}`) || [])
-          : (f.archivoId
-            ? (descargasPorFuente.get(`archivo:${f.archivoId}`) || [])
-            : (descargasPorFuente.get(`manual:${f.manualId}`) || [])),
+        descargas: obtenerDescargasFuente(f),
       }));
 
       enviarEvento({

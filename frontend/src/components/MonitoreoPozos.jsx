@@ -128,17 +128,17 @@ export default function MonitoreoPozos({ token, usuario, onCerrar }) {
   };
 
   return (
-    <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Monitoreo remoto de pozos" onClick={(event) => { if (event.target === event.currentTarget) onCerrar(); }}>
-      <div className="eclipse-modal">
-        <header className="eclipse-modal-header">
+    <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Monitoreo remoto de pozos" onClick={(event) => { if (event.target === event.currentTarget) onCerrar(); }}>
+      <div className="modal-monitoreo-pozo">
+        <header className="modal-monitoreo-pozo-header">
           <div>
             <span className="dashboard-eyebrow">Monitoreo remoto en vivo</span>
           </div>
-          <button type="button" className="eclipse-modal-close" onClick={onCerrar} aria-label="Cerrar Monitoreo de pozos"><FiX aria-hidden="true" /></button>
+          <button type="button" className="modal-monitoreo-pozo-close" onClick={onCerrar} aria-label="Cerrar Monitoreo de pozos"><FiX aria-hidden="true" /></button>
         </header>
 
-        <div className="eclipse-modal-body">
-          <p className="eclipse-intro">Cualquier usuario activo puede publicar una transmisión indicando pozo, lote y el enlace de monitoreo. En la descripción señala qué transmisión es (por ejemplo, Sureshot o Eclipse Touch). Haz clic sobre un pozo para abrir su enlace y administra el que compartiste.</p>
+        <div className="modal-monitoreo-pozo-body">
+          <p className="modal-monitoreo-pozo-intro">Cualquier usuario activo puede publicar una transmisión indicando pozo, lote y el enlace de monitoreo. En la descripción señala qué transmisión es (por ejemplo, Sureshot o Eclipse Touch). Haz clic sobre un pozo para abrir su enlace y administra el que compartiste.</p>
 
           <form className="compact-upload-form" onSubmit={guardar}>
             <label>Pozo
@@ -159,24 +159,24 @@ export default function MonitoreoPozos({ token, usuario, onCerrar }) {
             <button type="button" className="profile-secondary-button" style={{ marginTop: 10 }} onClick={cancelarEdicion} disabled={cargando}>Cancelar edición</button>
           )}
 
-          <div className="eclipse-list">
+          <div className="modal-monitoreo-pozo-list">
             {enlaces.length === 0 ? (
               <p>No hay transmisiones publicadas todavía.</p>
             ) : enlaces.map((item) => {
               const puedeAdministrar = esAdministrador || item.propietarioUid === usuario?.uid;
               return (
-                <article key={item.id} className="eclipse-card">
+                <article key={item.id} className="modal-monitoreo-pozo-card">
                   <div style={{ minWidth: 0 }}>
                     <h3><FiMonitor aria-hidden="true" /> {item.nombrePozo}</h3>
                     <small>Lote {item.lote} · Publicado por {item.propietarioNombre || item.propietarioEmail || 'Usuario'} · {formatearFecha(item.fechaCreacion)}</small>
                     {item.descripcion && <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: '#0f172a' }}>{item.descripcion}</div>}
                     <div>
-                      <button type="button" className="eclipse-card-link" onClick={() => abrirEnlace(item)} title="Abrir enlace del pozo">
+                      <button type="button" className="modal-monitoreo-pozo-card-link" onClick={() => abrirEnlace(item)} title="Abrir enlace del pozo">
                         {item.link} <FiExternalLink aria-hidden="true" />
                       </button>
                     </div>
                   </div>
-                  <div className="eclipse-card-actions">
+                  <div className="modal-monitoreo-pozo-card-actions">
                     {puedeAdministrar && (
                       <>
                         <button type="button" className="billing-edit-button" onClick={() => empezarEdicion(item)}><FiEdit2 aria-hidden="true" /> Editar</button>

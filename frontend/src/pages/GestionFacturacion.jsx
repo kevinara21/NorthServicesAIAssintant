@@ -188,18 +188,18 @@ export default function GestionFacturacion({ token }) {
       </div>
 
       {modalAbierto && (
-        <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Gestión de Starlink" onClick={(event) => { if (event.target === event.currentTarget) setModalAbierto(false); }}>
-          <div className="eclipse-modal">
-            <header className="eclipse-modal-header">
+        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Gestión de Starlink" onClick={(event) => { if (event.target === event.currentTarget) setModalAbierto(false); }}>
+          <div className="modal-monitoreo-pozo">
+            <header className="modal-monitoreo-pozo-header">
               <div>
                 <span className="dashboard-eyebrow">Gestión de Starlink</span>
                 <h2 style={{ margin: '4px 0 0', color: '#fff', fontSize: 20 }}>{editando ? 'Editar registro' : 'Agregar Starlink'}</h2>
               </div>
-              <button type="button" className="eclipse-modal-close" onClick={() => setModalAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setModalAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
             </header>
 
-            <div className="eclipse-modal-body">
-              <p className="eclipse-intro">Gestiona la información de los equipos Starlink. El pago se calcula automáticamente un día antes del inicio del periodo. Para inicios los días 29, 30 o 31, Starlink ajusta el cobro al día 28.</p>
+            <div className="modal-monitoreo-pozo-body">
+              <p className="modal-monitoreo-pozo-intro">Gestiona la información de los equipos Starlink. El pago se calcula automáticamente un día antes del inicio del periodo. Para inicios los días 29, 30 o 31, Starlink ajusta el cobro al día 28.</p>
 
               <form className="starlink-form" onSubmit={guardarPozo}>
                 <div className="starlink-form-section">
@@ -410,17 +410,17 @@ export default function GestionFacturacion({ token }) {
       </div>
 
       {modalDetallesAbierto && pozoSeleccionado && (
-        <div className="modal-overlay eclipse-modal-overlay" role="dialog" aria-modal="true" aria-label="Detalles de Starlink" onClick={(event) => { if (event.target === event.currentTarget) setModalDetallesAbierto(false); }}>
-          <div className="eclipse-modal">
-            <header className="eclipse-modal-header">
+        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Detalles de Starlink" onClick={(event) => { if (event.target === event.currentTarget) setModalDetallesAbierto(false); }}>
+          <div className="modal-monitoreo-pozo">
+            <header className="modal-monitoreo-pozo-header">
               <div>
                 <span className="dashboard-eyebrow">Detalles de Starlink</span>
                 <h2 style={{ margin: '4px 0 0', color: '#fff', fontSize: 20 }}>{pozoSeleccionado.nombrePozo}</h2>
               </div>
-              <button type="button" className="eclipse-modal-close" onClick={() => setModalDetallesAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setModalDetallesAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
             </header>
 
-            <div className="eclipse-modal-body">
+            <div className="modal-monitoreo-pozo-body">
               <div className="starlink-details-grid">
                 <div className="starlink-detail-item">
                   <span className="starlink-detail-label">Código KIT</span>

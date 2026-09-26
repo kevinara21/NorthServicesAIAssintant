@@ -162,7 +162,7 @@ function Login({ onLoginSuccess }) {
       <form onSubmit={handleLogin}>
         <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
         <h2 className="login-heading" style={{ color: '#000000', marginBottom: '2rem' }}>AI Assistant</h2>
-        
+
         <div style={{ marginBottom: 12 }}>
           <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Usuario corporativo</label>
           <div className="login-email-field" style={{ display: 'flex', alignItems: 'center', border: '1px solid #E5E7EB', borderRadius: 4, overflow: 'hidden' }}>

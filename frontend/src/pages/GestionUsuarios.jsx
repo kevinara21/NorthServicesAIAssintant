@@ -451,7 +451,7 @@ export default function GestionUsuarios({ token }) {
 
       {modalNuevo && (
         <div
-          className="modal-overlay eclipse-modal-overlay"
+          className="modal-overlay modal-monitoreo-pozo-overlay"
           role="dialog"
           aria-modal="true"
           aria-label={modalNuevo.campo === 'rol' ? 'Nuevo rol' : 'Nueva área'}
@@ -459,8 +459,8 @@ export default function GestionUsuarios({ token }) {
             if (event.target === event.currentTarget) cerrarModalNuevo();
           }}
         >
-          <div className="eclipse-modal catalog-eclipse-modal">
-            <header className="eclipse-modal-header">
+          <div className="modal-monitoreo-pozo modal-monitoreo-pozo-catalog">
+            <header className="modal-monitoreo-pozo-header">
               <div>
                 <span className="dashboard-eyebrow">Gestión de usuarios</span>
                 <h2 style={{ margin: '4px 0 0', color: '#fff', fontSize: 20 }}>
@@ -469,7 +469,7 @@ export default function GestionUsuarios({ token }) {
               </div>
               <button
                 type="button"
-                className="eclipse-modal-close"
+                className="modal-monitoreo-pozo-close"
                 onClick={cerrarModalNuevo}
                 aria-label="Cerrar"
               >
@@ -477,8 +477,8 @@ export default function GestionUsuarios({ token }) {
               </button>
             </header>
 
-            <div className="eclipse-modal-body">
-              <p className="eclipse-intro">
+            <div className="modal-monitoreo-pozo-body">
+              <p className="modal-monitoreo-pozo-intro">
                 {modalNuevo.campo === 'rol'
                   ? 'Escribe el nombre del rol que quieres asignar. Estará disponible para todos los usuarios.'
                   : 'Escribe el nombre del área que quieres asignar. Estará disponible para todos los usuarios.'}
@@ -486,7 +486,7 @@ export default function GestionUsuarios({ token }) {
               <input
                 autoFocus
                 type="text"
-                className="catalog-eclipse-input"
+                className="modal-monitoreo-pozo-input"
                 value={valorNuevo}
                 onChange={(e) => setValorNuevo(e.target.value)}
                 onKeyDown={(e) => {
@@ -499,17 +499,17 @@ export default function GestionUsuarios({ token }) {
                     : 'Ej. Logística'
                 }
               />
-              <div className="catalog-eclipse-actions">
+              <div className="modal-monitoreo-pozo-actions">
                 <button
                   type="button"
-                  className="catalog-eclipse-cancel"
+                  className="btn-monitoreo-pozo-cancel"
                   onClick={cerrarModalNuevo}
                 >
                   Cancelar
                 </button>
                 <button
                   type="button"
-                  className="catalog-eclipse-confirm"
+                  className="btn-monitoreo-pozo-primary"
                   disabled={!valorNuevo.trim()}
                   onClick={confirmarNuevo}
                 >
