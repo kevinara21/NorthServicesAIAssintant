@@ -2039,10 +2039,10 @@ app.post(
           getDB();
 
 // El manual del recurso se indexa SIEMPRE en la categoría de software y
-// manuales, que es compartida para todos los roles. Antes esta línea usaba
-// una variable `categoriaId` que no existía en ningún sitio: al subir un
-// recurso con manual PDF reventaba con ReferenceError y ningún manual llegaba
-// a indexarse.
+// manuales. El administrador puede configurar qué roles tienen acceso a esta
+// categoría desde el panel de permisos. Antes esta línea usaba una variable
+// `categoriaId` que no existía en ningún sitio: al subir un recurso con manual
+// PDF reventaba con ReferenceError y ningún manual llegaba a indexarse.
 //
 // La categoría se crea sola la primera vez, así que no hay que preparar nada
 // antes de publicar el primer software.
@@ -2203,6 +2203,15 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
 app.get('/api/recursos', verifyToken, async (req, res) => {
   try {
     if (req.user.estado !== 'activo') return res.status(403).json({ ok: false, error: 'Cuenta pendiente de aprobación.' });
+
+    // Verificar si el usuario tiene acceso al módulo software_y_manuales
+    const tieneAccesoRecursos = await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales');
+
+    if (!tieneAccesoRecursos) {
+      // Si no tiene acceso, devolver lista vacía en lugar de error
+      return res.json({ ok: true, recursos: [] });
+    }
+
     const snapshot = await db.collection('recursos').where('activo', '==', true).get();
     res.json({ ok: true, recursos: snapshot.docs.map((documento) => ({ id: documento.id, ...documento.data() })) });
   } catch (error) {
@@ -2215,6 +2224,13 @@ async function descargarRecursoUnificado(req, res) {
     if (req.user.estado !== 'activo') return res.status(403).json({ ok: false, error: 'Cuenta pendiente de aprobación.' });
     const documento = await db.collection('recursos').doc(req.params.id).get();
     if (!documento.exists || documento.data().activo !== true) return res.status(404).json({ ok: false, error: 'Recurso no encontrado.' });
+
+    // Verificar si el usuario tiene acceso al módulo software_y_manuales
+    const tieneAccesoRecursos = await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales');
+    if (!tieneAccesoRecursos) {
+      return res.status(403).json({ ok: false, error: 'No tienes permiso para descargar recursos de software y manuales.' });
+    }
+
     const archivo = req.params.tipo === 'manual' ? documento.data().manual : documento.data().software;
     if (!archivo?.rutaLocal) return res.status(404).json({ ok: false, error: 'Esta descarga no está disponible para el recurso.' });
     const rutaArchivo = path.resolve(__dirname, '..', archivo.rutaLocal);
@@ -3967,12 +3983,19 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
         const recursos = await Promise.all(recursosIds.map(async (id) => ({ id, documento: await db.collection('recursos').doc(id).get() })));
         const archivos = await Promise.all(archivosIds.map(async (id) => ({ id, documento: await db.collection('archivos').doc(id).get() })));
         const manuales = await Promise.all(manualesIds.map(async (id) => ({ id, documento: await db.collection('manuales').doc(id).get() })));
+
+        // Verificar si el usuario tiene acceso al módulo software_y_manuales
+        const tieneAccesoRecursos = await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales');
+
         recursos.forEach(({ id, documento }) => {
           if (!documento.exists || documento.data().activo !== true) return;
           const recurso = documento.data();
           const botones = [];
-          if (recurso.software?.rutaLocal) botones.push({ etiqueta: recurso.software?.nombreArchivo || 'software', ruta: `/api/recursos/${id}/software/download` });
-          if (recurso.manual?.rutaLocal) botones.push({ etiqueta: recurso.manual?.nombreArchivo || 'manual', ruta: `/api/recursos/${id}/manual/download` });
+          // Solo agregar botones de descarga si el usuario tiene acceso al módulo software_y_manuales
+          if (tieneAccesoRecursos) {
+            if (recurso.software?.rutaLocal) botones.push({ etiqueta: recurso.software?.nombreArchivo || 'software', ruta: `/api/recursos/${id}/software/download` });
+            if (recurso.manual?.rutaLocal) botones.push({ etiqueta: recurso.manual?.nombreArchivo || 'manual', ruta: `/api/recursos/${id}/manual/download` });
+          }
           descargasPorFuente.set(`recurso:${id}`, botones);
         });
         archivos.forEach(({ id, documento }) => {
@@ -4081,6 +4104,28 @@ exclusivamente de ese material.
 4. Nunca afirmes que no hay información si el catálogo lista reportes: en ese
    caso resume lo que sí hay disponible.
 `;
+
+      // Instrucción específica para Starlink para evitar que el modelo
+      // use conocimiento externo sobre SpaceX
+      const instruccionStarlink = contextoStarlink ? `
+INSTRUCCIÓN ESPECÍFICA PARA ESTA CONSULTA (STARLINK):
+
+El CONTEXTO RECUPERADO contiene INFORMACIÓN DE STARLINK que corresponde
+EXCLUSIVAMENTE a los kits/equipos satelitales propiedad de North Services.
+Tu respuesta debe salir ÚNICAMENTE de esa sección.
+
+1. SOLO puedes responder sobre los kits de Starlink que aparecen listados
+   en la sección "INFORMACIÓN DE STARLINK" (código KIT, serie antena,
+   ubicación, correo, día de pago, estado de pago, monto, fechas, comentario).
+2. PROHIBIDO responder sobre SpaceX como empresa (fundación, historia,
+   tecnología orbital, cobertura, precios generales, servicios, etc.).
+3. PROHIBIDO mencionar o sugerir visitar sitios web de SpaceX, SpaceX,
+   o fuentes externas. SOLO usa la información provista en el contexto.
+4. Si la pregunta es sobre un kit específico, busca primero en
+   "EQUIPOS QUE COINCIDEN CON LA PREGUNTA" y usa esos datos.
+5. Nunca digas "no hay información" si la sección "INFORMACIÓN DE STARLINK"
+   contiene kits listados. En ese caso, resume la información disponible.
+` : '';
 
       const promptSistema = `
 Eres el Asistente Virtual Oficial de North Services.
@@ -4192,6 +4237,7 @@ CONTEXTO RECUPERADO:
 
 ${contextoCompleto}
 ${usarServidorLocalDirecto ? instruccionDrive : ''}
+${instruccionStarlink}
 PREGUNTA DEL USUARIO:
 
 ${preguntaLimpia}
@@ -4558,19 +4604,22 @@ app.put('/api/admin/rag/permisos/:rol', verifyToken, requireAdmin, async (req, r
       // restrictiva ni hace falta marcarle cada categoría.
       const guardadoAdmin = await ragCategorias.guardarPermisosRol(rol, {
         categorias: (await ragCategorias.listarCategorias({ incluirInactivas: true })).map((categoria) => categoria.id),
-        modulos: { starlink: true },
+        modulos: { starlink: true, software_y_manuales: true },
       });
       return res.json({
         ok: true,
         rol: guardadoAdmin.rol,
         permisos: guardadoAdmin,
-        mensaje: 'El Administrador tiene acceso total a todas las categorías y a Starlink.',
+        mensaje: 'El Administrador tiene acceso total a todas las categorías, Starlink y Software y Manuales.',
       });
     }
 
     const guardado = await ragCategorias.guardarPermisosRol(rol, {
       categorias: Array.isArray(req.body?.categorias) ? req.body.categorias : [],
-      modulos: { starlink: req.body?.modulos?.starlink === true },
+      modulos: {
+        starlink: req.body?.modulos?.starlink === true,
+        software_y_manuales: req.body?.modulos?.software_y_manuales === true,
+      },
     });
     res.json({
       ok: true,

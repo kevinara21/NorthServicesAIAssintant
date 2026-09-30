@@ -54,7 +54,10 @@ export default function GestionConocimiento({ token }) {
       (data.roles || []).forEach((item) => {
         inicial[item.clave] = {
           categorias: [...(item.categorias || [])],
-          modulos: { starlink: item.modulos?.starlink === true },
+          modulos: {
+            starlink: item.modulos?.starlink === true,
+            software_y_manuales: item.modulos?.software_y_manuales === true,
+          },
         };
       });
       setBorrador(inicial);
@@ -97,7 +100,10 @@ export default function GestionConocimiento({ token }) {
   // vuelve al loader ni se repositiona el scroll.
   const sincronizarRol = (clave, permisos) => {
     const categoriasGuardadas = [...(permisos?.categorias || [])];
-    const modulosGuardados = { starlink: permisos?.modulos?.starlink === true };
+    const modulosGuardados = {
+      starlink: permisos?.modulos?.starlink === true,
+      software_y_manuales: permisos?.modulos?.software_y_manuales === true,
+    };
 
     setBorrador((actual) => ({
       ...actual,
@@ -257,7 +263,9 @@ const alternarActiva = async (categoria) => {
     if (!original || !actual) return false;
     const antes = [...(original.categorias || [])].sort().join('|');
     const despues = [...actual.categorias].sort().join('|');
-    return antes !== despues || (original.modulos?.starlink === true) !== (actual.modulos?.starlink === true);
+    return antes !== despues ||
+      (original.modulos?.starlink === true) !== (actual.modulos?.starlink === true) ||
+      (original.modulos?.software_y_manuales === true) !== (actual.modulos?.software_y_manuales === true);
   };
 
   if (cargando) return <OilLoader label="Cargando configuración de conocimiento" inline />;
@@ -281,7 +289,7 @@ const alternarActiva = async (categoria) => {
             </tr>
           </thead>
           <tbody>
-            {categorias.map((categoria) => (
+            {categorias.filter((categoria) => !categoria.sistema).map((categoria) => (
               <tr key={categoria.id}>
                 <td data-label="Categoría">
                   <div className="panel-conocimiento__celda">
@@ -322,7 +330,7 @@ const alternarActiva = async (categoria) => {
                 </td>
               </tr>
             ))}
-            {categorias.length === 0 && (
+            {categorias.filter((categoria) => !categoria.sistema).length === 0 && (
               <tr>
                 <td colSpan={3} className="panel-conocimiento__celda-vacia">
                   <span className="panel-conocimiento__vacio-tabla">
@@ -340,7 +348,7 @@ const alternarActiva = async (categoria) => {
       {roles.length === 0 && <p className="panel-conocimiento__vacio">Todavía no hay roles registrados.</p>}
       {roles.map((rol) => {
         const esAdmin = rol.clave === 'administrador';
-        const configuracion = borrador[rol.clave] || { categorias: [], modulos: { starlink: false } };
+        const configuracion = borrador[rol.clave] || { categorias: [], modulos: { starlink: false, software_y_manuales: false } };
         return (
           <div key={rol.clave} className="panel-conocimiento__rol">
             <div className="panel-conocimiento__rol-cabecera">
@@ -350,7 +358,7 @@ const alternarActiva = async (categoria) => {
                 </strong>
                 {esAdmin && (
                   <small className="panel-conocimiento__rol-detalle panel-conocimiento__rol-detalle--admin">
-                    Acceso total a todas las categorías y a Starlink.
+                    Acceso total a todas las categorías de conocimeinto.
                   </small>
                 )}
                 {!esAdmin && !rol.configurado && (
@@ -372,7 +380,7 @@ const alternarActiva = async (categoria) => {
             </div>
 
 <div className="panel-conocimiento__opciones">
-              {categorias.map((categoria) => {
+              {categorias.filter((categoria) => !categoria.sistema).map((categoria) => {
                 // El Administrador marca automáticamente solo lo que está
                 // activo; una categoría inactiva no se puede marcar.
                 // Las categorías del sistema no llegan hasta aquí: el backend
@@ -402,10 +410,24 @@ const alternarActiva = async (categoria) => {
             </div>
 
             {!esAdmin && (
-              <label className="panel-conocimiento__modulo">
-                <input type="checkbox" checked={configuracion.modulos.starlink === true} onChange={() => alternarStarlink(rol.clave)} />
-                <span>Acceso al módulo Starlink</span>
-              </label>
+              <>
+                <label className="panel-conocimiento__modulo">
+                  <input type="checkbox" checked={configuracion.modulos.starlink === true} onChange={() => alternarStarlink(rol.clave)} />
+                  <span>Acceso al módulo Starlink</span>
+                </label>
+                <label className="panel-conocimiento__modulo">
+                  <input type="checkbox" checked={configuracion.modulos.software_y_manuales === true} onChange={() => {
+                    setBorrador((actual) => ({
+                      ...actual,
+                      [rol.clave]: {
+                        ...actual[rol.clave],
+                        modulos: { ...actual[rol.clave].modulos, software_y_manuales: !(actual[rol.clave]?.modulos?.software_y_manuales === true) },
+                      },
+                    }));
+                  }} />
+                  <span>Acceso a Software y Manuales</span>
+                </label>
+              </>
             )}
           </div>
         );

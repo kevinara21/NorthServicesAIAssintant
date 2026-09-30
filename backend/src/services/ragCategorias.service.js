@@ -143,9 +143,9 @@ async function obtenerCategoria(id) {
 //
 // A diferencia de las categorías que crea cada usuario, esta es del sistema:
 // la usan todos los roles sin que el Administrador tenga que marcar nada. El
-// software autorizado y su manual son documentación compartida de la empresa,
-// no conocimiento interno de un área, así que restringirlo por rol dejaría a
-// operarios sin el manual que necesitan para trabajar.
+// Software autorizado y sus manuales técnicos. Esta categoría es del sistema:
+// siempre está activa, no se puede editar ni eliminar. Se gestiona como un módulo
+// independiente (similar a Starlink) en el panel de permisos por rol.
 const CATEGORIA_RECURSOS = 'software_y_manuales';
 const NOMBRE_CATEGORIA_RECURSOS = 'Software y Manuales';
 
@@ -171,9 +171,8 @@ async function obtenerOCrearCategoriaRecursos(creadoPor = null) {
   return crearCategoria({
     nombre: NOMBRE_CATEGORIA_RECURSOS,
     descripcion:
-      'Software autorizado y sus manuales técnicos. El sistema la administra: se consulta automáticamente y no se puede desactivar ni repartir por rol.',
+      'Software autorizado y sus manuales técnicos. Categoría del sistema: siempre activa, no se puede editar ni eliminar. El administrador solo puede configurar qué roles tienen acceso desde el panel de permisos.',
     creadoPor,
-    compartida: true,
     sistema: true,
   });
 }
@@ -727,20 +726,24 @@ async function eliminarCategoria(id, { eliminarDocumentos = true } = {}) {
 
 async function obtenerPermisosRol(rol) {
   const id = normalizarClave(rol);
-  if (!id) return { rol: '', categorias: [], modulos: { starlink: false }, configurado: false };
+  if (!id) return { rol: '', categorias: [], modulos: { starlink: false, software_y_manuales: false }, configurado: false };
 
   const documento = await getDB()
     .collection(COLECCION_PERMISOS)
     .findOne({ _id: id });
 
   if (!documento) {
-    return { rol: id, categorias: [], modulos: { starlink: false }, configurado: false };
+    // software_y_manuales está activado por defecto para todos los roles nuevos
+    return { rol: id, categorias: [], modulos: { starlink: false, software_y_manuales: true }, configurado: false };
   }
 
   return {
     rol: id,
     categorias: Array.isArray(documento.categorias) ? documento.categorias : [],
-    modulos: { starlink: documento?.modulos?.starlink === true },
+    modulos: {
+      starlink: documento?.modulos?.starlink === true,
+      software_y_manuales: documento?.modulos?.software_y_manuales === true,
+    },
     configurado: true,
   };
 }
@@ -766,14 +769,24 @@ async function guardarPermisosRol(rol, { categorias = [], modulos = {} } = {}) {
         $set: {
           rol: id,
           categorias: categoriasLimpias,
-          modulos: { starlink: modulos?.starlink === true },
+          modulos: {
+            starlink: modulos?.starlink === true,
+            software_y_manuales: modulos?.software_y_manuales === true,
+          },
           actualizadoEn: new Date(),
         },
       },
       { upsert: true }
     );
 
-  return { rol: id, categorias: categoriasLimpias, modulos: { starlink: modulos?.starlink === true } };
+  return {
+    rol: id,
+    categorias: categoriasLimpias,
+    modulos: {
+      starlink: modulos?.starlink === true,
+      software_y_manuales: modulos?.software_y_manuales === true,
+    },
+  };
 }
 
 // Fuentes RAG habilitadas para un rol.
@@ -808,12 +821,12 @@ async function obtenerFuentesPermitidas(rol) {
 }
 
 // ============================================================
-// ACCESO A MÓDULOS (STARLINK)
+// ACCESO A MÓDULOS (STARLINK Y SOFTWARE_Y_MANUALES)
 // ============================================================
 //
-// Starlink NO es una categoría de conocimiento: es un módulo
-// independiente del sistema de ingestión de documentos. Solo se
-// controla si un rol puede entrar a él.
+// Starlink y Software y Manuales NO son categorías de conocimiento:
+// son módulos independientes del sistema de ingestión de documentos.
+// Solo se controla si un rol puede entrar a ellos.
 // ============================================================
 
 async function puedeAccederModulo(rol, modulo) {
@@ -950,6 +963,70 @@ async function inicializarRag() {
     console.log(`[RAG] Categorías de conocimiento disponibles: ${total}`);
   }
 console.log(`[RAG] Colecciones con índice vectorial en Atlas: ${indices.size}`);
+
+  // Migración: Actualizar software_y_manuales para funcionar como módulo (como Starlink)
+  // - sistema: true (no se puede editar/eliminar)
+  // - compartida: false (no es automático para todos)
+  // - Activado por defecto para todos los roles (a diferencia de Starlink)
+  // - Migrar permisos de categoría a módulo por rol
+  try {
+    const categoriaRecursos = await obtenerCategoria(CATEGORIA_RECURSOS);
+    if (categoriaRecursos) {
+      const necesitaActualizacion = categoriaRecursos.compartida === true || categoriaRecursos.sistema !== true;
+
+      if (necesitaActualizacion) {
+        // Obtener todos los roles existentes para migrar sus permisos
+        const rolesExistentes = await listarRolesExistentes();
+
+        await getDB().collection(COLECCION_CATEGORIAS).updateOne(
+          { id: CATEGORIA_RECURSOS },
+          {
+            $set: {
+              compartida: false,
+              sistema: true,
+              descripcion: 'Software autorizado y sus manuales técnicos. Categoría del sistema: siempre activa, no se puede editar ni eliminar. Se gestiona como módulo independiente en el panel de permisos por rol. Activado por defecto para todos los roles.',
+              actualizadoEn: new Date()
+            }
+          }
+        );
+
+        // Migrar permisos: quitar de categorías y agregar a módulos
+        // A diferencia de Starlink, software_y_manuales se activa por defecto para todos
+        for (const rol of rolesExistentes) {
+          if (!esAdministrador(rol)) {
+            try {
+              const permisos = await obtenerPermisosRol(rol);
+              const tieneAccesoComoCategoria = permisos.categorias?.includes(CATEGORIA_RECURSOS);
+
+              // Quitar de categorías si estaba allí
+              if (tieneAccesoComoCategoria) {
+                await getDB().collection(COLECCION_PERMISOS).updateOne(
+                  { rol: normalizarClave(rol) },
+                  { $pull: { categorias: CATEGORIA_RECURSOS } }
+                );
+              }
+
+              // Activar módulo por defecto para todos los roles
+              await getDB().collection(COLECCION_PERMISOS).updateOne(
+                { rol: normalizarClave(rol) },
+                { $set: { 'modulos.software_y_manuales': true } },
+                { upsert: true }
+              );
+
+              console.log(`[RAG] Migración: Módulo "${CATEGORIA_RECURSOS}" activado por defecto para rol "${rol}"`);
+            } catch (error) {
+              console.error(`[RAG] Error migrando permisos para rol "${rol}":`, error.message);
+            }
+          }
+        }
+
+        console.log(`[RAG] Migración: Categoría "${CATEGORIA_RECURSOS}" actualizada como módulo activado por defecto.`);
+      }
+    }
+  } catch (error) {
+    console.error('[RAG] Error en migración de software_y_manuales:', error.message);
+  }
+
   return total;
 }
 

@@ -338,7 +338,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                         disabled={cargando}
                         required
                       >
-                        {categorias.map((categoria) => (
+                        {categorias.filter((categoria) => !categoria.sistema).map((categoria) => (
                           <option key={categoria.id} value={categoria.id}>{categoria.nombre}</option>
                         ))}
                       </select>
@@ -416,7 +416,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
           <div className="library-filtros-categoria" role="group" aria-label="Filtrar por categoría">
             <FiFilter aria-hidden="true" />
             <button type="button" className={!filtroCategoria ? 'active' : ''} onClick={() => setFiltroCategoria('')}>Todas</button>
-            {categorias.map((categoria) => (
+            {categorias.filter((categoria) => categoria.id !== 'software_y_manuales').map((categoria) => (
               <button
                 key={categoria.id}
                 type="button"
