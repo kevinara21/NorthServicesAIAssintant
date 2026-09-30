@@ -170,7 +170,7 @@ export default function GestionFacturacion({ token }) {
       <div className="billing-heading">
         <span className="dashboard-eyebrow">Administración</span>
         <h1>Pagos de Starlink</h1>
-        <p>Consulta y actualiza el estado de pago. El pago se calcula automáticamente un día antes del inicio del periodo. Los cambios se sincronizan automáticamente con MongoDB para el bot.</p>
+        <p>Consulta y actualiza el estado de pago, manteniendo la información actualizada y disponible para el asistente.</p>
         <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
           <button 
             className="profile-primary-button" 
@@ -383,29 +383,47 @@ export default function GestionFacturacion({ token }) {
 
       <div className="billing-table-wrap">
         <table className="billing-table"><thead><tr><th>Ubicación</th><th>Correo</th><th>Periodo</th><th>Pago</th><th>Estado</th><th>Acción</th></tr></thead><tbody>
-          {pozos.length === 0 ? <tr><td colSpan="6" className="billing-empty">No hay pozos registrados.</td></tr> : pozos.map((pozo) => (
+          {pozos.length === 0 ? <tr><td colSpan="6" className="billing-empty">No hay pozos registrados.</td></tr> : pozos.map((pozo) => {
+            // Un monto en cero no es un dato faltante: se muestra siempre para
+            // que todas las filas muestren la misma información.
+            const monto = Number(pozo.monto || 0);
+            const sinMonto = monto <= 0;
+
+            return (
             <tr key={pozo.id}>
-              <td data-label="Ubicación"><strong>{pozo.nombrePozo}</strong></td>
-              <td data-label="Correo">{pozo.correo || 'Sin correo'}</td>
-              <td data-label="Periodo" style={{ fontSize: 13, lineHeight: 1.6 }}>
-                El servicio vence el día {pozo.diaPago || '-'}<br />
-                <small>Cada día {pozo.diaInicioPeriodo || pozo.periodoInicio || '-'} inicia un nuevo ciclo de facturación.</small>
+              <td data-label="Ubicación"><div className="billing-celda"><strong>{pozo.nombrePozo}</strong></div></td>
+              <td data-label="Correo"><div className="billing-celda">{pozo.correo || 'Sin correo'}</div></td>
+              <td data-label="Periodo">
+                <div className="billing-celda">
+                  <span>Vence el día {pozo.diaPago || '-'}</span>
+                  <small>Nuevo ciclo desde el día {pozo.diaInicioPeriodo || pozo.periodoInicio || '-'}</small>
+                </div>
               </td>
-              <td data-label="Pago" style={{ fontSize: 13, lineHeight: 1.6 }}>
-                <span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span><br />
-                {pozo.monto > 0 && <small>Monto: S/ {Number(pozo.monto).toFixed(2)}</small>}
-                {pozo.fechaUltimoPago && <><br /><small>Último pago: {pozo.fechaUltimoPago}</small></>}
+              <td data-label="Pago">
+                <div className="billing-celda">
+                  <span className={`billing-status ${pozo.estadoPago}`}>{pozo.estadoPago === 'pagado' ? 'Pagado' : 'No pagado'}</span>
+                  <small className={sinMonto ? 'billing-monto-cero' : undefined}>Monto: S/ {monto.toFixed(2)}</small>
+                  {pozo.fechaUltimoPago && <small>Último pago: {pozo.fechaUltimoPago}</small>}
+                </div>
               </td>
-              <td data-label="Estado" style={{ fontSize: 13, lineHeight: 1.6, textAlign: 'center' }}>
-                {pozo.estadoActivo ? <FiCheckCircle style={{ color: '#16a34a', fontSize: 16 }} /> : <FiXCircle style={{ color: '#dc2626', fontSize: 16 }} />}
+              <td data-label="Estado">
+                <div className="billing-celda">
+                  <span className={pozo.estadoActivo ? 'billing-servicio billing-servicio--activo' : 'billing-servicio billing-servicio--inactivo'}>
+                    {pozo.estadoActivo ? <FiCheckCircle aria-hidden="true" /> : <FiXCircle aria-hidden="true" />}
+                    {pozo.estadoActivo ? 'Activo' : 'Inactivo'}
+                  </span>
+                </div>
               </td>
               <td data-label="Acción">
-                <button className="billing-action-button" type="button" onClick={() => verDetalles(pozo)} title="Ver detalles">
-                  <FiEye />
-                </button>
+                <div className="billing-celda">
+                  <button className="billing-action-button" type="button" onClick={() => verDetalles(pozo)} title="Ver detalles">
+                    <FiEye />
+                  </button>
+                </div>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody></table>
       </div>
 

@@ -273,20 +273,13 @@ export default function GestionUsuarios({ token }) {
               const userId = u.uid || u.id;
 
               // IMPORTANTE:
-              // Tomamos el rol exactamente como viene de Firebase.
-              //
-              // NO:
-              // .toLowerCase()
-              //
-              // NO:
-              // .toUpperCase()
-              //
-              // NO:
-              // text-transform: capitalize
-              //
+              // Se muestra el rol EXACTAMENTE como viene de Firebase,
+              // sin inventar un rol por defecto. Si el usuario no tiene
+              // rol asignado se dice explícitamente, para que el
+              // Administrador vea la solicitud tal como se envió.
               const rolActual = u.rol
                 ? u.rol.trim()
-                : 'Tecnico';
+                : '';
 
               const areaActual =
                 u.area ||
@@ -389,7 +382,7 @@ export default function GestionUsuarios({ token }) {
                     >
                       {!rolesDisponibles.includes(rolActual) && (
                         <option value={rolActual}>
-                          {rolActual}
+                          {rolActual || 'Sin rol asignado'}
                         </option>
                       )}
                       {rolesDisponibles.map((rol) => (

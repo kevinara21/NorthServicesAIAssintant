@@ -12,10 +12,13 @@ export default function Register({ alVolverAlLogin }) {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [whatsapp, setWhatsapp] = useState('');
 
-  const [areaSeleccionada, setAreaSeleccionada] = useState('Sistemas');
+  const [areaSeleccionada, setAreaSeleccionada] = useState('');
   const [otraArea, setOtraArea] = useState('');
 
-  const [rolSeleccionado, setRolSeleccionado] = useState('Técnico');
+  // El rol NO tiene valor por defecto: se guarda exactamente el que el
+  // usuario elija. Si se iniciara en "Técnico", toda solicitud enviada
+  // sin tocar el selector llegaría al Administrador como "Técnico".
+  const [rolSeleccionado, setRolSeleccionado] = useState('');
   const [otroRol, setOtroRol] = useState('');
 
   const [cargando, setCargando] = useState(false);
@@ -23,25 +26,25 @@ export default function Register({ alVolverAlLogin }) {
 
   const { notificarExito, notificarError, notificarAdvertencia } = useNotification();
 
-  const [areasExistentes, setAreasExistentes] = useState(['Sistemas', 'Operaciones', 'Mantenimiento', 'Administración', 'Crear nueva área...']);
-  const [rolesExistentes, setRolesExistentes] = useState(['Técnico', 'Supervisor', 'Administrador', 'Crear nuevo rol...']);
+  const [areasExistentes, setAreasExistentes] = useState([]);
+  const [rolesExistentes, setRolesExistentes] = useState([]);
 
   useEffect(() => {
+    // Roles y áreas se leen del backend (derivados de los usuarios
+    // registrados), no de una lista fija en el frontend.
     fetch('/api/roles')
       .then((r) => r.json())
       .then((data) => {
-        if (data.ok && Array.isArray(data.roles) && data.roles.length) {
-          const normalizados = data.roles.map((r) => r.charAt(0).toUpperCase() + r.slice(1));
-          setRolesExistentes([...new Set(normalizados), 'Crear nuevo rol...']);
+        if (data.ok && Array.isArray(data.roles)) {
+          setRolesExistentes(data.roles.map((item) => String(item).trim()).filter(Boolean));
         }
       })
       .catch(() => {});
     fetch('/api/areas')
       .then((r) => r.json())
       .then((data) => {
-        if (data.ok && Array.isArray(data.areas) && data.areas.length) {
-          const normalizados = data.areas.map((a) => a.charAt(0).toUpperCase() + a.slice(1));
-          setAreasExistentes([...new Set(normalizados), 'Crear nueva área...']);
+        if (data.ok && Array.isArray(data.areas)) {
+          setAreasExistentes(data.areas.map((item) => String(item).trim()).filter(Boolean));
         }
       })
       .catch(() => {});
@@ -59,8 +62,18 @@ export default function Register({ alVolverAlLogin }) {
     const areaFinal = areaSeleccionada === 'Crear nueva área...' ? otraArea.trim() : areaSeleccionada;
     const rolFinal = rolSeleccionado === 'Crear nuevo rol...' ? otroRol.trim() : rolSeleccionado;
 
-    if (!areaFinal || !rolFinal) {
-      const msg = 'Por favor especifique Área y Rol.';
+    if (!areaFinal) {
+      const msg = 'Por favor seleccione o cree un Área.';
+      setMensaje({ tipo: 'error', texto: msg });
+      notificarAdvertencia(msg, { titulo: 'Campos requeridos' });
+      setCargando(false);
+      return;
+    }
+
+    // El rol debe venir siempre de una elección explícita del usuario: es
+    // lo que el Administrador verá como "Rol solicitado".
+    if (!rolFinal || rolFinal === 'Crear nuevo rol...') {
+      const msg = 'Por favor seleccione un Rol para tu solicitud.';
       setMensaje({ tipo: 'error', texto: msg });
       notificarAdvertencia(msg, { titulo: 'Campos requeridos' });
       setCargando(false);
@@ -165,11 +178,14 @@ export default function Register({ alVolverAlLogin }) {
           <select
             value={areaSeleccionada}
             onChange={(e) => setAreaSeleccionada(e.target.value)}
+            required
             style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
           >
+            <option value="">Selecciona un área…</option>
             {areasExistentes.map((item) => (
               <option key={item} value={item}>{item}</option>
             ))}
+            <option value="Crear nueva área...">+ Crear nueva área…</option>
           </select>
           {areaSeleccionada === 'Crear nueva área...' && (
             <input
@@ -194,11 +210,14 @@ export default function Register({ alVolverAlLogin }) {
           <select
             value={rolSeleccionado}
             onChange={(e) => setRolSeleccionado(e.target.value)}
+            required
             style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
           >
+            <option value="">Selecciona un rol…</option>
             {rolesExistentes.map((item) => (
               <option key={item} value={item}>{item}</option>
             ))}
+            <option value="Crear nuevo rol...">+ Crear nuevo rol…</option>
           </select>
           {rolSeleccionado === 'Crear nuevo rol...' && (
             <input

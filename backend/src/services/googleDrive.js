@@ -47,6 +47,11 @@ const DRIVE_TEXTO_MAX_CHARS = Number(
   process.env.DRIVE_TEXTO_MAX_CHARS || '24000'
 );
 
+// Tope de espera para no dejar el chat colgado si Drive o el lector de PDF
+// se quedan sin responder.
+const DRIVE_TIMEOUT_MS = Number(process.env.DRIVE_TIMEOUT_MS || '30000');
+const DRIVE_TIMEOUT_PDF_MS = Number(process.env.DRIVE_TIMEOUT_PDF_MS || '30000');
+
 let clienteAuthCache = null;
 
 function obtenerCredenciales() {
@@ -77,18 +82,34 @@ async function obtenerAccessToken() {
 
 async function driveFetch(url, options = {}) {
   const accessToken = await obtenerAccessToken();
-  const respuesta = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      ...(options.headers || {}),
-    },
-  });
-  if (!respuesta.ok) {
-    const detalle = await respuesta.text().catch(() => '');
-    throw new Error(`Drive API respondió ${respuesta.status}: ${detalle}`);
+
+  // Sin esto, una petición que Drive no responde deja la consulta del chat
+  // esperando indefinidamente.
+  const control = new AbortController();
+  const temporizador = setTimeout(() => control.abort(), DRIVE_TIMEOUT_MS);
+
+  try {
+    const respuesta = await fetch(url, {
+      ...options,
+      signal: control.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        ...(options.headers || {}),
+      },
+    });
+    if (!respuesta.ok) {
+      const detalle = await respuesta.text().catch(() => '');
+      throw new Error(`Drive API respondió ${respuesta.status}: ${detalle}`);
+    }
+    return respuesta;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Drive no respondió en ${DRIVE_TIMEOUT_MS / 1000} segundos.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(temporizador);
   }
-  return respuesta;
 }
 
 /**
@@ -143,6 +164,7 @@ function fechaDesdeNombreArchivo(nombre) {
  *        'creados'       -> createdTime asc (orden real de subida en Drive)
  *        'nombre'        -> name asc
  *        'nombre_fecha'  -> por la fecha/hora del NOMBRE (el primero real)
+ *        'nombre_fecha_desc' -> por la fecha del NOMBRE, del más nuevo al más viejo
  */
 async function listarPdfsDirectos({ folderId, limit, fieldsExtra = '', orden = 'modificados' }) {
   const condiciones = [
@@ -185,56 +207,125 @@ async function listarPdfsDirectos({ folderId, limit, fieldsExtra = '', orden = '
 }
 
 /**
+ * Caché corta del árbol de PDFs de Drive.
+ *
+ * Recorrer todas las subcarpetas cuesta decenas de llamadas a la API y el
+ * contenido cambia muy rara vez, así que se guarda unos minutos. Sin esto,
+ * cada consulta de reportes repetía el mismo recorrido completo.
+ */
+const CACHE_TTL_MS = Number(process.env.DRIVE_CACHE_TTL_MS || '120000');
+const cacheArbol = new Map(); // clave -> { expira, pdfs }
+
+function leerCacheArbol(clave) {
+  const entrada = cacheArbol.get(clave);
+  if (!entrada) return null;
+  if (entrada.expira <= Date.now()) {
+    cacheArbol.delete(clave);
+    return null;
+  }
+  return entrada.pdfs;
+}
+
+function guardarCacheArbol(clave, pdfs) {
+  cacheArbol.set(clave, { expira: Date.now() + CACHE_TTL_MS, pdfs });
+  if (cacheArbol.size > 20) {
+    const masAntigua = cacheArbol.keys().next().value;
+    cacheArbol.delete(masAntigua);
+  }
+}
+
+function limpiarCacheArbol() {
+  cacheArbol.clear();
+}
+
+/**
  * Lista recursivamente todos los PDFs bajo la carpeta de Operaciones,
  * incluyendo subcarpetas (p. ej. "Torque Logs Reports", "Plots", reportes por
  * pozo/lote). Cada resultado incluye la ruta relativa dentro de la carpeta.
  * Respaldo global cuando la búsqueda inteligente por subcarpeta no aplica.
  */
 async function listarReportesPdfRecursivo({ maxResultados, maxProfundidad = 5, orden = 'modificados' }) {
-  const pdfs = [];
+  // El recorrido NO se corta por maxResultados. El árbol se visita carpeta
+  // por carpeta, así que detenerse antes de terminar devolvería solo los
+  // archivos de las primeras carpetas visitadas y, al ordenarlos después,
+  // el resultado no serían realmente "los más recientes". Se junta todo el
+  // árbol (con un tope de seguridad) y recién ahí se ordena y se recorta.
+  const limiteColeccion = 2000;
 
-  // Para ordenar por fecha/subida se necesitan TODOS los archivos del
-  // arbol; solo se limita la coleccion cuando el orden es por modificacion.
-  const limiteColeccion = orden === 'modificados' ? maxResultados : 2000;
+  const claveCache = `${FOLDER_OPERACIONES}:${maxProfundidad}:${limiteColeccion}`;
+  let pdfs = leerCacheArbol(claveCache);
 
-  async function recorrer(folderId, profundidad, ruta) {
-    if (profundidad > maxProfundidad || pdfs.length >= limiteColeccion) return;
-    const hijos = await listarHijos(folderId);
-    for (const hijo of hijos) {
-      if (pdfs.length >= limiteColeccion) break;
-      if (hijo.mimeType === MIME_CARPETA) {
-        await recorrer(hijo.id, profundidad + 1, `${ruta}/${hijo.name}`);
-      } else if (hijo.mimeType === MIME_PDF) {
-        pdfs.push({
-          id: hijo.id,
-          name: hijo.name,
-          modifiedTime: hijo.modifiedTime,
-          createdTime: hijo.createdTime,
-          size: hijo.size,
-          carpeta: ruta.replace(/^\//, '') || '(raíz)',
-        });
+  if (!pdfs) {
+    pdfs = [];
+
+    async function recorrer(folderId, profundidad, ruta) {
+      if (profundidad > maxProfundidad || pdfs.length >= limiteColeccion) return;
+
+      let hijos;
+      try {
+        hijos = await listarHijos(folderId);
+      } catch (error) {
+        // Una subcarpeta inaccesible no debe tumbar todo el reporte: se avisa
+        // en consola y se sigue con el resto del árbol.
+        console.warn(
+          `[DRIVE] No se pudo listar "${ruta || '(raíz)'}": ${error.message}`
+        );
+        return;
       }
+
+      await Promise.all(
+        hijos.map(async (hijo) => {
+          if (pdfs.length >= limiteColeccion) return;
+          try {
+            if (hijo.mimeType === MIME_CARPETA) {
+              await recorrer(hijo.id, profundidad + 1, `${ruta}/${hijo.name}`);
+            } else if (hijo.mimeType === MIME_PDF) {
+              pdfs.push({
+                id: hijo.id,
+                name: hijo.name,
+                modifiedTime: hijo.modifiedTime,
+                createdTime: hijo.createdTime,
+                size: hijo.size,
+                carpeta: ruta.replace(/^\//, '') || '(raíz)',
+              });
+            }
+          } catch (errorHijo) {
+            console.warn(`[DRIVE] Omitiendo "${hijo.name}": ${errorHijo.message}`);
+          }
+        })
+      );
     }
+
+    await recorrer(FOLDER_OPERACIONES, 0, '');
+    guardarCacheArbol(claveCache, pdfs);
   }
 
-  await recorrer(FOLDER_OPERACIONES, 0, '');
+  // Se copia antes de ordenar para no mutar lo que está en caché.
+  const ordenados = [...pdfs];
 
   if (orden === 'creados') {
     // El PRIMERO subido a Drive: createdTime asc.
-    pdfs.sort((a, b) => new Date(a.createdTime || 0) - new Date(b.createdTime || 0));
+    ordenados.sort((a, b) => new Date(a.createdTime || 0) - new Date(b.createdTime || 0));
   } else if (orden === 'nombre' || orden === 'nombre_fecha') {
     // Por la fecha/hora del NOMBRE del archivo (el primero real).
-    pdfs.sort(
-      (a, b) =>
-        fechaDesdeNombreArchivo(a.name).localeCompare(
-          fechaDesdeNombreArchivo(b.name)
-        )
+    ordenados.sort((a, b) =>
+      fechaDesdeNombreArchivo(a.name).localeCompare(fechaDesdeNombreArchivo(b.name))
+    );
+  } else if (orden === 'nombre_fecha_desc') {
+    // Por la fecha/hora del NOMBRE, del más nuevo al más viejo.
+    //
+    // Es el orden que se usa para "los últimos N reportes": el timestamp del
+    // nombre es cuando se generó el reporte en campo. `modifiedTime` de Drive
+    // no sirve para eso, porque cambia en cuanto alguien vuelve a subir o a
+    // tocar el archivo, y eso desordena la cronología real de las operaciones.
+    ordenados.sort((a, b) =>
+      fechaDesdeNombreArchivo(b.name).localeCompare(fechaDesdeNombreArchivo(a.name))
     );
   } else {
-    pdfs.sort((a, b) => new Date(b.modifiedTime || 0) - new Date(a.modifiedTime || 0));
+    ordenados.sort((a, b) => new Date(b.modifiedTime || 0) - new Date(a.modifiedTime || 0));
   }
 
-  return pdfs.slice(0, maxResultados);
+  return ordenados.slice(0, maxResultados);
 }
 
 /**
@@ -329,21 +420,150 @@ async function descargarArchivoBuffer(fileId) {
 }
 
 /**
- * Extrae el texto plano de un PDF a partir de su buffer.
+ * Decodifica el texto que entrega pdf2json (viene codificado en la URL).
+ */
+function decodificarTexto(fragmento) {
+  const bruto =
+    fragmento?.T ??
+    (Array.isArray(fragmento?.R) ? fragmento.R[0]?.T : undefined) ??
+    '';
+  if (!bruto) return '';
+  try {
+    return decodeURIComponent(bruto);
+  } catch {
+    return String(bruto);
+  }
+}
+
+/**
+ * Reconstruye las filas de una tabla a partir de la posición de cada texto.
+ *
+ * Los torque logs son tablas: los números están en columnas separadas por
+ * encabezados. Al volcar el texto plano se mezclan los encabezados con los
+ * valores y el resultado es ilegible. Agrupando por coordenada vertical y
+ * ordenando por la horizontal, cada fila vuelve a su sitio.
+ *
+ * Dos textos contiguos que almost no se separan pertenecen a la misma celda y
+ * se unen con un espacio; cuando hay un hueco claro se trata de celdas
+ * distintas y se separan con " | ".
+ * se separan con " | ".
+ */
+function reconstruirFilas(textos, separacionColumnas = 6) {
+  const filas = new Map();
+
+  for (const fragmento of textos || []) {
+    const texto = decodificarTexto(fragmento).replace(/\s+/g, ' ').trim();
+    if (!texto) continue;
+
+    const y = Number(fragmento.y ?? 0);
+    const x = Number(fragmento.x ?? 0);
+    const ancho = Number(fragmento.w ?? 0);
+
+    // Se busca una fila ya abierta lo bastante cerca en vertical.
+    let filaY = null;
+    let mejorDiferencia = Infinity;
+    for (const clave of filas.keys()) {
+      const diferencia = Math.abs(clave - y);
+      if (diferencia <= 3 && diferencia < mejorDiferencia) {
+        filaY = clave;
+        mejorDiferencia = diferencia;
+      }
+    }
+    if (filaY === null) {
+      filaY = y;
+      filas.set(filaY, []);
+    }
+
+    filas.get(filaY).push({ x, ancho, texto });
+  }
+
+  return [...filas.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, celdas]) => {
+      celdas.sort((a, b) => a.x - b.x);
+
+      const partes = [];
+      let previo = null;
+      for (const celda of celdas) {
+        if (previo) {
+          const hueco = celda.x - (previo.x + previo.ancho);
+          partes.push(hueco > separacionColumnas ? ' | ' : ' ');
+        }
+        partes.push(celda.texto);
+        previo = celda;
+      }
+      return partes.join('').replace(/\s+\|\s+/g, ' | ').trim();
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Extrae el texto de un PDF a partir de su buffer.
+ *
+ * Se reconstruyen las filas usando la posición de cada fragmento para que las
+ * tablas mantengan su estructura. Si el PDF no permite recuperar esa
+ * información, se devuelve el volcado plano para no perder el contenido.
  */
 function extraerTextoPdf(buffer) {
   return new Promise((resolve, reject) => {
-    const parser = new PDFParser(null, true);
-    parser.on('pdfParser_dataError', (error) =>
-      reject(new Error(error?.parserError?.message || 'Error al parsear el PDF'))
+    let resuelto = false;
+    const finalizar = (fn) => (valor) => {
+      if (resuelto) return;
+      resuelto = true;
+      clearTimeout(temporizador);
+      fn(valor);
+    };
+    const aceptar = finalizar(resolve);
+    const fallar = finalizar(reject);
+
+    // pdf2json no siempre emite error si el PDF está corrupto; sin este
+    // filtro la consulta se quedaría esperando indefinidamente.
+    const temporizador = setTimeout(
+      () => fallar(new Error('Se agotó el tiempo al leer el PDF.')),
+      DRIVE_TIMEOUT_PDF_MS
     );
+
+    let parser;
+    try {
+      parser = new PDFParser(null, true);
+    } catch (error) {
+      fallar(new Error(`No se pudo iniciar el lector de PDF: ${error.message}`));
+      return;
+    }
+
+    parser.on('pdfParser_dataError', (error) =>
+      fallar(
+        new Error(
+          error?.parserError?.message ||
+            'El PDF está dañado o no se pudo interpretar.'
+        )
+      )
+    );
+
     parser.on('pdfParser_dataReady', () => {
       try {
-        resolve(parser.getRawTextContent());
+        const bloques = parser.getMergedTextBlocksIfNeeded?.();
+        const paginas = bloques?.Pages || [];
+
+        const secciones = paginas.map((pagina, indice) => {
+          const filas = reconstruirFilas(pagina?.Texts);
+          if (filas.length) {
+            return `--- Página ${indice + 1} ---\n${filas.join('\n')}`;
+          }
+          return '';
+        });
+
+        const texto = secciones.filter(Boolean).join('\n\n').trim();
+        aceptar(texto || parser.getRawTextContent());
       } catch (error) {
-        reject(error);
+        try {
+          aceptar(parser.getRawTextContent());
+        } catch {
+          fallar(error);
+        }
       }
     });
+
     parser.parseBuffer(buffer);
   });
 }
@@ -356,4 +576,5 @@ module.exports = {
   listarReportesPdf,
   descargarArchivoBuffer,
   extraerTextoPdf,
+  limpiarCacheArbol,
 };

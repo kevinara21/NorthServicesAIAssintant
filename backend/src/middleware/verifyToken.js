@@ -22,6 +22,13 @@ const verifyToken = async (req, res, next) => {
 
     const data = userDoc.data();
 
+    // El rol se conserva tal como lo registró o asignó el Administrador.
+    // Solo se normaliza a minúsculas para poder compararlo de forma
+    // consistente; NO se reemplaza por un rol por defecto, porque eso
+    // hacía que una solicitud de acceso apareciera siempre como
+    // "Técnico" aunque el usuario hubiera elegido otro rol.
+    const rol = String(data.rol || '').trim();
+
     req.user = {
       uid: decodedToken.uid,
       email: data.email,
@@ -29,8 +36,9 @@ const verifyToken = async (req, res, next) => {
       apellido: data.apellido,
       whatsapp: data.whatsapp || '',
       whatsappVerificado: data.whatsappVerificado === true,
-      // Convertir siempre a minúsculas para comparaciones consistentes
-      rol: (data.rol || 'tecnico').toLowerCase(),
+      // Minúsculas para comparaciones; `rolOriginal` conserva el texto exacto.
+      rol: rol.toLowerCase(),
+      rolOriginal: rol,
       area: data.area || data.departamento || '',
       estado: data.estado || 'pendiente'
     };

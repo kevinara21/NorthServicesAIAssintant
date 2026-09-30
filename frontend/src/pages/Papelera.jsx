@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FiCheckSquare, FiFile, FiRefreshCw, FiSearch, FiSquare, FiTrash2 } from 'react-icons/fi';
+import { FiAlertTriangle, FiCheckSquare, FiFile, FiLock, FiRefreshCw, FiSearch, FiSquare, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from '../components/common/OilLoader';
@@ -54,6 +54,8 @@ export default function Papelera({ token, usuario }) {
   const [items, setItems] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [procesando, setProcesando] = useState(null);
+  // Elementos a la espera de confirmación en el modal de borrado definitivo.
+  const [porEliminar, setPorEliminar] = useState(null);
   const [busqueda, setBusqueda] = useState('');
   const [modoSeleccion, setModoSeleccion] = useState(false);
   const [idsSeleccionados, setIdsSeleccionados] = useState([]);
@@ -90,7 +92,9 @@ export default function Papelera({ token, usuario }) {
       .filter(Boolean).some((valor) => valor.toLowerCase().includes(termino)));
   }, [items, busqueda]);
 
-  const idsVisibles = itemsFiltrados.map((item) => item.id);
+  // Los archivos bloqueados por categoría no entran en la selección: no se
+  // pueden restaurar desde aquí, así que no tiene sentido marcarlos.
+  const idsVisibles = itemsFiltrados.filter((item) => !item.bloqueadoPorCategoria).map((item) => item.id);
   const todosSeleccionados = idsVisibles.length > 0 && idsVisibles.every((id) => idsSeleccionados.includes(id));
   const seleccionActual = itemsFiltrados.filter((item) => idsSeleccionados.includes(item.id));
   const haySeleccion = seleccionActual.length > 0;
@@ -110,44 +114,75 @@ export default function Papelera({ token, usuario }) {
     setIdsSeleccionados(todosSeleccionados ? [] : idsVisibles);
   };
 
-  const restaurar = async (lista) => {
-    const ids = lista.map((item) => item.id);
-    setProcesando(ids.join(','));
-    try {
-      const res = await apiFetch('/api/papelera/lote/restaurar', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      });
+const restaurar = async (lista) => {
+    // Los archivos que están en la papelera porque se desactivó toda su
+  // categoría no se restauran uno por uno: primero hay que reactivar la
+  // categoría. Se avisa en vez de dejar que el backend rechace cada uno.
+  const bloqueados = lista.filter((item) => item.bloqueadoPorCategoria);
+  if (bloqueados.length === lista.length) {
+    notificarError(
+      'Estos archivos se mandaron a la papelera al desactivar toda su categoría. Reactívala desde Conocimiento y permisos por rol.',
+      { titulo: 'Restauración disponible desde Conocimiento' }
+    );
+    return;
+  }
+  if (bloqueados.length > 0) {
+    notificarError(
+      `Se omitieron ${bloqueados.length} archivo(s) que dependen de una categoría desactivada. Reactívala desde Conocimiento y permisos por rol.`,
+      { titulo: 'Restauración parcial' }
+    );
+    setIdsSeleccionados((actual) =>
+      actual.filter((id) => !bloqueados.some((item) => item.id === id))
+    );
+  }
+
+  const restaurables = lista.filter((item) => !item.bloqueadoPorCategoria).map((item) => item.id);
+  if (!restaurables.length) return;
+
+  setProcesando(restaurables.join(','));
+  try {
+    const res = await apiFetch('/api/papelera/lote/restaurar', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: restaurables }),
+    });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo restaurar.');
-      setItems((actual) => actual.filter((item) => !ids.includes(item.id)));
-      setIdsSeleccionados((actual) => actual.filter((id) => !ids.includes(id)));
+      setItems((actual) => actual.filter((item) => !restaurables.includes(item.id)));
+      setIdsSeleccionados((actual) => actual.filter((id) => !restaurables.includes(id)));
       notificarExito(`${data.procesados} elemento${data.procesados === 1 ? '' : 's'} restaurado${data.procesados === 1 ? '' : 's'}. La información vuelve a estar disponible para el asistente IA.`, { titulo: 'Restaurado' });
     } catch (error) {
       notificarError(error.message, { titulo: 'Error al restaurar' });
     } finally { setProcesando(null); }
   };
 
-  const eliminarDefinitivo = async (lista) => {
-    const nombres = lista.map((item) => item.nombre).join(', ');
-    if (!window.confirm(`¿Eliminar ${lista.length === 1 ? `"${nombres}"` : `${lista.length} elementos`} permanentemente? Esta acción no se puede deshacer.`)) return;
-    const ids = lista.map((item) => item.id);
-    setProcesando(ids.join(','));
-    try {
-      const res = await apiFetch('/api/papelera/lote/definitivo', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'No se pudo eliminar.');
-      setItems((actual) => actual.filter((item) => !ids.includes(item.id)));
-      setIdsSeleccionados((actual) => actual.filter((id) => !ids.includes(id)));
-      notificarExito(data.mensaje, { titulo: 'Eliminado permanentemente' });
-    } catch (error) {
-      notificarError(error.message, { titulo: 'Error al eliminar' });
-    } finally { setProcesando(null); }
+  // El borrado definitivo se pide con un modal propio en vez de window.confirm:
+// el del navegador no se puede vestir con los colores de la aplicación y
+// muestra el mensaje del sistema operativo en otro idioma.
+const eliminarDefinitivo = async (lista) => {
+  const ids = lista.map((item) => item.id);
+  setProcesando(ids.join(','));
+  try {
+    const res = await apiFetch('/api/papelera/lote/definitivo', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'No se pudo eliminar.');
+    setItems((actual) => actual.filter((item) => !ids.includes(item.id)));
+    setIdsSeleccionados((actual) => actual.filter((id) => !ids.includes(id)));
+    notificarExito(data.mensaje, { titulo: 'Eliminado permanentemente' });
+  } catch (error) {
+    notificarError(error.message, { titulo: 'Error al eliminar' });
+  } finally { setProcesando(null); }
+  };
+
+  const confirmarEliminacionDefinitiva = async () => {
+    const lista = porEliminar;
+    if (!lista?.length) return;
+    setPorEliminar(null);
+    await eliminarDefinitivo(lista);
   };
 
   if (cargando) return <OilLoader label="Cargando papelera" inline />;
@@ -178,7 +213,7 @@ export default function Papelera({ token, usuario }) {
             <button type="button" className="library-icon-button success" disabled={modoSeleccion && !haySeleccion} onClick={() => restaurar(haySeleccion ? seleccionActual : itemsFiltrados)} title="Restaurar todo">
               <FiRefreshCw />
             </button>
-            <button type="button" className="library-icon-button danger" disabled={modoSeleccion && !haySeleccion} onClick={() => eliminarDefinitivo(haySeleccion ? seleccionActual : itemsFiltrados)} title="Eliminar todo">
+            <button type="button" className="library-icon-button danger" disabled={modoSeleccion && !haySeleccion} onClick={() => setPorEliminar(haySeleccion ? seleccionActual : itemsFiltrados)} title="Eliminar todo">
               <FiTrash2 />
             </button>
           </>
@@ -207,7 +242,7 @@ export default function Papelera({ token, usuario }) {
                 <tr key={item.id} className={idsSeleccionados.includes(item.id) ? 'selected' : ''}>
                   {modoSeleccion && (
                     <td className="trash-check-cell">
-                      <input type="checkbox" className="trash-checkbox" checked={idsSeleccionados.includes(item.id)} onChange={() => alternarSeleccion(item.id)} aria-label={`Seleccionar ${item.nombre}`} />
+                      <input type="checkbox" className="trash-checkbox" checked={idsSeleccionados.includes(item.id)} disabled={item.bloqueadoPorCategoria} onChange={() => alternarSeleccion(item.id)} aria-label={item.bloqueadoPorCategoria ? `${item.nombre} se restaura reactivando su categoría desde Conocimiento y permisos por rol` : `Seleccionar ${item.nombre}`} />
                     </td>
                   )}
                   <td className="trash-file-cell" data-label="Archivo">
@@ -219,7 +254,14 @@ export default function Papelera({ token, usuario }) {
                       </div>
                     </div>
                   </td>
-                  <td className="trash-meta" data-label="Eliminado por">{item.eliminadoPorNombre || item.propietarioNombre}</td>
+                  <td className="trash-meta" data-label="Eliminado por">
+                    <div>
+                      <div>{item.eliminadoPorNombre || item.propietarioNombre}</div>
+                      {item.bloqueadoPorCategoria && (
+                        <small className="trash-bloqueado-nota">Desactivación de categoría</small>
+                      )}
+                    </div>
+                  </td>
                   <td className="trash-date" data-label="Fecha">
                     <div>
                       <div>{formatearFechaHora(item.eliminadoEn)}</div>
@@ -239,20 +281,32 @@ export default function Papelera({ token, usuario }) {
                   </td>
                   <td className="trash-actions-cell" data-label="Acciones">
                     <div className="trash-actions">
-                      <button
-                        type="button"
-                        className="trash-btn restore"
-                        disabled={procesando === item.id}
-                        onClick={() => restaurar([item])}
-                        title="Restaurar"
-                      >
-                        <FiRefreshCw /> Restaurar
-                      </button>
+                      {/* Cuando el archivo está aquí porque se desactivó toda su categoría, no se
+                      muestra el botón de restaurar: la operación fue de colección
+                      y se revierte completa desde Conocimiento. Un botón
+                      apagado solo invita a pulsarlo y a obtener un error, así que
+                      en su lugar se explica dónde está el действи. */}
+                      {item.bloqueadoPorCategoria ? (
+                        <div className="trash-bloqueado">
+                          <FiLock />
+                          <small>Se recupera al reactivar la categoría desde Conocimiento y permisos por rol</small>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="trash-btn restore"
+                          disabled={procesando === item.id}
+                          onClick={() => restaurar([item])}
+                          title="Restaurar"
+                        >
+                          <FiRefreshCw /> Restaurar
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="trash-btn delete"
                         disabled={procesando === item.id}
-                        onClick={() => eliminarDefinitivo([item])}
+                        onClick={() => setPorEliminar([item])}
                         title="Eliminar permanentemente"
                       >
                         <FiTrash2 /> Eliminar
@@ -265,6 +319,72 @@ export default function Papelera({ token, usuario }) {
           </table>
         )}
       </div>
+
+      {porEliminar && (
+        <div
+          className="modal-overlay modal-monitoreo-pozo-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="papelera-confirmar-titulo"
+          onClick={(event) => { if (event.target === event.currentTarget) setPorEliminar(null); }}
+          onKeyDown={(event) => { if (event.key === 'Escape') setPorEliminar(null); }}
+        >
+          <div className="modal-monitoreo-pozo modal-monitoreo-pozo-confirmacion">
+            <header className="modal-monitoreo-pozo-header">
+              <div>
+                <span className="dashboard-eyebrow">Papelera</span>
+                <h2 id="papelera-confirmar-titulo" style={{ margin: '4px 0 0', color: '#fff', fontSize: 20 }}>
+                  Eliminar definitivamente
+                </h2>
+              </div>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setPorEliminar(null)} aria-label="Cerrar">
+                <FiX aria-hidden="true" />
+              </button>
+            </header>
+
+            <div className="modal-monitoreo-pozo-body">
+              <div className="papelera-confirmacion">
+                <span className="papelera-confirmacion-icono" aria-hidden="true">
+                  <FiAlertTriangle />
+                </span>
+                <div>
+                  <strong>
+                    {porEliminar.length === 1
+                      ? `¿Eliminar “${porEliminar[0].nombre}” permanentemente?`
+                      : `¿Eliminar ${porEliminar.length} elementos permanentemente?`}
+                  </strong>
+                  <p>
+                    {porEliminar.length === 1
+                      ? 'Se borrará de forma definitiva y el asistente ya no podrá recuperarlo.'
+                      : 'Se borrarán de forma definitiva y el asistente ya no podrá recuperarlos.'}
+                    {' '}Esta acción no se puede deshacer.
+                  </p>
+
+                  {porEliminar.length > 1 && (
+                    <ul className="papelera-confirmacion-lista">
+                      {porEliminar.slice(0, 5).map((item) => (
+                        <li key={item.id}>{item.nombre}</li>
+                      ))}
+                      {porEliminar.length > 5 && (
+                        <li className="papelera-confirmacion-mas">y {porEliminar.length - 5} más…</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              <div className="modal-monitoreo-pozo-actions">
+                <button type="button" className="btn-monitoreo-pozo-cancel" onClick={() => setPorEliminar(null)}>
+                  Cancelar
+                </button>
+                <button type="button" className="panel-conocimiento__peligro-boton panel-conocimiento__peligro-boton--solido" onClick={confirmarEliminacionDefinitiva}>
+                  <FiTrash2 aria-hidden="true" /> Sí, eliminar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

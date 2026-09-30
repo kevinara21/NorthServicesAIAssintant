@@ -15,23 +15,30 @@ import {
   FiX,
   FiMonitor,
   FiTrash2,
+  FiShield,
 } from 'react-icons/fi';
 import { FaRobot } from 'react-icons/fa';
 import Chatbot from '../pages/Chatbot';
 import GestionUsuarios from '../pages/GestionUsuarios';
 import GestionFacturacion from '../pages/GestionFacturacion';
+import GestionConocimiento from '../pages/GestionConocimiento';
 import SubirRecursos from './SubirRecursos';
 import Perfil from './Perfil';
 import Recursos from './Recursos';
 import Archivos from './Archivos';
 import MonitoreoPozos from './MonitoreoPozos';
 import Papelera from '../pages/Papelera';
+import { apiFetch } from '../services/api';
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 export default function Dashboard({ usuario, token, onLogout, tiempoSesionTexto, onUsuarioActualizado }) {
 const [vistaActiva, setVistaActiva] = useState('inicio');
+  // Permisos que resuelve el backend para este usuario. Starlink es un
+  // módulo independiente (no una categoría de documentos) y se habilita
+  // por rol desde el panel de administración.
+  const [puedeUsarStarlink, setPuedeUsarStarlink] = useState(false);
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
   const [monitoreoAbierto, setMonitoreoAbierto] = useState(false);
@@ -49,6 +56,21 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
   };
   const esAdministrador = normalizarRol(usuario?.rol) === 'administrador';
   const nombreCompleto = [usuario?.nombre, usuario?.apellido].filter(Boolean).join(' ') || 'Usuario';
+
+  useEffect(() => {
+    if (!token) return undefined;
+    let vigente = true;
+    apiFetch('/api/perfil', { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!vigente || !data?.ok) return;
+        setPuedeUsarStarlink(esAdministrador || data.usuario?.puedeUsarStarlink === true);
+      })
+      .catch(() => {
+        if (vigente) setPuedeUsarStarlink(esAdministrador);
+      });
+    return () => { vigente = false; };
+  }, [token, esAdministrador]);
 
   useEffect(() => {
     if (!asistenteAbierto) return undefined;
@@ -69,16 +91,20 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
     { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
+  // Starlink se mantiene como módulo independiente y solo aparece si el
+// backend autoriza el rol. El Administrador siempre lo tiene.
   const opcionesAdmin = [
     { id: 'publicar-recursos', label: 'Publicar recursos', icon: FiUploadCloud },
     { id: 'usuarios', label: 'Gestionar usuarios', icon: FiUsers },
-    { id: 'facturacion', label: 'Starlink', icon: FiWifi },
+    { id: 'conocimiento', label: 'Conocimiento y roles', icon: FiShield },
+    ...(puedeUsarStarlink ? [{ id: 'facturacion', label: 'Starlink', icon: FiWifi }] : []),
   ];
 
   const accesosAdmin = [
     { id: 'publicar-recursos', label: 'Publicar recursos', icon: FiUploadCloud },
     { id: 'usuarios', label: 'Gestionar usuarios', icon: FiUsers },
-    { id: 'facturacion', label: 'Gestionar Starlink', icon: FiWifi },
+    { id: 'conocimiento', label: 'Conocimiento y roles', icon: FiShield },
+    ...(puedeUsarStarlink ? [{ id: 'facturacion', label: 'Gestionar Starlink', icon: FiWifi }] : []),
   ];
 
   const cambiarVista = (vista) => {
@@ -92,7 +118,10 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
 case 'archivos': return <Archivos token={token} usuario={usuario} />;
       case 'publicar-recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
-      case 'facturacion': return <GestionFacturacion token={token} />;
+      case 'conocimiento': return <GestionConocimiento token={token} />;
+      case 'facturacion': return (puedeUsarStarlink
+        ? <GestionFacturacion token={token} />
+        : <section><h1>Starlink</h1><p>Tu rol no tiene acceso a este módulo. Comunícate con el administrador si necesitas habilitarlo.</p></section>);
       case 'papelera': return <Papelera token={token} usuario={usuario} />;
       case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
       default:

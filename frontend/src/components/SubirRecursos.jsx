@@ -138,14 +138,15 @@ export default function SubirRecursos({ token, alCompletar }) {
 
         if (xhr.status >= 200 && xhr.status < 300 && data?.ok) {
           setProgreso(100);
-          setFase('Proceso completado.');
+          setFase('');
 
-          setMensaje({
-            tipo: 'exito',
-            texto:
-              data.mensaje ||
-              'El recurso fue publicado correctamente.',
-          });
+          // El éxito se avisa con la notificación emergente, igual que el resto
+          // de acciones del sistema, y desaparece solo. Antes se quedaba un
+          // recuadro verde fijo en el formulario ocupando sitio.
+          notificarExito(
+            data.mensaje || 'El recurso fue publicado correctamente.',
+            { titulo: 'Recurso publicado' }
+          );
 
           setNombre('');
           setVersion('');
@@ -268,6 +269,8 @@ export default function SubirRecursos({ token, alCompletar }) {
         Publica un manual PDF para el asistente IA. El instalador de software es opcional.
       </p>
 
+      {/* Solo se muestran aquí los errores. Los aciertos salen como
+          notificación emergente, que se cierra sola. */}
       {mensaje && (
         <div
           className="resource-main-fields"
@@ -276,18 +279,9 @@ export default function SubirRecursos({ token, alCompletar }) {
             borderRadius: 5,
             marginBottom: 15,
             fontSize: 13,
-            background:
-              mensaje.tipo === 'exito'
-                ? '#dcfce7'
-                : '#fee2e2',
-            color:
-              mensaje.tipo === 'exito'
-                ? '#15803d'
-                : '#b91c1c',
-            border:
-              mensaje.tipo === 'exito'
-                ? '1px solid #bbf7d0'
-                : '1px solid #fecaca',
+            background: '#fee2e2',
+            color: '#b91c1c',
+            border: '1px solid #fecaca',
           }}
         >
           {mensaje.texto}

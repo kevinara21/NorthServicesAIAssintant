@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { FiCheckSquare, FiDownload, FiFile, FiPaperclip, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
+import { FiCheck, FiCheckSquare, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from './common/OilLoader';
@@ -19,12 +19,29 @@ export default function Archivos({ token, usuario }) {
   const [nombre, setNombre] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [busqueda, setBusqueda] = useState('');
+  const [filtroCategoria, setFiltroCategoria] = useState('');
+
+  // Categorías de conocimiento: las trae el backend, no están fijas en el
+  // frontend, así que el Administrador puede agregar más sin desplegar.
+  const [categorias, setCategorias] = useState([]);
+  const [categoriaId, setCategoriaId] = useState('');
   const [cargando, setCargando] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(true);
   const { notificarError, notificarExito, notificarInfo } = useNotification();
   const esAdministrador = usuario?.rol?.toLowerCase() === 'administrador';
   const [confirmacion, setConfirmacion] = useState({ visible: false, titulo: '', mensaje: '', etiqueta: 'Enviar a papelera', onConfirm: null });
   const [modalSubirAbierto, setModalSubirAbierto] = useState(false);
+
+  // Crear una categoría nueva desde este mismo formulario, para no tener
+  // que salir a Conocimiento y permisos por rol a medio trabajo.
+  const [creandoCategoria, setCreandoCategoria] = useState(false);
+  const [guardandoCategoria, setGuardandoCategoria] = useState(false);
+  const [nuevaCategoria, setNuevaCategoria] = useState({ nombre: '', descripcion: '' });
+
+  const categoriaElegida = useMemo(
+    () => categorias.find((categoria) => categoria.id === categoriaId) || null,
+    [categorias, categoriaId]
+  );
 
   const cargarArchivos = async () => {
     try {
@@ -39,14 +56,78 @@ export default function Archivos({ token, usuario }) {
     }
   };
 
-  useEffect(() => { cargarArchivos(); }, []);
+  const cargarCategorias = async () => {
+    try {
+      const respuesta = await apiFetch('/api/rag/categorias', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await respuesta.json();
+      if (!respuesta.ok) throw new Error(data.error || 'No se pudieron cargar las categorías.');
+      const lista = data.categorias || [];
+      setCategorias(lista);
+      // La general es la fuente compartida: se propone por defecto y el
+      // usuario puede cambiarla antes de subir.
+      if (lista.length) {
+        setCategoriaId((actual) => {
+          if (actual && lista.some((categoria) => categoria.id === actual)) return actual;
+          const general = lista.find((categoria) => categoria.id === 'conocimiento_general');
+          return general?.id || lista[0].id;
+        });
+      }
+    } catch (error) {
+      notificarError(error.message, { titulo: 'No se pudieron cargar las categorías' });
+    }
+  };
 
+  useEffect(() => { cargarArchivos(); cargarCategorias(); }, []);
+
+  const alternarFormularioCategoria = () => {
+    setCreandoCategoria((actual) => !actual);
+    if (creandoCategoria) setNuevaCategoria({ nombre: '', descripcion: '' });
+  };
+
+  const crearCategoriaDesdeSubida = async () => {
+    if (!nuevaCategoria.nombre.trim()) return;
+    setGuardandoCategoria(true);
+    try {
+      // Cualquier rol puede crear la categoría. El backend la enlaza al rol de
+// quien la crea, así que el archivo recién subido se ve de inmediato sin que
+// un Administrador tenga que marcar permisos.
+const respuesta = await apiFetch('/api/rag/categorias', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(nuevaCategoria),
+      });
+      const data = await respuesta.json();
+      if (!respuesta.ok) throw new Error(data.error || 'No se pudo crear la categoría.');
+      notificarExito(data.mensaje, { titulo: 'Categoría creada' });
+      setNuevaCategoria({ nombre: '', descripcion: '' });
+      setCreandoCategoria(false);
+      await cargarCategorias();
+      // Se selecciona la recién creada para no tener que buscarla en la lista.
+      setCategoriaId(data.categoria?.id || '');
+    } catch (error) {
+      notificarError(error.message, { titulo: 'No se pudo crear la categoría' });
+    } finally {
+      setGuardandoCategoria(false);
+    }
+  };
+
+  // Primero se aplica el filtro de categoria elegida y despues la busqueda
+  // por texto, para que ambas condiciones se puedan combinar.
   const archivosFiltrados = useMemo(() => {
+    const porCategoria = filtroCategoria
+      ? archivos.filter((item) => item.categoriaId === filtroCategoria)
+      : archivos;
+
     const termino = busqueda.trim().toLowerCase();
-    if (!termino) return archivos;
-    return archivos.filter((item) => [item.nombre, item.nombreArchivo, item.descripcion, item.propietarioNombre, item.propietarioEmail]
+    if (!termino) return porCategoria;
+    return porCategoria.filter((item) => [item.nombre, item.nombreArchivo, item.descripcion, item.propietarioNombre, item.propietarioEmail, item.categoriaNombre]
       .filter(Boolean).some((valor) => valor.toLowerCase().includes(termino)));
-  }, [archivos, busqueda]);
+  }, [archivos, busqueda, filtroCategoria]);
+
+  const nombreCategoria = useMemo(() => {
+    const mapa = new Map(categorias.map((categoria) => [categoria.id, categoria.nombre]));
+    return (item) => mapa.get(item.categoriaId) || item.categoriaNombre || 'Sin categoría';
+  }, [categorias]);
 
   const puedeEliminarItem = (item) => esAdministrador || item.propietarioUid === usuario?.uid;
   const idsVisibles = archivosFiltrados.map((item) => item.id);
@@ -94,6 +175,7 @@ export default function Archivos({ token, usuario }) {
   const subir = async (event) => {
     event.preventDefault();
     if (!archivosSeleccionados.length) return notificarInfo('Selecciona al menos un archivo para continuar.', { titulo: 'Archivo requerido' });
+    if (!categoriaId) return notificarInfo('Selecciona el tipo de información del documento.', { titulo: 'Categoría requerida' });
     setCargando(true);
     let subidos = 0;
     let errores = 0;
@@ -104,6 +186,8 @@ export default function Archivos({ token, usuario }) {
           datos.append('archivo', archivo);
           datos.append('nombre', nombre.trim());
           datos.append('descripcion', descripcion.trim());
+          // El backend decide la colección de embeddings a partir de esto.
+          datos.append('categoriaId', categoriaId);
           const respuesta = await apiFetch('/api/archivos', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: datos });
           const data = await respuesta.json();
           if (!respuesta.ok) throw new Error(data.error || 'No se pudo procesar.');
@@ -181,7 +265,7 @@ export default function Archivos({ token, usuario }) {
     <section>
       <span className="dashboard-eyebrow">Contenido para IA</span>
       <h1>Archivos</h1>
-      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx), Visio (.vsdx) y formatos de texto; los demás se guardan para descarga. No se permiten archivos ejecutables o scripts (PHP, Python, EXE, etc.) por seguridad. Al eliminar, el archivo va a la papelera 30 días y el contenido deja de estar disponible para la IA.</p>
+      <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word, Excel, PowerPoint, Visio y texto. No se permiten ejecutables ni scripts. Los archivos eliminados pasan a la papelera por 30 días y dejan de estar disponibles para la IA.</p>
       
 
 
@@ -232,6 +316,94 @@ export default function Archivos({ token, usuario }) {
                 </label>
                 <label>Nombre<input value={nombre} onChange={(event) => setNombre(event.target.value)} disabled={cargando} /></label>
                 <label>Descripción<input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} /></label>
+
+                <div className="archivo-categoria">
+                  <span className="archivo-categoria__etiqueta">
+                    Tipo de información
+                    {categoriaElegida?.coleccion && (
+                      <code className="archivo-categoria__coleccion">{categoriaElegida.coleccion}</code>
+                    )}
+                  </span>
+
+                  {categorias.length === 0 ? (
+                    <div className="archivo-categoria__vacio">
+                      <span>Aún no hay categorías de conocimiento. Crea la primera para poder subir archivos.</span>
+                    </div>
+                  ) : (
+                    <div className="archivo-categoria__selector">
+                      <select
+                        className="archivo-categoria__select"
+                        value={categoriaId}
+                        onChange={(event) => setCategoriaId(event.target.value)}
+                        disabled={cargando}
+                        required
+                      >
+                        {categorias.map((categoria) => (
+                          <option key={categoria.id} value={categoria.id}>{categoria.nombre}</option>
+                        ))}
+                      </select>
+                      <FiLayers aria-hidden="true" className="archivo-categoria__icono" />
+                    </div>
+                  )}
+
+                  {categoriaElegida?.descripcion && (
+                    <p className="archivo-categoria__ayuda">{categoriaElegida.descripcion}</p>
+                  )}
+
+                  {esAdministrador ? (
+                    <>
+                      <button
+                        type="button"
+                        className="archivo-categoria__nueva"
+                        onClick={alternarFormularioCategoria}
+                        disabled={cargando || guardandoCategoria}
+                      >
+                        <FiPlus aria-hidden="true" />
+                        {creandoCategoria ? 'Cancelar' : 'Crear nueva categoría'}
+                      </button>
+
+                      {creandoCategoria && (
+                        <div className="archivo-categoria__form">
+                          <label>
+                            Nombre de la categoría
+                            <input
+                              value={nuevaCategoria.nombre}
+                              onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, nombre: event.target.value }))}
+                              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
+                              placeholder="Ej. Procedimientos de arranque"
+                              disabled={guardandoCategoria}
+                            />
+                          </label>
+                          <label>
+                            Descripción (opcional)
+                            <input
+                              value={nuevaCategoria.descripcion}
+                              onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, descripcion: event.target.value }))}
+                              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
+                              disabled={guardandoCategoria}
+                            />
+                          </label>
+                          <button
+                            className="profile-primary-button"
+                            type="button"
+                            onClick={crearCategoriaDesdeSubida}
+                            disabled={guardandoCategoria || !nuevaCategoria.nombre.trim()}
+                          >
+                            <FiCheck />
+                            {guardandoCategoria ? 'Creando…' : 'Crear categoría'}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    !creandoCategoria && categorias.length === 0 && (
+                      <p className="archivo-categoria__nota">
+                        Solo el Administrador crea categorías, desde Conocimiento y permisos por rol.
+                      </p>
+                    )
+                  )}
+                </div>
+
                 <button className="profile-primary-button" type="submit" disabled={cargando}><FiUploadCloud /> {cargando ? 'Procesando…' : 'Subir archivo'}</button>
               </form>
             </div>
@@ -240,6 +412,22 @@ export default function Archivos({ token, usuario }) {
       )}
       <div className="library-toolbar">
         <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, archivo o autor…" /></label>
+        {categorias.length > 0 && (
+          <div className="library-filtros-categoria" role="group" aria-label="Filtrar por categoría">
+            <FiFilter aria-hidden="true" />
+            <button type="button" className={!filtroCategoria ? 'active' : ''} onClick={() => setFiltroCategoria('')}>Todas</button>
+            {categorias.map((categoria) => (
+              <button
+                key={categoria.id}
+                type="button"
+                className={filtroCategoria === categoria.id ? 'active' : ''}
+                onClick={() => setFiltroCategoria(filtroCategoria === categoria.id ? '' : categoria.id)}
+              >
+                {categoria.nombre}
+              </button>
+            ))}
+          </div>
+        )}
         <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title="Subir archivo">
           <FiUploadCloud />
         </button>
@@ -275,7 +463,7 @@ export default function Archivos({ token, usuario }) {
               <div className="file-card-info">
                 <h3><FiFile /> <span>{item.nombre || item.nombreArchivo}</span></h3>
                 <small>{item.nombreArchivo} · {formatearTamano(item.tamano)} · Subido por {item.propietarioNombre || item.propietarioEmail || 'Usuario'}</small>
-                <p>{item.estadoIndexacion === 'completada' ? 'Disponible para el asistente IA.' : item.estadoIndexacion === 'sin_texto' ? 'Guardado; este formato no se puede indexar automáticamente.' : 'Procesamiento pendiente o con error.'}</p>
+                <p><strong>{nombreCategoria(item)}</strong> · {item.estadoIndexacion === 'completada' ? 'Disponible para el asistente IA.' : item.estadoIndexacion === 'sin_texto' ? 'Guardado; este formato no se puede indexar automáticamente.' : 'Procesamiento pendiente o con error.'}</p>
               </div>
             </div>
             <div className="file-card-actions"><button type="button" className="profile-primary-button" onClick={() => descargar(item)} aria-label="Descargar"><FiDownload /></button>{puedeEliminar && <button type="button" className="billing-cancel" onClick={() => enviarAPapelera([item])} aria-label="Enviar a papelera"><FiTrash2 /></button>}</div>

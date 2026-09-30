@@ -14,6 +14,7 @@ const { connectDB, getDB } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
 const driveOperaciones = require('./services/googleDrive');
+const ragCategorias = require('./services/ragCategorias.service');
 const {
   DRIVE_MAX_ARCHIVOS,
   DRIVE_INLINE_MAX_BYTES,
@@ -29,8 +30,11 @@ app.use(express.json());
 // CONFIGURACIÓN RAG
 // ============================================================
 
+// Umbral de coincidencia. Medido sobre los embeddings actuales: la pregunta
+// más difusa que sí tiene respuesta se queda en 0.58 y la pregunta sin
+// relación más alta en 0.54, así que el umbral va en medio de ese hueco.
 const RAG_SCORE_THRESHOLD = Number(
-  process.env.RAG_SCORE_THRESHOLD || '0.40'
+  process.env.RAG_SCORE_THRESHOLD || '0.56'
 );
 
 const RAG_LIMIT = Number(
@@ -687,7 +691,7 @@ const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Ren
   '"No dispongo de scripts ni codigo programable en la documentacion tecnica de North Services." ' +
   'REGLA 2: prohibido usar conocimiento externo. Si la consulta no trata sobre North Services (fluidos de perforacion, alquiler, equipos, pozos, ' +
   'reportes de operaciones, facturacion o los kits de Starlink propios), NO respondas ni comentes el tema. Responde UNICAMENTE: ' +
-  '"Esa consulta esta fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con informacion de la empresa: servicios de fluidos de perforacion, alquiler y estado de equipos, operacion y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" ' +
+  '"Esa consulta esta fuera de mi alcance. Solo puedo ayudarte con informacion de North Services: servicios, equipos, pozos, reportes de operaciones y kits de Starlink." ' +
   'REGLA 3: prohibido responder preguntas de conocimiento general sobre Starlink como compania (fundacion, historia, servicios, precios, tecnologia). ' +
   'REGLA 4: no inventes datos ni completes lo que no este en el contexto. No enumeres fuentes ni muestres etiquetas FUENTE 1, FUENTE 2. ' +
   'REGLA 5: no menciones que eres un modelo de lenguaje ni una inteligencia artificial. ' +
@@ -1327,9 +1331,77 @@ function esPreguntaReportesOperaciones(pregunta) {
   return PALABRAS_CLAVE_REPORTES.some((palabra) => texto.includes(palabra));
 }
 
+// Números escritos con letra, porque en español casi siempre se pregunta
+// "los últimos DOS torque logs" y no "los últimos 2". Sin esto la cantidad se
+// perdía y el modelo acababa eligiendo archivos al azar del catálogo.
+const NUMEROS_PALABRA = {
+  un: 1, uno: 1, una: 1, primer: 1, primera: 1, primero: 1,
+  dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7,
+  ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12
+};
+
+// "el último torque log" son una sola pieza, no una serie sin número. Ojo con
+// "primer": termina en "r", así que "primera" se escribe aparte.
+const RE_SINGULAR = /\b(ultim[oa]|primer|primera)\b/;
+
+// Localiza la cantidad en una pregunta donde el número puede estar lejos del
+// adjetivo: en "los dos torque logs más antiguos" el "dos" no toca al
+// "antiguos". Se descartan los números de más de tres cifras porque casi
+// siempre son años o parte de una fecha ("reporte 2026").
+function cantidadEnPregunta(texto) {
+  const conCifras = texto.match(/(?:^|\D)(\d{1,3})(?:\D|$)/);
+  if (conCifras) {
+    const numero = Number(conCifras[1]);
+    return numero >= 1 && numero <= 20 ? numero : null;
+  }
+  for (const palabra of texto.split(/\s+/)) {
+    const limpia = palabra.replace(/[^a-z]/g, '');
+    if (NUMEROS_PALABRA[limpia] !== undefined) return NUMEROS_PALABRA[limpia];
+  }
+  return null;
+}
+
+// Detecta cuántas piezas pide el usuario y en qué sentido.
+//
+// Antes solo se reconocía "el primero", así que "los últimos dos torque logs"
+// caía en el orden genérico y el modelo recibía 10 PDFs sueltos más un
+// catálogo de cientos de nombres para elegir: por eso respondía con fechas que
+// no eran las últimas.
+function interpretarPeticionDeReportes(pregunta) {
+  const texto = String(pregunta || '').toLowerCase();
+
+  // "últimos", "más recientes", "nuevos" -> del más nuevo al más viejo.
+  const pideRecientes = /\b(ultim\w*|recientes?|mas\s+recientes?|nuev\w+|actual\w*)\b/.test(texto);
+  // "primeros", "más antiguos", "iniciales" -> del más viejo al más nuevo.
+  const pideAntiguos = /\b(primer\w*|mas\s+antigu\w+|antigu\w+|inicial\w*)\b/.test(texto);
+
+  let cantidad = RE_SINGULAR.test(texto) ? 1 : cantidadEnPregunta(texto);
+
+  // Un tope razonable: pedir 50 reportes a la vez no es una consulta de "los
+  // últimos", es otra cosa. Si se pasa, se comporta como una consulta abierta
+  // en vez de truncar la lista a un número arbitrario.
+  if (cantidad && (cantidad < 1 || cantidad > 20)) cantidad = null;
+
+  return {
+    cantidad,
+    // Sin señal de dirección se responde como "más recientes": es lo que
+    // significa "los últimos N".
+    orden: pideAntiguos && !pideRecientes ? 'nombre_fecha' : 'nombre_fecha_desc',
+    pideRecientes,
+    pideAntiguos
+  };
+}
+
 // Llamada no-streaming a Gemini que admite PDFs en modo buffer (inline_data).
 // Reintenta con backoff ante 429/503 (alta demanda / rate limit).
-async function geminiExtraerDePdf(partes, { reintentos = 3 } = {}) {
+// El respaldo en texto plano de los PDFs es local y tarda milisegundos, así
+// que no compensa insistir con Gemini cuando responde 503 por alta demanda:
+// solo añade decenas de segundos de espera antes de caer al mismo contenido.
+// Se puede subir con GEMINI_DRIVE_REINTENTOS si el servicio se estabiliza.
+async function geminiExtraerDePdf(
+  partes,
+  { reintentos = Number(process.env.GEMINI_DRIVE_REINTENTOS || '1') } = {}
+) {
   const claves = obtenerClavesGemini();
   if (!claves.length) throw new Error('GEMINI_API_KEY no está configurada.');
 
@@ -1390,31 +1462,60 @@ async function geminiExtraerDePdf(partes, { reintentos = 3 } = {}) {
  * vía Drive API en modo buffer/media y los pasa a Gemini para extracción de
  * tablas y resumen. Devuelve un bloque de contexto de texto (o '' si no aplica).
  */
+// ¿El nombre del archivo pertenece al tipo de reporte que pidió el usuario?
+//
+// Sin este filtro, "los últimos dos torque logs" podía devolver los dos
+// archivos más recientes de la carpeta aunque fueran daily reports: el nombre
+// se comparaba palabra por palabra y "torque" no aparecía en ellos.
+function coincideConLaPregunta(nombreArchivo, pregunta) {
+  const texto = String(pregunta || '').toLowerCase();
+  const nombre = String(nombreArchivo || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // Tipos de reporte que el usuario puede pedir por nombre. Solo se exige
+  // coincidencia cuando el usuario menciona explícitamente ese tipo.
+  const TIPOS = [
+    { patron: /torque/, enNombre: /torque/ },
+    { patron: /casing/, enNombre: /casing/ },
+    { patron: /revestimiento/, enNombre: /revestim|casing/ },
+    { patron: /daily\s*report/, enNombre: /daily|diar/ },
+    { patron: /daily/, enNombre: /daily|diar/ },
+    { patron: /survey/, enNombre: /survey/ },
+    { patron: /reporte\s*semanal|weekly/, enNombre: /semanal|weekly/ }
+  ];
+
+  const pedido = TIPOS.find((tipo) => tipo.patron.test(texto));
+  if (!pedido) return true;
+  return pedido.enNombre.test(nombre);
+}
+
 async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
   try {
-    // Si el usuario pide "el primer torque log", Drive debe responder
-    // por orden de subida (createdTime asc), no por modificación.
-    const pidePrimero = /primer|primero|mas antiguo|más antiguo|inicial/i.test(
-      String(pregunta || '')
-    ) && /torque/i.test(String(pregunta || ''));
+    // Se interpreta la petición antes de listar: define el orden y cuántos
+    // archivos van al prompt. "Los últimos dos" y "el primero" son la misma
+    // operación con distinto destino.
+    const peticion = interpretarPeticionDeReportes(pregunta);
+    const { orden, cantidad } = peticion;
 
-    const orden = pidePrimero ? 'nombre_fecha' : 'modificados';
+    console.log(
+      `[CHAT] Drive: orden="${orden}"` +
+      (cantidad ? ` cantidad=${cantidad}` : '') +
+      (peticion.pideAntiguos ? ' (más antiguos)' : '')
+    );
 
-    if (pidePrimero) {
-      console.log(
-        '[CHAT] Drive: requesting orden "nombre_fecha" (primer torque log por fecha del nombre)'
-      );
-    }
-
-    if (typeof enviarEvento === 'function') {
-      enviarEvento({ tipo: 'estado', mensaje: 'Consultando reportes de operaciones en Drive...' });
+    if (cantidad) {
+      if (typeof enviarEvento === 'function') {
+        enviarEvento({
+          tipo: 'estado',
+          mensaje: `Buscando ${cantidad === 1 ? 'el reporte' : `los ${cantidad} reportes`} ${peticion.pideAntiguos ? 'más antiguo(s)' : 'más reciente(s)'}...`
+        });
+      }
     }
 
     const archivos = await driveOperaciones.listarReportesPdf({
-    maxResultados: 500,
-    pregunta,
-    orden
-  });
+      maxResultados: 500,
+      pregunta,
+      orden
+    });
     if (!archivos.length) {
       console.log('[DRIVE] No hay PDFs en la carpeta de Operaciones.');
       return '';
@@ -1432,24 +1533,20 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
       .map(([carpeta, total]) => `- ${carpeta}: ${total} archivo(s)`)
       .join('\n');
 
-    const catalogo = archivos
-      .map((archivo, indice) => {
-        const fecha = archivo.modifiedTime
-          ? new Date(archivo.modifiedTime).toLocaleDateString('es-PE')
-          : 'sin fecha';
-        return `${indice + 1}. ${archivo.name} [${archivo.carpeta || '(raíz)'}] (modificado: ${fecha})`;
-      })
-      .join('\n');
+    // El listado se arma DESPUÉS de elegir los archivos. Cuando el usuario
+    // pidió una cantidad concreta solo se listan esos: poner los 500 nombres
+    // delante era lo que invitaba al modelo a elegir otros y a inventar fechas.
+    const listar = (lista) =>
+      lista
+        .map((archivo, indice) => {
+          const fecha = archivo.modifiedTime
+            ? new Date(archivo.modifiedTime).toLocaleDateString('es-PE')
+            : 'sin fecha';
+          return `${indice + 1}. ${archivo.name} [${archivo.carpeta || '(raíz)'}] (modificado: ${fecha})`;
+        })
+        .join('\n');
 
-    const bloqueCatalogo =
-`CATÁLOGO DE ARCHIVOS EN LA CARPETA COMPARTIDA DE OPERACIONES (Google Drive)
-Total de documentos PDF: ${archivos.length}
-
-RESUMEN POR CARPETA:
-${resumenCarpetas}
-
-LISTADO COMPLETO:
-${catalogo}`;
+    const catalogoCompleto = listar(archivos);
 
     // Priorizar PDFs cuyo nombre coincida con términos de la pregunta.
     // Se normaliza (sin separadores, minúsculas) y se singulariza para que
@@ -1475,11 +1572,52 @@ ${catalogo}`;
       );
     };
 
-    const seleccionados = archivos
-      .map((archivo) => ({ archivo, score: puntaje(archivo.name) }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, DRIVE_MAX_ARCHIVOS)
-      .map((item) => item.archivo);
+    const seleccionados = (() => {
+      // Cuando el usuario pide un número concreto ("los últimos dos"), la
+      // lista YA viene en el orden correcto y filtrada. Reordenar por
+      // coincidencias de nombre tiraría ese orden a la basura, que es
+      // exactamente lo que pasaba antes: el modelo recibía 10 archivos
+      // desordenados y además un catálogo de cientos de nombres entre los que
+      //elegir al azar, y respondía con fechas que no eran las últimas.
+      if (cantidad) {
+        const coherentes = archivos.filter((archivo) => coincideConLaPregunta(archivo.name, pregunta));
+        const candidatos = coherentes.length ? coherentes : archivos;
+        console.log(
+          `[DRIVE] Selección directa: ${candidatos.length} archivo(s) coinciden con la pregunta, se toman ${cantidad}`
+        );
+        return candidatos.slice(0, cantidad);
+      }
+
+      // Sin cantidad ("¿qué torque logs hay?") el puntaje sigue sirviendo para
+      // traer los que mejor encajan con lo que se preguntó.
+      return archivos
+        .map((archivo) => ({ archivo, score: puntaje(archivo.name) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, DRIVE_MAX_ARCHIVOS)
+        .map((item) => item.archivo);
+    })();
+
+    // Con cantidad concreta el catálogo se reduce a lo pedido. Sin ella se
+    // mantiene el listado completo, que es lo que permite preguntas del tipo
+    // "¿qué reportes hay?".
+    const bloqueCatalogo = cantidad
+      ? `ARCHIVOS SELECCIONADOS PARA ESTA CONSULTA (Google Drive)
+Se pidió${cantidad === 1 ? '' : 'n'} ${cantidad === 1 ? 'reporte' : `${cantidad} reportes`} ${peticion.pideAntiguos ? 'más antiguo(s)' : 'más reciente(s)'}.
+Total de documentos PDF en la carpeta compartida de Operaciones: ${archivos.length}
+
+ESTOS SON LOS ARCHIVOS QUE DEBES USAR, EN ESTE ORDEN:
+${listar(seleccionados)}
+
+Usa únicamente estos ${cantidad === 1 ? 'reporte' : `${cantidad} reportes`}. No menciones ni
+comentes otros nombres de archivo aunque aparezcan en otro contexto.`
+      : `CATÁLOGO DE ARCHIVOS EN LA CARPETA COMPARTIDA DE OPERACIONES (Google Drive)
+Total de documentos PDF: ${archivos.length}
+
+RESUMEN POR CARPETA:
+${resumenCarpetas}
+
+LISTADO COMPLETO:
+${catalogoCompleto}`;
 
     const partes = [];
     const nombresUsados = [];
@@ -1490,23 +1628,29 @@ ${catalogo}`;
         const buffer = await driveOperaciones.descargarArchivoBuffer(archivo.id);
         nombresUsados.push(archivo.name);
 
+        // El texto se lee una sola vez: sirve de contenido para Gemini cuando
+        // el PDF no cabe en línea y también de respaldo si la extracción con
+        // Gemini falla por saturación.
+        let textoPlano = '';
+        try {
+          textoPlano = await driveOperaciones.extraerTextoPdf(buffer);
+        } catch (errorTexto) {
+          console.warn(
+            `[DRIVE] No se pudo leer el texto de ${archivo.name}: ${errorTexto.message}`
+          );
+        }
+        if (textoPlano && textoPlano.trim()) {
+          textosRespaldo.push(
+            `DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}`
+          );
+        }
+
         if (buffer.length <= DRIVE_INLINE_MAX_BYTES) {
           partes.push({
             inlineData: { mimeType: 'application/pdf', data: buffer.toString('base64') }
           });
         } else {
-          const texto = await driveOperaciones.extraerTextoPdf(buffer);
-          partes.push({ text: `DOCUMENTO: ${archivo.name}\n${texto.slice(0, DRIVE_TEXTO_MAX_CHARS)}` });
-        }
-
-        // Respaldo en texto plano por si la extracción con Gemini falla (503, etc.).
-        try {
-          const textoPlano = await driveOperaciones.extraerTextoPdf(buffer);
-          if (textoPlano && textoPlano.trim()) {
-            textosRespaldo.push(`DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}`);
-          }
-        } catch {
-          // sin respaldo de texto para este archivo
+          partes.push({ text: `DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}` });
         }
       } catch (errorArchivo) {
         console.error(`[DRIVE] Error leyendo ${archivo.name}:`, errorArchivo.message);
@@ -1613,6 +1757,27 @@ app.post('/api/otp/verificar', verifyToken, async (req, res) => {
   }
 });
 
+app.get('/api/perfil', verifyToken, async (req, res) => {
+  try {
+    const permisos = await ragCategorias.obtenerPermisosRol(req.user.rol);
+    const fuentes = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
+    res.json({
+      ok: true,
+      usuario: {
+        ...req.user,
+        // El rol se devuelve con la capitalización original del registro,
+        // para que la interfaz muestre exactamente el rol solicitado.
+        rol: req.user.rolOriginal || req.user.rol,
+        fuentesRag: fuentes.map((fuente) => ({ id: fuente.id, nombre: fuente.nombre })),
+        puedeUsarStarlink: await ragCategorias.puedeAccederModulo(req.user.rol, 'starlink'),
+        permisosConfigurados: permisos.configurado,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.put('/api/perfil', verifyToken, async (req, res) => {
   try {
     const nombre = String(req.body.nombre || '').trim();
@@ -1621,7 +1786,8 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
     const email = `${nombre.toLowerCase()}.${apellido.toLowerCase()}@northservices.com.pe`;
     await authAdmin.updateUser(req.user.uid, { displayName: `${nombre} ${apellido}`, email });
     await db.collection('users').doc(req.user.uid).update({ nombre, apellido, email });
-    res.json({ ok: true, usuario: { ...req.user, nombre, apellido, email } });
+    // El rol NO se toca aquí: solo el Administrador puede asignarlo.
+    res.json({ ok: true, usuario: { ...req.user, nombre, apellido, email, rol: req.user.rolOriginal || req.user.rol } });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.code === 'auth/email-already-exists' ? 'El correo generado ya está registrado.' : error.message });
   }
@@ -1872,10 +2038,27 @@ app.post(
         const mongoDb =
           getDB();
 
-        const coleccionVectores =
-          mongoDb.collection(
-            'conocimientos_vectores'
-          );
+// El manual del recurso se indexa SIEMPRE en la categoría de software y
+// manuales, que es compartida para todos los roles. Antes esta línea usaba
+// una variable `categoriaId` que no existía en ningún sitio: al subir un
+// recurso con manual PDF reventaba con ReferenceError y ningún manual llegaba
+// a indexarse.
+//
+// La categoría se crea sola la primera vez, así que no hay que preparar nada
+// antes de publicar el primer software.
+const categoriaIngesta = await ragCategorias.obtenerOCrearCategoriaRecursos(
+  req.user?.uid
+);
+
+// Se guarda en el documento del recurso para que al borrarlo se sepa dónde
+// están sus vectores, igual que se hace con los archivos de Archivos.
+await recursoRef.update({
+  categoriaId: categoriaIngesta.id,
+  categoriaNombre: categoriaIngesta.nombre,
+  categoriaColeccion: categoriaIngesta.coleccion,
+});
+
+const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
 
         const inicioIndexacion =
           Date.now();
@@ -2058,7 +2241,16 @@ app.delete('/api/admin/recursos/:id', verifyToken, requireAdmin, async (req, res
     const documento = await referencia.get();
     if (!documento.exists) return res.status(404).json({ ok: false, error: 'Recurso no encontrado.' });
     const recurso = documento.data();
-    await getDB().collection('conocimientos_vectores').deleteMany({ recursoId: req.params.id });
+    // Los recursos se indexan en la categoría de software y manuales. Se lee
+    // del documento, no del código, para que el borrado siga funcionando
+    // aunque esa categoría se renombre.
+    const { categoria: categoriaRecurso } = await coleccionesDeCategoria(recurso);
+    const coleccionRecurso = categoriaRecurso
+      ? categoriaRecurso.coleccion
+      : (await ragCategorias.obtenerCategoria('software_y_manuales'))?.coleccion;
+    if (coleccionRecurso) {
+      await getDB().collection(coleccionRecurso).deleteMany({ recursoId: req.params.id });
+    }
     const raiz = path.resolve(__dirname, '../storage');
     for (const archivo of [recurso.software, recurso.manual]) {
       if (!archivo?.rutaLocal) continue;
@@ -2066,7 +2258,7 @@ app.delete('/api/admin/recursos/:id', verifyToken, requireAdmin, async (req, res
       await eliminarArchivoYCarpetasVacias(rutaArchivo, raiz);
     }
     await referencia.delete();
-    res.json({ ok: true, mensaje: 'Recurso, descargas y vectores de MongoDB eliminados.' });
+    res.json({ ok: true, mensaje: 'Recurso eliminado correctamente.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -2384,7 +2576,14 @@ async function eliminarRecursoAdministrativo(coleccion, id, { eliminarVectores =
     throw error;
   }
   const item = documento.data();
-  if (eliminarVectores) await getDB().collection('conocimientos_vectores').deleteMany({ manualId: id });
+  // El recurso guarda en qué colección quedó indexado; si no lo guardó
+  // (recursos antiguos) se usa la categoría general.
+  const coleccionVectoresRecurso =
+    item?.categoriaColeccion ||
+    (await ragCategorias.obtenerCategoria(item?.categoriaId || ragCategorias.CATEGORIA_POR_DEFECTO))?.coleccion;
+  if (eliminarVectores && coleccionVectoresRecurso) {
+    await getDB().collection(coleccionVectoresRecurso).deleteMany({ manualId: id });
+  }
   const raiz = path.resolve(__dirname, '../storage');
   const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal || '');
   await eliminarArchivoYCarpetasVacias(rutaArchivo, raiz);
@@ -2403,7 +2602,7 @@ app.delete('/api/admin/software/:id', verifyToken, requireAdmin, async (req, res
 app.delete('/api/admin/manuales/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     await eliminarRecursoAdministrativo('manuales', req.params.id, { eliminarVectores: true });
-    res.json({ ok: true, mensaje: 'Manual y sus vectores de MongoDB fueron eliminados.' });
+    res.json({ ok: true, mensaje: 'Manual eliminado correctamente.' });
   } catch (error) {
     res.status(error.status || 500).json({ ok: false, error: error.message });
   }
@@ -2429,6 +2628,12 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'Debes seleccionar un archivo.' });
 
+    // El tipo de conocimiento se resuelve contra las categorías dinámicas
+    // de MongoDB. Si no se envía, se usa la categoría general.
+    const categoria = await ragCategorias.resolverCategoriaParaIngesta(req.body.categoriaId, {
+      creadoPor: req.user?.uid,
+    });
+
     const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
     referencia = await db.collection('archivos').add({
       nombre: String(req.body.nombre || path.parse(req.file.originalname).name).trim(),
@@ -2438,6 +2643,12 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
       tipoMime: req.file.mimetype || 'application/octet-stream',
       tamano: req.file.size,
       extension: path.extname(req.file.originalname || '').toLowerCase(),
+      // La categoría queda registrada en el documento para poder mover sus
+      // vectores a la papelera correcta más adelante.
+      categoriaId: categoria.id,
+      categoriaNombre: categoria.nombre,
+      categoriaColeccion: categoria.coleccion,
+      categoriaColeccionPapelera: categoria.coleccionPapelera,
       propietarioUid: req.user.uid,
       propietarioNombre: [req.user.nombre, req.user.apellido].filter(Boolean).join(' ') || req.user.email,
       propietarioEmail: req.user.email,
@@ -2460,27 +2671,53 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
       titulo_seccion: `${req.file.originalname} (Parte ${indice + 1})`,
       contenido_texto: fragmento,
       embedding: await generarEmbedding(fragmento),
+      // La categoría se graba en cada vector para poder auditar y aislar
+      // el origen del embedding.
+      categoriaId: categoria.id,
+      categoriaNombre: categoria.nombre,
       fechaIndexacion: new Date(),
     }));
     const vectores = resultados.filter((resultado) => resultado && !resultado.error && Array.isArray(resultado.embedding));
     if (!vectores.length) throw new Error('No se pudo generar embeddings para el contenido del archivo.');
-    await getDB().collection('conocimientos_vectores').insertMany(vectores, { ordered: false });
+    // Los embeddings van a la colección vectorial de la categoría elegida.
+    await getDB().collection(categoria.coleccion).insertMany(vectores, { ordered: false });
     await referencia.update({ estadoIndexacion: 'completada', fragmentosIndexados: vectores.length, actualizadoEn: new Date() });
-    res.status(201).json({ ok: true, archivo: { id: referencia.id }, mensaje: 'Archivo guardado e indexado correctamente para el asistente IA.' });
+    res.status(201).json({
+      ok: true,
+      archivo: { id: referencia.id, categoriaId: categoria.id, categoriaNombre: categoria.nombre },
+      mensaje: `Archivo guardado e indexado correctamente en "${categoria.nombre}" para el asistente IA.`,
+    });
   } catch (error) {
     console.error('Error al cargar archivo colaborativo:', error);
     if (referencia) await referencia.update({ estadoIndexacion: 'error', errorIndexacion: error.message, actualizadoEn: new Date() }).catch(() => {});
-    res.status(500).json({ ok: false, error: error.message || 'No se pudo procesar el archivo.' });
+    res.status(error.status || 500).json({ ok: false, error: error.message || 'No se pudo procesar el archivo.' });
   }
 });
+
+// Un archivo solo se lista y se descarga si su categoría está entre las
+// fuentes permitidas para el rol. Así, quitarle una categoría a un rol en
+// Conocimiento y permisos por rol le oculta también los archivos.
+//
+// Los archivos antiguos sin categoría registrada se muestran a todos, para
+// no dejarlos inaccesibles.
+function puedeVerArchivoEnCategoria(archivo, categoriasPermitidas) {
+  const id = archivo?.categoriaId;
+  if (!id) return true;
+  return categoriasPermitidas.has(id);
+}
 
 app.get('/api/archivos', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
+    const permitidas = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
+    const permitidasIds = new Set(permitidas.map((categoria) => categoria.id));
+
     const snapshot = await db.collection('archivos').where('activo', '==', true).get();
     const archivos = snapshot.docs
       .map((documento) => ({ id: documento.id, ...documento.data() }))
-      .filter((archivo) => archivo.eliminado !== true);
+      .filter((archivo) => archivo.eliminado !== true)
+      .filter((archivo) => puedeVerArchivoEnCategoria(archivo, permitidasIds));
+
     res.json({ ok: true, archivos });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -2493,6 +2730,18 @@ app.get('/api/archivos/:id/download', verifyToken, async (req, res) => {
     const documento = await db.collection('archivos').doc(req.params.id).get();
     if (!documento.exists || documento.data().activo !== true || documento.data().eliminado === true) return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
     const item = documento.data();
+
+    // Misma regla que el listado: la categoría del archivo tiene que estar
+    // permitida para el rol, o el archivo no existe para ese usuario.
+    const permitidas = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
+    const permitidasIds = new Set(permitidas.map((categoria) => categoria.id));
+    if (!puedeVerArchivoEnCategoria(item, permitidasIds)) {
+      return res.status(403).json({
+        ok: false,
+        error: 'No tienes acceso a esta categoría de información.',
+      });
+    }
+
     const raizArchivos = path.resolve(__dirname, '../storage/archivos');
     const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal);
     if (!rutaArchivo.startsWith(`${raizArchivos}${path.sep}`) || !fs.existsSync(rutaArchivo)) return res.status(404).json({ ok: false, error: 'El archivo ya no está disponible en el servidor.' });
@@ -2533,6 +2782,29 @@ function puedeGestionarArchivo(user, item) {
   return user.rol === 'administrador' || item.propietarioUid === user.uid;
 }
 
+// Devuelve el par de colecciones (activa + papelera) de una categoría.
+// Si el documento no tiene categoría registrada se usa la general,
+// que es la que usa el sistema desde su inicio. El nombre de la colección
+// se lee siempre de la categoría guardada en MongoDB; nunca se escribe
+// aquí para no tener que modificar el código al agregar una fuente.
+async function coleccionesDeCategoria(item) {
+  const id = item?.categoriaId || ragCategorias.CATEGORIA_POR_DEFECTO;
+  const categoria = await ragCategorias.obtenerCategoria(id);
+  if (!categoria) {
+    return {
+      categoria: null,
+      activa: null,
+      papelera: null,
+      error: `La categoría "${id}" no existe o ya no está disponible.`,
+    };
+  }
+  return {
+    categoria,
+    activa: categoria.coleccion,
+    papelera: categoria.coleccionPapelera,
+  };
+}
+
 async function moverArchivoAPapelera(id, user) {
   const referencia = db.collection('archivos').doc(id);
   const documento = await referencia.get();
@@ -2540,24 +2812,36 @@ async function moverArchivoAPapelera(id, user) {
   const item = documento.data();
   if (item.eliminado === true) return { id, ok: false, error: 'El archivo ya está en la papelera.' };
   if (!puedeGestionarArchivo(user, item)) return { id, ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' };
-  
-  // Migrar vectores de RAG a la colección de papelera
+
+  // Migrar los vectores de RAG a la papelera DE SU CATEGORÍA, para no
+  // mezclar documentos eliminados de fuentes distintas.
+  const { activa, papelera, error } = await coleccionesDeCategoria(item);
+  if (error) return { id, ok: false, error };
+
   try {
     const mongoDb = getDB();
-    const vectores = await mongoDb.collection('conocimientos_vectores').find({ archivoId: id }).toArray();
-    
+    const vectores = await mongoDb.collection(activa).find({ archivoId: id }).toArray();
+
     if (vectores.length > 0) {
-      // Insertar en colección de papelera
-      await mongoDb.collection('conocimientos_vectores_papelera').insertMany(vectores, { ordered: false });
-      // Eliminar de colección activa
-      await mongoDb.collection('conocimientos_vectores').deleteMany({ archivoId: id });
-      console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} a la colección de papelera`);
+      // Insertar en la papelera de esa categoría
+      await mongoDb.collection(papelera).insertMany(vectores, { ordered: false });
+      // Eliminar de la colección activa
+      await mongoDb.collection(activa).deleteMany({ archivoId: id });
+      console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} de "${activa}" a "${papelera}"`);
     }
-  } catch (error) {
-    console.error(`[PAPELERA] Error al migrar vectores del archivo ${id}:`, error.message);
-    // Continuamos con el proceso aunque falle la migración
+  } catch (falloMigracion) {
+    // Si los vectores no salen de la colección activa, el contenido seguiría
+    // respondiendo en el chat. No se marca el archivo como eliminado para no
+    // romper la promesa de que la papelera saca el conocimiento de circulation.
+    console.error(`[PAPELERA] Error al migrar vectores del archivo ${id}:`, falloMigracion.message);
+    return {
+      id,
+      ok: false,
+      error:
+        'No se pudo retirar el contenido del buscador, por lo que el archivo no se movió a la papelera. Inténtalo de nuevo.',
+    };
   }
-  
+
   await referencia.update({
     eliminado: true,
     eliminadoPor: user.uid,
@@ -2567,11 +2851,72 @@ async function moverArchivoAPapelera(id, user) {
   return { id, ok: true };
 }
 
-async function eliminarArchivoPermanentemente(id, data) {
+async function restaurarArchivoDePapelera(id) {
+  const documento = await db.collection('archivos').doc(id).get();
+  if (!documento.exists) return { id, ok: false, error: 'Elemento no encontrado.' };
+
+  const item = documento.data();
+
+  // Un archivo puede estar en la papelera por dos motivos muy distintos:
+  // porque alguien lo borró, o porque se desactivó toda su categoría. En el
+  // segundo caso la operación era de colección, así que no se deshace archivo
+  // por archivo: se reactiva la categoría completa desde Conocimiento y
+  // permisos por rol. Permitirlo aquí dejaría la categoría a medias, con
+  // algunos archivos dentro y otros fuera.
+  if (item.eliminadoPorCategoria === true) {
+    return {
+      id,
+      ok: false,
+      error:
+        'Este archivo se mandó a la papelera al desactivar toda su categoría. Reactívala desde Conocimiento y permisos por rol.',
+    };
+  }
+
+  const { activa, papelera, error } = await coleccionesDeCategoria(item);
+  if (error) return { id, ok: false, error };
+
   try {
-    await getDB().collection('conocimientos_vectores').deleteMany({ archivoId: id });
-  } catch (error) {
-    console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id}:`, error.message);
+    const mongoDb = getDB();
+    const vectoresPapelera = await mongoDb.collection(papelera).find({ archivoId: id }).toArray();
+
+    if (vectoresPapelera.length > 0) {
+      // Insertar de vuelta en la colección activa de su categoría
+      await mongoDb.collection(activa).insertMany(vectoresPapelera, { ordered: false });
+      // Eliminar de la papelera de esa categoría
+      await mongoDb.collection(papelera).deleteMany({ archivoId: id });
+      console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} de "${papelera}" a "${activa}"`);
+    }
+  } catch (falloRestauracion) {
+    console.error(`[PAPELERA] Error al restaurar vectores del archivo ${id}:`, falloRestauracion.message);
+    return {
+      id,
+      ok: false,
+      error:
+        'No se pudo devolver el contenido al buscador, por lo que el archivo sigue en la papelera. Inténtalo de nuevo.',
+    };
+  }
+
+  await db.collection('archivos').doc(id).update({
+    eliminado: false,
+    eliminadoPor: null,
+    eliminadoPorNombre: null,
+    eliminadoEn: null,
+  });
+  return { id, ok: true };
+}
+
+async function eliminarArchivoPermanentemente(id, data) {
+  // Se purga en la colección activa y en la de papelera de la categoría,
+  // porque el documento pudo estar en cualquiera de las dos.
+  const { activa, papelera, error } = await coleccionesDeCategoria(data);
+  if (error) return { id, ok: false, error };
+  const mongoDb = getDB();
+  for (const coleccion of new Set([activa, papelera])) {
+    try {
+      await mongoDb.collection(coleccion).deleteMany({ archivoId: id });
+    } catch (error) {
+      console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id} en ${coleccion}:`, error.message);
+    }
   }
   if (data?.rutaLocal) {
     const raizArchivos = path.resolve(__dirname, '../storage/archivos');
@@ -2587,6 +2932,10 @@ async function purgarPapeleraExpirada() {
   let purgados = 0;
   for (const doc of snapshot.docs) {
     const data = doc.data();
+    // Los archivos que están en la papelera porque su categoría está
+    // desactivada NO se purgan: si al reactivarla el Administrador espera
+    // encontrarlos, no deben desaparecer por estar un mes desactivada.
+    if (data.eliminadoPorCategoria === true) continue;
     const fecha = parseFechaFirestore(data.eliminadoEn);
     if (!fecha || ahora - fecha.getTime() < MS_RETENCION_PAPELERA) continue;
     try {
@@ -2736,6 +3085,70 @@ app.delete('/api/monitoreo/:id', verifyToken, async (req, res) => {
 // CHATBOT RAG - STREAMING
 // ============================================================
 
+// Coseno entre dos vectores. Los embeddings llegan normalizados, así que el
+// producto escalar basta; se divide igualmente para no depender de eso.
+function similitudCoseno(a, b) {
+  let dot = 0;
+  let normaA = 0;
+  let normaB = 0;
+  const largo = Math.min(a.length, b.length);
+  for (let i = 0; i < largo; i += 1) {
+    dot += a[i] * b[i];
+    normaA += a[i] * a[i];
+    normaB += b[i] * b[i];
+  }
+  if (!normaA || !normaB) return 0;
+  return dot / (Math.sqrt(normaA) * Math.sqrt(normaB));
+}
+
+// Respaldo para categorías sin índice vectorial en Atlas: recorre los
+// documentos de la colección y devuelve los más parecidos al vector de la
+// consulta. Solo es adecuado mientras la colección sea pequeña, por eso la
+// consola avisa para crear el índice en Atlas cuando el volumen crezca.
+const MAX_DOCUMENTOS_REVISADOS = 4000;
+
+async function buscarPorSimilitudEnMemoria(coleccion, vectorConsulta, fuente, limite) {
+  const documentos = await coleccion
+    .find(
+      { embedding: { $exists: true } },
+      {
+        projection: {
+          manualId: 1,
+          recursoId: 1,
+          archivoId: 1,
+          nombreManual: 1,
+          titulo_seccion: 1,
+          contenido_texto: 1,
+          embedding: 1,
+        },
+      }
+    )
+    .limit(MAX_DOCUMENTOS_REVISADOS)
+    .toArray();
+
+  if (!documentos.length) return [];
+
+  const puntuados = documentos.map((documento) => ({
+    documento,
+    score: similitudCoseno(vectorConsulta, documento.embedding),
+  }));
+
+  puntuados.sort((a, b) => b.score - a.score);
+
+  return puntuados
+    .slice(0, limite)
+    .map(({ documento, score }) => {
+      const { embedding, ...resto } = documento;
+      return {
+        ...resto,
+        score,
+        categoriaId: fuente.id,
+        categoriaNombre: fuente.nombre,
+        busquedaEnMemoria: true,
+      };
+    });
+}
+
 app.post(
   '/api/chat',
   verifyToken,
@@ -2774,7 +3187,7 @@ app.post(
       // --------------------------------------------------------
 
       const CIERRE_FUERA_DE_ALCANCE =
-        'Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?';
+        'Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa. ¿Te puedo ayudar con alguno de estos temas?';
 
       const CIERRE_SIN_CODIGO =
         'No dispongo de scripts ni código programable en la documentación técnica de North Services.';
@@ -2936,55 +3349,151 @@ app.post(
       const mongoDb =
         getDB();
 
-      const filasContexto =
-        await mongoDb
-          .collection(
-            'conocimientos_vectores'
-          )
-          .aggregate([
-            {
-              $vectorSearch: {
-                index:
-                  'vector_index',
+      // --------------------------------------------------------
+      // FUENTES AUTORIZADAS PARA EL ROL DE ESTE USUARIO
+      // --------------------------------------------------------
+      // La lista se resuelve en el backend a partir de la categoría
+      // seleccionada en cada documento. El cliente NO puede pedir
+      // fuentes: cambiarla a mano en la petición HTTP no sirve.
+      //
+      // El Administrador recibe todas las categorías activas, así que
+      // una categoría nueva queda disponible para él automáticamente.
+      const fuentesAutorizadas =
+        await ragCategorias.obtenerFuentesPermitidas(
+          req.user.rol
+        );
 
-                path:
-                  'embedding',
+      console.log(
+        `[RAG] Rol "${req.user.rol || 'sin rol'}" → fuentes: ${
+          fuentesAutorizadas.length
+            ? fuentesAutorizadas
+                .map((fuente) => fuente.coleccion)
+                .join(', ')
+            : 'ninguna'
+        }`
+      );
 
-                queryVector:
-                  vectorConsulta,
+      // Se averigua qué categorías tienen búsqueda vectorial disponible.
+      // Atlas no lanza error al consultar un índice inexistente: devuelve
+      // cero filas, así que sin esta comprobación una categoría recién
+      // creada parecería vacía.
+      const indicesDisponibles = await ragCategorias
+        .descubrirIndicesVectoriales()
+        .catch(() => new Map());
+      const fuentesListas = fuentesAutorizadas.map((fuente) => ({
+        ...fuente,
+        tieneIndice: indicesDisponibles.has(fuente.coleccion),
+      }));
 
-                numCandidates:
-                  RAG_NUM_CANDIDATES,
+      const buscarEnFuente = async (fuente) => {
+        // Las colecciones de papelera nunca participan en la búsqueda.
+        if (ragCategorias.esColeccionPapelera(fuente.coleccion)) return [];
 
-                limit:
-                  RAG_LIMIT
-              }
-            },
+        // Una categoría recién creada todavía no tiene índice vectorial, y
+        // Atlas NO avisa cuando se consulta un índice inexistente: devuelve
+        // cero resultados sin error. Por eso la ruta se decide mirando si el
+        // índice existe, y no confiando en capturar una excepción.
+        if (!fuente.tieneIndice) {
+          const porSimilitud = await buscarPorSimilitudEnMemoria(
+            mongoDb.collection(fuente.coleccion),
+            vectorConsulta,
+            fuente,
+            RAG_LIMIT
+          );
+          console.log(
+            `[CHAT] "${fuente.coleccion}": ${porSimilitud.length} coincidencias por búsqueda directa`
+          );
+          return porSimilitud;
+        }
 
-            {
-              $project: {
-                _id: 1,
+        try {
+          const filas = await mongoDb
+            .collection(fuente.coleccion)
+            .aggregate([
+              {
+                $vectorSearch: {
+                  index: fuente.indiceVectorial,
 
-                manualId: 1,
+                  path: 'embedding',
 
-                recursoId: 1,
+                  queryVector:
+                    vectorConsulta,
 
-                archivoId: 1,
+                  numCandidates:
+                    RAG_NUM_CANDIDATES,
 
-                nombreManual: 1,
+                  limit: RAG_LIMIT
+                }
+              },
 
-                titulo_seccion: 1,
+              {
+                $project: {
+                  _id: 1,
 
-                contenido_texto: 1,
+                  manualId: 1,
 
-                score: {
-                  $meta:
-                    'vectorSearchScore'
+                  recursoId: 1,
+
+                  archivoId: 1,
+
+                  nombreManual: 1,
+
+                  titulo_seccion: 1,
+
+                  contenido_texto: 1,
+
+                  score: {
+                    $meta:
+                      'vectorSearchScore'
+                  }
                 }
               }
-            }
-          ])
-          .toArray();
+            ])
+            .toArray();
+
+          return filas.map((fila) => ({ ...fila, categoriaId: fuente.id, categoriaNombre: fuente.nombre }));
+        } catch (error) {
+          // El índice existía pero la consulta falló. Se recorre la colección
+          // y se calcula la similitud en memoria para no dejar la categoría
+          // muda.
+          const porSimilitud = await buscarPorSimilitudEnMemoria(
+            mongoDb.collection(fuente.coleccion),
+            vectorConsulta,
+            fuente,
+            RAG_LIMIT
+          );
+          if (porSimilitud.length > 0) {
+            console.warn(
+              `[CHAT] "${fuente.coleccion}" se consultó por búsqueda directa (${error.message}).`
+            );
+            return porSimilitud;
+          }
+          console.error(`[CHAT] No se pudo buscar en "${fuente.coleccion}": ${error.message}`);
+          return [];
+        }
+      };
+
+      // Si la pregunta es sobre reportes de operaciones, la respuesta sale de Drive
+// y los folletos no aportan nada. Antes se buscaban igual: costaban segundos y
+// además contaminaban la respuesta, porque el modelo terminaba contestando
+// sobre el catálogo de productos en lugar de sobre los torque logs.
+const esPreguntaDeReportes = esPreguntaReportesOperaciones(preguntaLimpia);
+
+const resultadosPorFuente = esPreguntaDeReportes
+        ? []
+        : await Promise.all(
+          fuentesListas.map(buscarEnFuente)
+        );
+
+      const filasContexto = resultadosPorFuente.flat();
+
+      // ========================================================
+      // ORDEN GLOBAL POR PUNTUACIÓN
+      // ========================================================
+
+      filasContexto.sort(
+        (a, b) => (b.score || 0) - (a.score || 0)
+      );
 
       const tiempoMongo =
         Date.now() -
@@ -3210,6 +3719,20 @@ app.post(
       console.log(`[CHAT] ¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
 
       if (esPreguntaStarlink) {
+        // Starlink no es una categoría de conocimiento: es un módulo
+        // independiente. Su acceso se decide con la configuración por
+        // rol que guarda el Administrador, sin condiciones escritas en
+        // el código. El Administrador siempre tiene acceso.
+        const puedeUsarStarlink =
+          await ragCategorias.puedeAccederModulo(req.user.rol, 'starlink');
+
+        if (!puedeUsarStarlink) {
+          console.log(`[CHAT] Acceso a Starlink denegado para el rol "${req.user.rol || 'sin rol'}"`);
+          enviarEvento({
+            tipo: 'estado',
+            mensaje: 'Verificando disponibilidad de información...'
+          });
+        } else {
         try {
           console.log('[CHAT] Consultando colección starlink_bot...');
           const mongoDb = getDB();
@@ -3336,6 +3859,7 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
           console.error('[CHAT] Error al consultar Starlink:', error.message);
           console.error('[CHAT] Stack:', error.stack);
         }
+        }
       } else {
         console.log('[CHAT] No se detectó pregunta de Starlink, usando solo RAG de manuales');
       }
@@ -3353,14 +3877,24 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
 
       const inicioDrive = Date.now();
       let contextoDrive = '';
-      const esPreguntaReportes = esPreguntaReportesOperaciones(preguntaLimpia);
-      console.log(`[CHAT] ¿Es pregunta de reportes?: ${esPreguntaReportes}`);
+      console.log(`[CHAT] ¿Es pregunta de reportes?: ${esPreguntaDeReportes}`);
 
-      if (esPreguntaReportes) {
+      if (esPreguntaDeReportes) {
         contextoDrive = await obtenerContextoReportesOperaciones(preguntaLimpia, enviarEvento);
         console.log(`[CHAT] Drive: ${Date.now() - inicioDrive} ms`);
         console.log(`[CHAT] Contexto Drive generado: ${contextoDrive ? 'SÍ' : 'NO'}`);
       }
+
+      // Cuando la respuesta se apoya en el contexto de Google Drive se va
+      // directo al servidor local. Gemini devuelve 503 con mucha frecuencia
+      // y, tras reintentar tres modelos, el usuario llegaba a esperar casi
+      // dos minutos para obtener la misma respuesta.
+      //
+      // Además, en ese caso los fragmentos de los manuales se dejan fuera
+      // del prompt: el modelo local terminaba respondiendo sobre los
+      // folletos y concluía que no había torque logs, cuando el listado de
+      // Drive sí los tenía.
+      const usarServidorLocalDirecto = Boolean(contextoDrive);
 
       // ========================================================
       // 5. NO HAY INFORMACIÓN
@@ -3502,10 +4036,14 @@ ${
           );
 
       // Agregar contexto de Starlink y de reportes de operaciones (Drive) si están disponibles
+      //
+      // Si hay contexto de Drive, la respuesta se arma solo con ese material:
+      // mezclarlo con los fragmentos de los manuales hacía que el modelo
+      // respondiera sobre el catálogo equivocado.
       const contextoCompleto = [
         contextoStarlink,
         contextoDrive,
-        contextoRecuperado
+        usarServidorLocalDirecto ? '' : contextoRecuperado
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -3517,6 +4055,32 @@ ${
       // ========================================================
       // 6. PROMPT
       // ========================================================
+
+      // Los reportes de operaciones llegan como texto plano de los PDFs,
+      // así que el modelo local puede confundirse y acabar respondiendo
+      // sobre otra fuente o inventando que no hay datos. Se le encuadra
+      // exactamente qué tiene que responder.
+      const instruccionDrive = `
+INSTRUCCIÓN ESPECÍFICA PARA ESTA CONSULTA:
+
+El CONTEXTO RECUPERADO contiene unicamente el catálogo y el contenido de los
+reportes de operaciones alojados en Google Drive. Tu respuesta debe salir
+exclusivamente de ese material.
+
+1. Los reportes vienen identificados por su número y nombre, y su contenido
+   aparece más abajo como texto plano. Si el usuario pidió una cantidad
+   concreta ("los últimos dos"), el CONTENIDO ya corresponde exactamente a
+   esos reportes y en ese orden: responde de esos y de ninguno más. No
+   menciones ni deduzcas nombres de archivo que no estén ahí.
+2. Redacta la respuesta como si hablaras con el usuario: nada de "fuente 1",
+   "fuente 2", "las fuentes proporcionadas", "el contexto", "el documento" ni
+   "el catálogo". Cita solo el nombre del reporte cuando sea imprescindible
+   para identificarlo.
+3. Si el texto plano de un PDF está truncado o incompleto, dilo con naturalidad
+   en lugar de suponer el dato que falta.
+4. Nunca afirmes que no hay información si el catálogo lista reportes: en ese
+   caso resume lo que sí hay disponible.
+`;
 
       const promptSistema = `
 Eres el Asistente Virtual Oficial de North Services.
@@ -3627,7 +4191,7 @@ REGLAS IMPORTANTES:
 CONTEXTO RECUPERADO:
 
 ${contextoCompleto}
-
+${usarServidorLocalDirecto ? instruccionDrive : ''}
 PREGUNTA DEL USUARIO:
 
 ${preguntaLimpia}
@@ -3642,19 +4206,31 @@ ${preguntaLimpia}
       });
 
       // ========================================================
-      // 7. GEMINI (con respaldo Ollama local)
+      // 7. GENERACIÓN DE LA RESPUESTA
       // ========================================================
+      // El proveedor principal es Gemini. Si la respuesta se apoya en el
+      // contexto de Google Drive, se usa directamente el servidor local
+      // porque Gemini suele estar saturado y solo añadiría espera.
+      // Si Gemini falla o se corta a mitad, también se cae a Ollama.
 
       const inicioGemini = Date.now();
       let resultadoGemini = null;
 
+      if (usarServidorLocalDirecto) {
+        console.log(
+          '[CHAT] Respuesta basada en Google Drive: se genera en el servidor local.'
+        );
+      }
+
       // --- Intento 1: Gemini ---
-      try {
-        resultadoGemini =
-          await generarContenidoGemini(promptSistema, enviarEvento);
-      } catch (errorGemini) {
-        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
-        resultadoGemini = null;
+      if (!usarServidorLocalDirecto) {
+        try {
+          resultadoGemini =
+            await generarContenidoGemini(promptSistema, enviarEvento);
+        } catch (errorGemini) {
+          console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
+          resultadoGemini = null;
+        }
       }
 
       // --- Si Gemini cortó la respuesta a mitad (stream incompleto), reintentar
@@ -3685,10 +4261,14 @@ ${preguntaLimpia}
       if (!resultadoGemini || !resultadoGemini.completo) {
         enviarEvento({ tipo: 'texto_reset' });
 
-        enviarEvento({
-          tipo: 'estado',
-          mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
-        });
+        // Con contexto de Drive el servidor local ya es el proveedor
+        // principal, así que no se avisa de una caída que no ha ocurrido.
+        if (!usarServidorLocalDirecto) {
+          enviarEvento({
+            tipo: 'estado',
+            mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
+          });
+        }
 
         try {
           resultadoGemini =
@@ -3843,6 +4423,168 @@ ${preguntaLimpia}
     }
   }
 );
+
+// ============================================================
+// CATEGORÍAS DE CONOCIMIENTO Y PERMISOS RAG
+// ============================================================
+//
+// Los endpoints de abajo son la superficie que usa el Administrador:
+//   - listar y crear categorías de conocimiento,
+//   - ver y guardar qué categorías puede consultar cada rol,
+//   - consultar las categorías activas para la pantalla de subida.
+//
+// La matriz se guarda en MongoDB, por lo que agregar una categoría o un
+// rol nuevo NO requiere modificar el código del RAG.
+// ============================================================
+
+// Estado real de las colecciones de conocimiento: cuáles existen en Atlas,
+// con qué índice vectorial y a qué categoría pertenecen. Se lee de la base
+// de datos, así que una fuente creada por cualquier medio queda visible.
+app.get('/api/admin/rag/colecciones', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const colecciones = await ragCategorias.listarColeccionesVectoriales();
+    res.json({ ok: true, colecciones });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Categorías activas disponibles para la pantalla de subida de archivos.
+// No filtra por rol a propósito: elegir la categoría de un archivo nuevo
+// no es lo mismo que poder consultar el contenido ya publicado.
+app.get('/api/rag/categorias', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const categorias = await ragCategorias.listarCategorias({ incluirInactivas: true });
+    res.json({ ok: true, categorias });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/admin/rag/categorias', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const categorias = await ragCategorias.listarCategorias({ incluirInactivas: true });
+    res.json({ ok: true, categorias });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Cualquier usuario autenticado puede crear una categoría al subir un archivo.
+// No es una operación reservada al Administrador: si solo él pudiera crearlas,
+// quien sube un documento no podría elegir dónde guardarlo.
+//
+// El rol del creador recibe el acceso en el mismo acto (ver
+// `crearCategoria`), así que ve de inmediato lo que acaba de subir sin que
+// nadie tenga que marcar permisos a mano.
+app.post('/api/rag/categorias', verifyToken, async (req, res) => {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const categoria = await ragCategorias.crearCategoria({
+      nombre: req.body?.nombre,
+      descripcion: req.body?.descripcion,
+      creadoPor: req.user.uid,
+      rolCreador: req.user.rol,
+    });
+    res.status(201).json({ ok: true, categoria, mensaje: `Categoría "${categoria.nombre}" creada correctamente. Ya tienes acceso a ella.` });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/admin/rag/categorias', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const categoria = await ragCategorias.crearCategoria({
+      nombre: req.body?.nombre,
+      descripcion: req.body?.descripcion,
+      creadoPor: req.user.uid,
+      rolCreador: req.user.rol,
+    });
+    res.status(201).json({ ok: true, categoria, mensaje: `Categoría "${categoria.nombre}" creada correctamente. Ya tienes acceso a ella.` });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/admin/rag/categorias/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    // El usuario se pasa al servicio para que la papelera atribuya el cambio a
+    // una persona y no a un texto técnico sobre la categoría.
+    const usuario = { uid: req.user.uid, nombre: nombreUsuarioActual(req.user) };
+    const categoria = await ragCategorias.actualizarCategoria(req.params.id, req.body || {}, usuario);
+    const avisos = categoria.avisos || [];
+    res.json({
+      ok: true,
+      categoria,
+      avisos,
+      mensaje: `Categoría "${categoria.nombre}" actualizada.`,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+// Elimina la categoría. Por defecto borra también todos sus documentos; si
+// el frontend envía ?papelera=true, la categoría se retira pero sus archivos
+// quedan guardados en la papelera por si hay que recuperarlos.
+app.delete('/api/admin/rag/categorias/:id', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const aPapelera = String(req.query?.papelera || '') === 'true';
+    const resultado = await ragCategorias.eliminarCategoria(req.params.id, {
+      eliminarDocumentos: !aPapelera,
+    });
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
+
+// Matriz completa: categorías × roles + acceso a Starlink por rol.
+app.get('/api/admin/rag/permisos', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const matriz = await ragCategorias.obtenerMatrizPermisos();
+    res.json({ ok: true, ...matriz });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.put('/api/admin/rag/permisos/:rol', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const rol = req.params.rol;
+    if (ragCategorias.esAdministrador(rol)) {
+      // El Administrador tiene acceso total: no se le aplica una matriz
+      // restrictiva ni hace falta marcarle cada categoría.
+      const guardadoAdmin = await ragCategorias.guardarPermisosRol(rol, {
+        categorias: (await ragCategorias.listarCategorias({ incluirInactivas: true })).map((categoria) => categoria.id),
+        modulos: { starlink: true },
+      });
+      return res.json({
+        ok: true,
+        rol: guardadoAdmin.rol,
+        permisos: guardadoAdmin,
+        mensaje: 'El Administrador tiene acceso total a todas las categorías y a Starlink.',
+      });
+    }
+
+    const guardado = await ragCategorias.guardarPermisosRol(rol, {
+      categorias: Array.isArray(req.body?.categorias) ? req.body.categorias : [],
+      modulos: { starlink: req.body?.modulos?.starlink === true },
+    });
+    res.json({
+      ok: true,
+      rol: guardado.rol,
+      // Se devuelve lo que quedó realmente guardado: el backend descarta
+      // categorías inexistentes. Así el panel se sincroniza sin volver a
+      // cargar toda la matriz.
+      permisos: guardado,
+      mensaje: `Permisos de "${req.params.rol}" actualizados.`,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ ok: false, error: error.message });
+  }
+});
 
 // ============================================================
 // ROLES Y ÁREAS PÚBLICOS (para formulario de registro)
@@ -4267,11 +5009,25 @@ app.put(
       const datosActualizar =
         {};
 
+      // El rol se guarda con la capitalización elegida por el
+      // Administrador: "Contabilidad", "Técnico", "Ingeniero MWD", etc.
+      // Solo se recorta el espacio sobrante; no se fuerza ningún valor.
       if (
         rol !== undefined
       ) {
+        const rolLimpio =
+          String(rol).trim();
+
+        if (!rolLimpio) {
+          return res.status(400).json({
+            ok: false,
+            error:
+              'El rol no puede quedar vacío.'
+          });
+        }
+
         datosActualizar.rol =
-          rol;
+          rolLimpio;
       }
 
       if (
@@ -4346,6 +5102,10 @@ app.get('/api/papelera', verifyToken, async (req, res) => {
         eliminadoEn,
         diasRestantes,
         estadoIndexacion: data.estadoIndexacion || '',
+        // Permite al frontend bloquear "Restaurar": si el archivo está en la
+        // papelera por una categoría desactivada, el cambio se revierte desde
+        // el panel de conocimiento y no archivo por archivo.
+        bloqueadoPorCategoria: data.eliminadoPorCategoria === true,
       });
     });
     items.sort((a, b) => new Date(b.eliminadoEn || 0) - new Date(a.eliminadoEn || 0));
@@ -4363,35 +5123,12 @@ app.post('/api/papelera/lote/restaurar', verifyToken, async (req, res) => {
     let procesados = 0;
     const fallidos = [];
     for (const id of ids) {
-      const referencia = db.collection('archivos').doc(id);
-      const doc = await referencia.get();
+      const doc = await db.collection('archivos').doc(id).get();
       if (!doc.exists) { fallidos.push({ id, error: 'Elemento no encontrado.' }); continue; }
       const data = doc.data();
       if (!puedeGestionarArchivo(req.user, data)) { fallidos.push({ id, error: 'Sin permiso.' }); continue; }
-      
-      // Restaurar vectores de RAG desde la colección de papelera
-      try {
-        const mongoDb = getDB();
-        const vectoresPapelera = await mongoDb.collection('conocimientos_vectores_papelera').find({ archivoId: id }).toArray();
-        
-        if (vectoresPapelera.length > 0) {
-          // Insertar en colección activa
-          await mongoDb.collection('conocimientos_vectores').insertMany(vectoresPapelera, { ordered: false });
-          // Eliminar de colección de papelera
-          await mongoDb.collection('conocimientos_vectores_papelera').deleteMany({ archivoId: id });
-          console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} a la colección activa`);
-        }
-      } catch (error) {
-        console.error(`[PAPELERA] Error al restaurar vectores del archivo ${id}:`, error.message);
-        // Continuamos con el proceso aunque falle la restauración
-      }
-      
-      await referencia.update({
-        eliminado: false,
-        eliminadoPor: null,
-        eliminadoPorNombre: null,
-        eliminadoEn: null,
-      });
+
+      await restaurarArchivoDePapelera(id);
       procesados += 1;
     }
     res.json({
@@ -4442,29 +5179,7 @@ app.post('/api/papelera/:id/restaurar', verifyToken, async (req, res) => {
     const esAdmin = req.user.rol === 'administrador';
     if (!esAdmin && data.propietarioUid !== req.user.uid) return res.status(403).json({ ok: false, error: 'No tienes permiso para restaurar este elemento.' });
 
-    // Restaurar vectores de RAG desde la colección de papelera
-    try {
-      const mongoDb = getDB();
-      const vectoresPapelera = await mongoDb.collection('conocimientos_vectores_papelera').find({ archivoId: req.params.id }).toArray();
-      
-      if (vectoresPapelera.length > 0) {
-        // Insertar en colección activa
-        await mongoDb.collection('conocimientos_vectores').insertMany(vectoresPapelera, { ordered: false });
-        // Eliminar de colección de papelera
-        await mongoDb.collection('conocimientos_vectores_papelera').deleteMany({ archivoId: req.params.id });
-        console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${req.params.id} a la colección activa`);
-      }
-    } catch (error) {
-      console.error(`[PAPELERA] Error al restaurar vectores del archivo ${req.params.id}:`, error.message);
-      // Continuamos con el proceso aunque falle la restauración
-    }
-
-    await referencia.update({
-      eliminado: false,
-      eliminadoPor: null,
-      eliminadoPorNombre: null,
-      eliminadoEn: null,
-    });
+    await restaurarArchivoDePapelera(req.params.id);
     res.json({ ok: true, mensaje: 'Elemento restaurado correctamente.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -4496,7 +5211,13 @@ const PORT = process.env.PORT || 8000;
 const HOST = process.env.HOST || "0.0.0.0";
 
 connectDB()
-  .then(() => {
+  .then(async () => {
+    // El sistema arranca sin categorías: las crea el Administrador desde el
+    // panel. Aquí solo se registra el estado inicial en el log.
+    await ragCategorias.inicializarRag().catch((error) =>
+      console.error('[RAG] No se pudo inicializar el RAG:', error.message)
+    );
+
     app.listen(PORT, HOST, () => {
       console.log(`Servidor corriendo en http://${HOST}:${PORT}`);
       console.log(`[CONFIG] RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD}`);
