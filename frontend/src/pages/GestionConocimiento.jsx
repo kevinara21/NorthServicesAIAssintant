@@ -90,7 +90,23 @@ export default function GestionConocimiento({ token }) {
       ...actual,
       [rol]: {
         ...actual[rol],
-        modulos: { starlink: !(actual[rol]?.modulos?.starlink === true) },
+        modulos: {
+          ...actual[rol]?.modulos,
+          starlink: !(actual[rol]?.modulos?.starlink === true),
+        },
+      },
+    }));
+  };
+
+  const alternarSoftwareYManuales = (rol) => {
+    setBorrador((actual) => ({
+      ...actual,
+      [rol]: {
+        ...actual[rol],
+        modulos: {
+          ...actual[rol]?.modulos,
+          software_y_manuales: !(actual[rol]?.modulos?.software_y_manuales === true),
+        },
       },
     }));
   };
@@ -416,15 +432,7 @@ const alternarActiva = async (categoria) => {
                   <span>Acceso al módulo Starlink</span>
                 </label>
                 <label className="panel-conocimiento__modulo">
-                  <input type="checkbox" checked={configuracion.modulos.software_y_manuales === true} onChange={() => {
-                    setBorrador((actual) => ({
-                      ...actual,
-                      [rol.clave]: {
-                        ...actual[rol.clave],
-                        modulos: { ...actual[rol.clave].modulos, software_y_manuales: !(actual[rol.clave]?.modulos?.software_y_manuales === true) },
-                      },
-                    }));
-                  }} />
+                  <input type="checkbox" checked={configuracion.modulos.software_y_manuales === true} onChange={() => alternarSoftwareYManuales(rol.clave)} />
                   <span>Acceso a Software y Manuales</span>
                 </label>
               </>
