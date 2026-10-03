@@ -375,7 +375,7 @@ const eliminarDefinitivo = async (lista) => {
 
               <div className="modal-monitoreo-pozo-actions">
                 <button type="button" className="btn-monitoreo-pozo-cancel" onClick={() => setPorEliminar(null)}>
-                  Cancelar
+                  <FiX aria-hidden="true" /> Cancelar
                 </button>
                 <button type="button" className="panel-conocimiento__peligro-boton panel-conocimiento__peligro-boton--solido" onClick={confirmarEliminacionDefinitiva}>
                   <FiTrash2 aria-hidden="true" /> Sí, eliminar

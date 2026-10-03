@@ -15,6 +15,7 @@ const verifyToken = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
 const driveOperaciones = require('./services/googleDrive');
 const ragCategorias = require('./services/ragCategorias.service');
+const webEmpresa = require('./services/webEmpresa.service');
 const {
   DRIVE_MAX_ARCHIVOS,
   DRIVE_INLINE_MAX_BYTES,
@@ -3501,7 +3502,28 @@ const resultadosPorFuente = esPreguntaDeReportes
           fuentesListas.map(buscarEnFuente)
         );
 
-      const filasContexto = resultadosPorFuente.flat();
+      // ========================================================
+      // 2B. WEB DE LA EMPRESA (northservices.com.pe)
+      // ========================================================
+      // Esta fuente no es una categoría de conocimiento: describe la casa y sus
+      // servicios, así que se consulta para todos los roles sin mirar la
+      // configuración de permisos. Los reportes de operaciones se saltan este
+      // paso porque su respuesta sale de Drive y el texto comercial de la web
+      // solo desviaría la respuesta hacia el catálogo de productos.
+      const resultadosWeb = esPreguntaDeReportes
+        ? []
+        : await webEmpresa.buscarEnWebEmpresa(
+          vectorConsulta
+        );
+
+      console.log(
+        `[WEB] Fragmentos de la web de la empresa recuperados: ${resultadosWeb.length}`
+      );
+
+      const filasContexto = [
+        ...resultadosPorFuente.flat(),
+        ...resultadosWeb
+      ];
 
       // ========================================================
       // ORDEN GLOBAL POR PUNTUACIÓN
@@ -3542,8 +3564,11 @@ const resultadosPorFuente = esPreguntaDeReportes
           (fila) =>
             typeof fila.score ===
               'number' &&
-            fila.score >=
-              RAG_SCORE_THRESHOLD
+            fila.score >= (
+              fila.origenWeb
+                ? webEmpresa.UMBRAL_RELEVANCIA
+                : RAG_SCORE_THRESHOLD
+            )
         );
 
       // --------------------------------------------------------
@@ -3931,7 +3956,7 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
             'texto',
 
           texto:
-            'No encontré información suficientemente relevante para responder esta consulta en los manuales disponibles.'
+            'No encontré información suficientemente relevante para responder esta consulta en la documentación, la web oficial ni los sistemas de North Services. Si crees que debería estar disponible, puedes intentar actualizar la información de la página o contactar al administrador.'
         });
 
         enviarEvento({
@@ -4127,6 +4152,30 @@ Tu respuesta debe salir ÚNICAMENTE de esa sección.
    contiene kits listados. En ese caso, resume la información disponible.
 ` : '';
 
+      // La web de la empresa aporta la descripción de los servicios y la
+      // presentación institucional. Se le pide al modelo que la use para lo
+      // que es y que no confunda el texto comercial con un manual técnico ni
+      // con un reporte.
+      const hayContextoWeb = resultadosRelevantes.some((fila) => fila.origenWeb);
+      const instruccionWeb = hayContextoWeb ? `
+INSTRUCCIÓN ESPECÍFICA PARA ESTA CONSULTA (WEB DE LA EMPRESA):
+
+Entre las fuentes recuperadas hay fragmentos de la página web oficial de
+North Services (${webEmpresa.BASE_URL}). Úsalos para responder sobre la
+empresa y sus servicios.
+
+1. Sirven para preguntas sobre quiénes somos, qué servicios ofrece la
+   empresa, sus capacidades, certificaciones, clientes, contactos y
+   presentación institucional.
+2. Cita el servicio tal como se llama en la web (por ejemplo "Perforación
+   Direccional", "Fluidos de Perforación y Control de Sólidos", "SlickLine",
+   "Cementación, Fractura y Acidificación", "Soporte Técnico").
+3. No presentes la web como un manual técnico ni inventes datos: si el
+   fragmento no responde la pregunta, dilo con naturalidad.
+4. Nunca digas que la información "no está disponible" si los fragmentos de la
+   web describen justamente lo que se pregunta.
+` : '';
+
       const promptSistema = `
 Eres el Asistente Virtual Oficial de North Services.
 
@@ -4238,6 +4287,7 @@ CONTEXTO RECUPERADO:
 ${contextoCompleto}
 ${usarServidorLocalDirecto ? instruccionDrive : ''}
 ${instruccionStarlink}
+${instruccionWeb}
 PREGUNTA DEL USUARIO:
 
 ${preguntaLimpia}
@@ -5247,6 +5297,60 @@ app.delete('/api/papelera/:id/definitivo', verifyToken, async (req, res) => {
 
     await eliminarArchivoPermanentemente(req.params.id, data);
     res.json({ ok: true, mensaje: 'Elemento eliminado permanentemente.' });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ============================================================
+// WEB DE LA EMPRESA (RAG PARA TODOS LOS ROLES)
+// ============================================================
+//
+// La información pública de northservices.com.pe se indexa en la colección
+// de vectores y la consulta el chat para cualquier rol. Estos dos endpoints
+// existen para que el Administrador pueda reindexarla cuando la web cambie.
+// ============================================================
+
+app.get('/api/admin/web-empresa/estado', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const estado = await webEmpresa.obtenerEstado();
+    res.json({ ok: true, ...estado });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/admin/web-empresa/actualizar', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    if (webEmpresa.estaActualizando()) {
+      const estado = await webEmpresa.obtenerEstado();
+      return res.json({
+        ok: true,
+        yaEnCurso: true,
+        mensaje: 'Ya hay una actualización en curso. Te avisaremos cuando termine.',
+        estado,
+      });
+    }
+
+    // El rastreo y la generación de cientos de vectores tardan más de lo que
+    // aguanta cómodamente una petición HTTP, así que la actualización se lanza
+    // en segundo plano y el frontend sigue el avance con GET .../estado.
+    webEmpresa
+      .actualizarInformacionWebEnSerio({
+        generarEmbedding,
+        onProgress: (mensaje) => console.log(`[WEB] ${mensaje}`),
+      })
+      .catch((error) =>
+        console.error(`[WEB] Error al actualizar la web de la empresa: ${error.message}`)
+      );
+
+    const estado = await webEmpresa.obtenerEstado();
+    res.json({
+      ok: true,
+      iniciado: true,
+      mensaje: 'Actualización iniciada. La información nueva estará disponible en unos segundos.',
+      estado,
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

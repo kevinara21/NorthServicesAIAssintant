@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FiCheck, FiEdit2, FiShield, FiTrash2, FiX } from 'react-icons/fi';
-import { apiFetch } from '../services/api';
+import { FiAlertTriangle, FiCheck, FiCheckCircle, FiEdit2, FiRefreshCw, FiShield, FiTrash2, FiX } from 'react-icons/fi';
+import { apiFetch, API_URL } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from '../components/common/OilLoader';
 
@@ -31,6 +31,11 @@ export default function GestionConocimiento({ token }) {
   const [guardandoEstado, setGuardandoEstado] = useState(null);
   const [borrandoCategoria, setBorrandoCategoria] = useState(false);
   const [pendienteDeBorrar, setPendienteDeBorrar] = useState(null);
+  // Actualización de la información de la página web de la empresa. El rastreo
+  // corre en el backend y aquí solo se muestra el avance.
+  const [estadoWeb, setEstadoWeb] = useState(null);
+  const [actualizandoWeb, setActualizandoWeb] = useState(false);
+  const [avisoWeb, setAvisoWeb] = useState(null);
   const { notificarExito, notificarError } = useNotification();
 
   const cabeceras = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -69,6 +74,76 @@ export default function GestionConocimiento({ token }) {
   }, [token]);
 
   useEffect(() => { cargar(); }, [cargar]);
+
+  // ---------------------------------------------------------------------------
+  // Información de la página web de la empresa
+  // ---------------------------------------------------------------------------
+  // Vuelve a leer northservices.com.pe y la guarda en su propia colección
+  // ('conocimientos_pagina'). El rastreo se ejecuta en el backend; aquí se
+  // consulta el estado hasta que termina.
+  const consultarEstadoWeb = useCallback(async () => {
+    try {
+      const respuesta = await fetch(`${API_URL}/api/admin/web-empresa/estado`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!respuesta.ok) return null;
+      const datos = await respuesta.json();
+      setEstadoWeb(datos);
+      return datos;
+    } catch {
+      return null;
+    }
+  }, [token]);
+
+  const sondearEstadoWeb = useCallback(async (intentos = 0) => {
+    const datos = await consultarEstadoWeb();
+    const sigue = datos?.actualizando === true;
+
+    if (sigue && intentos < 40) {
+      window.setTimeout(() => sondearEstadoWeb(intentos + 1), 2500);
+      return;
+    }
+
+    setActualizandoWeb(false);
+    if (!sigue) {
+      setAvisoWeb({ tipo: 'exito', texto: 'Información de la página actualizada correctamente.' });
+      window.setTimeout(() => setAvisoWeb(null), 6000);
+    }
+  }, [consultarEstadoWeb]);
+
+  const actualizarPaginaWeb = async () => {
+    if (actualizandoWeb) return;
+    setActualizandoWeb(true);
+    setAvisoWeb(null);
+
+    try {
+      const respuesta = await fetch(`${API_URL}/api/admin/web-empresa/actualizar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const datos = await respuesta.json();
+      if (!respuesta.ok) throw new Error(datos.error || 'No se pudo iniciar la actualización.');
+
+      setAvisoWeb({ tipo: 'info', texto: datos.mensaje || 'Actualizando la información de la página…' });
+      sondearEstadoWeb();
+    } catch (error) {
+      setActualizandoWeb(false);
+      setAvisoWeb({ tipo: 'error', texto: error.message });
+      window.setTimeout(() => setAvisoWeb(null), 8000);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    // Si el panel se reabre mientras el backend sigue indexando, se retoma el
+    // sondeo en lugar de mostrar el botón como si ya hubiera terminado.
+    consultarEstadoWeb().then((datos) => {
+      if (datos?.actualizando) {
+        setActualizandoWeb(true);
+        sondearEstadoWeb();
+      }
+    });
+  }, [consultarEstadoWeb, sondearEstadoWeb, token]);
 
   const alternarCategoria = (rol, categoriaId) => {
     setBorrador((actual) => {
@@ -295,6 +370,38 @@ const alternarActiva = async (categoria) => {
         El conocimiento compartido de Google Drive está disponible para todos los usuarios y no se restringe por rol.
       </p>
 
+      <section className="web-pagina">
+        <div className="web-pagina__texto">
+          <strong className="web-pagina__titulo">Información de la página web</strong>
+          <small className="web-pagina__detalle">
+            Lee la página oficial de North Services y actualiza la información institucional del asistente
+          </small>
+          {estadoWeb?.ultimaActualizacion && !actualizandoWeb && (
+            <small className="web-pagina__detalle">
+              Última actualización: {new Date(estadoWeb.ultimaActualizacion).toLocaleString('es-PE', { timeZone: 'America/Lima' })}
+              {estadoWeb.fragmentos ? ` · ${estadoWeb.fragmentos} fragmentos` : ''}
+            </small>
+          )}
+        </div>
+        <button
+          type="button"
+          className="web-pagina__boton"
+          onClick={actualizarPaginaWeb}
+          disabled={actualizandoWeb}
+          title="Vuelve a leer https://northservices.com.pe/ y actualiza la información del asistente"
+        >
+          <FiRefreshCw className={actualizandoWeb ? 'web-pagina__giro' : undefined} aria-hidden="true" />
+          {actualizandoWeb ? 'Actualizando…' : 'Actualizar página'}
+        </button>
+      </section>
+
+      {avisoWeb && (
+        <div className={`web-pagina__aviso web-pagina__aviso--${avisoWeb.tipo}`} role="status">
+          {avisoWeb.tipo === 'error' ? <FiAlertTriangle aria-hidden="true" /> : <FiCheckCircle aria-hidden="true" />}
+          <span>{avisoWeb.texto}</span>
+        </div>
+      )}
+
       <div className="panel-conocimiento__tabla-wrap" style={{ marginBottom: '28px' }}>
         <table className="panel-conocimiento__tabla">
           <thead>
@@ -512,7 +619,7 @@ const alternarActiva = async (categoria) => {
                     </div>
                     <div className="panel-conocimiento__peligro-acciones">
                       <button type="button" className="btn-monitoreo-pozo-cancel" onClick={() => setPendienteDeBorrar(null)} disabled={borrandoCategoria}>
-                        Cancelar
+                        <FiX aria-hidden="true" /> Cancelar
                       </button>
                       <button
                         type="button"

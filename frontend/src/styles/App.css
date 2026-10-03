@@ -348,6 +348,123 @@
 .resource-field:disabled { color: #111827; opacity: 1; }
 .chat-message-input::placeholder { color: #64748b; opacity: 1; }
 .chat-message-input:disabled { cursor: not-allowed; }
+
+/* =========================================================
+   BARRA DE HERRAMIENTAS DEL ASISTENTE (limpiar / descargar /
+   actualizar la información de la página)
+   ========================================================= */
+.chatbot-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; min-height: 34px; }
+.chatbot-toolbar__left, .chatbot-toolbar__right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.chatbot-toolbar__right { margin-left: auto; }
+.chatbot-tool-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 7px 13px;
+  border: 1px solid #dbe2ea;
+  border-radius: 9px;
+  background: #fff;
+  color: #475569;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.chatbot-tool-button svg { font-size: 14px; }
+.chatbot-tool-button:hover:not(:disabled) { border-color: #c3ccd8; background: #f8fafc; color: #1e293b; box-shadow: 0 2px 8px rgba(15, 23, 42, .09); }
+.chatbot-tool-button:focus-visible { outline: none; border-color: #94a3b8; box-shadow: 0 0 0 3px rgba(71, 85, 105, .18); }
+.chatbot-tool-button:disabled { opacity: .55; cursor: not-allowed; }
+.chatbot-tool-button--info { border-color: #f3c6c8; background: #fff5f5; color: #b5181c; }
+.chatbot-tool-button--info:hover:not(:disabled) { border-color: #e9a4a7; background: #ffe9ea; color: #8f1316; }
+
+.chatbot-spin { animation: spin 1s linear infinite; }
+
+.chatbot-aviso {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.chatbot-aviso svg { flex: 0 0 auto; font-size: 15px; }
+.chatbot-aviso small { flex-basis: 100%; color: inherit; font-weight: 400; opacity: .8; }
+.chatbot-aviso--info { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+.chatbot-aviso--exito { border-color: #bbf7d0; background: #f0fdf4; color: #15803d; }
+.chatbot-aviso--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+
+/* Actualización de la información de la página web (Conocimiento y roles) */
+.web-pagina {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  margin-bottom: 22px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+}
+.web-pagina__texto { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.web-pagina__titulo { color: #0f172a; font-size: 15px; font-weight: 700; }
+.web-pagina__detalle { color: #64748b; font-size: 12.5px; line-height: 1.5; max-width: 620px; }
+.web-pagina__boton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 10px 20px;
+  border: 1px solid #f3c6c8;
+  border-radius: 10px;
+  background: #fff5f5;
+  color: #b5181c;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.web-pagina__boton svg { font-size: 16px; }
+.web-pagina__boton:hover:not(:disabled) { border-color: #e9a4a7; background: #ffe9ea; color: #8f1316; box-shadow: 0 4px 12px rgba(181, 24, 28, .12); }
+.web-pagina__boton:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 2px rgba(181, 24, 28, .12); }
+.web-pagina__boton:focus-visible { outline: none; border-color: #b5181c; box-shadow: 0 0 0 3px rgba(181, 24, 28, .2); }
+.web-pagina__boton:disabled { opacity: .6; cursor: not-allowed; }
+.web-pagina__giro { animation: spin 1s linear infinite; }
+.web-pagina__aviso {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 22px;
+  padding: 11px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.web-pagina__aviso svg { flex: 0 0 auto; font-size: 15px; }
+.web-pagina__aviso--info { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+.web-pagina__aviso--exito { border-color: #bbf7d0; background: #f0fdf4; color: #15803d; }
+.web-pagina__aviso--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+@media (max-width: 600px) {
+  .web-pagina { align-items: stretch; }
+  .web-pagina__boton { width: 100%; }
+}
 .admin-users-panel { overflow: hidden; width: 100%; }
 .admin-users-table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .admin-users-table { min-width: 760px; width: 100%; }
@@ -1179,6 +1296,14 @@
   border-color: #b91c1c;
 }
 
+/* Toda la fila abre el detalle del equipo: se evita el botón suelto de "ojo"
+   para que el usuario pueda tocar cualquier parte de la fila, también en el
+   móvil, donde el botón quedaba muy pequeño. */
+.billing-row-clickable { cursor: pointer; transition: background var(--transition-fast); }
+.billing-row-clickable:hover { background: #fff5f5; }
+.billing-row-clickable:hover td { border-bottom-color: #f4d0d1; }
+.billing-row-clickable:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; background: #fff5f5; }
+
 .billing-edit-button {
   display: inline-flex;
   align-items: center;
@@ -1558,7 +1683,6 @@
 .panel-conocimiento__peligro-boton--solido { background: #dc2626; color: #fff; }
 .panel-conocimiento__peligro-boton--solido:hover:not(:disabled) { background: #b91c1c; border-color: #b91c1c; }
 .panel-conocimiento__peligro-boton:disabled { opacity: .55; cursor: not-allowed; }
-.panel-conocimiento__peligro .btn-monitoreo-pozo-cancel { min-height: 38px; }
 
 /* =========================================================
    CONFIRMACIÓN DE BORRADO DEFINITIVO EN LA PAPELERA
@@ -1574,6 +1698,43 @@
 @media (max-width: 480px) {
   .papelera-confirmacion { flex-direction: column; gap: 10px; }
 }
+
+/* "Cancelar" en los avisos de borrado. Es la única acción que no destruye
+   nada, así que se presenta como un botón tranquilo pero visible: borde
+   suave, fondo translúcido y el icono de cierre que el usuario ya reconoce
+   del encabezado del modal. Se aplica tanto al borrado definitivo de la
+   Papelera como a la eliminación de una categoría en Conocimiento y roles. */
+.modal-monitoreo-pozo-confirmacion .btn-monitoreo-pozo-cancel,
+.panel-conocimiento__peligro-acciones .btn-monitoreo-pozo-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 10px 22px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f4f7fa 100%);
+  color: #475569;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .06), inset 0 1px 0 rgba(255, 255, 255, .9);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+.modal-monitoreo-pozo-confirmacion .btn-monitoreo-pozo-cancel svg,
+.panel-conocimiento__peligro-acciones .btn-monitoreo-pozo-cancel svg { font-size: 15px; opacity: .7; }
+.modal-monitoreo-pozo-confirmacion .btn-monitoreo-pozo-cancel:hover,
+.panel-conocimiento__peligro-acciones .btn-monitoreo-pozo-cancel:hover {
+  border-color: #c3ccd8;
+  background: linear-gradient(180deg, #ffffff 0%, #e9eef4 100%);
+  color: #1e293b;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, .1), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+.modal-monitoreo-pozo-confirmacion .btn-monitoreo-pozo-cancel:active,
+.panel-conocimiento__peligro-acciones .btn-monitoreo-pozo-cancel:active { transform: translateY(1px); box-shadow: 0 1px 2px rgba(15, 23, 42, .08); }
+.modal-monitoreo-pozo-confirmacion .btn-monitoreo-pozo-cancel:focus-visible,
+.panel-conocimiento__peligro-acciones .btn-monitoreo-pozo-cancel:focus-visible { outline: none; border-color: #94a3b8; box-shadow: 0 0 0 3px rgba(71, 85, 105, .2); }
 .panel-conocimiento__vacio-tabla { display: block; padding: 4px 0; color: #64748b; font-size: 14px; font-weight: 400; line-height: 1.5; }
 .panel-conocimiento__vacio-tabla strong { color: #0f172a; font-weight: 600; }
 

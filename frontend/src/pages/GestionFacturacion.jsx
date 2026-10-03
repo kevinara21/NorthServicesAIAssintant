@@ -382,15 +382,28 @@ export default function GestionFacturacion({ token }) {
       )}
 
       <div className="billing-table-wrap">
-        <table className="billing-table"><thead><tr><th>Ubicación</th><th>Correo</th><th>Periodo</th><th>Pago</th><th>Estado</th><th>Acción</th></tr></thead><tbody>
-          {pozos.length === 0 ? <tr><td colSpan="6" className="billing-empty">No hay pozos registrados.</td></tr> : pozos.map((pozo) => {
+        <table className="billing-table"><thead><tr><th>Ubicación</th><th>Correo</th><th>Periodo</th><th>Pago</th><th>Estado</th></tr></thead><tbody>
+          {pozos.length === 0 ? <tr><td colSpan="5" className="billing-empty">No hay pozos registrados.</td></tr> : pozos.map((pozo) => {
             // Un monto en cero no es un dato faltante: se muestra siempre para
             // que todas las filas muestren la misma información.
             const monto = Number(pozo.monto || 0);
             const sinMonto = monto <= 0;
 
             return (
-            <tr key={pozo.id}>
+            <tr
+              key={pozo.id}
+              className="billing-row-clickable"
+              onClick={() => verDetalles(pozo)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  verDetalles(pozo);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              title="Ver detalles del equipo"
+            >
               <td data-label="Ubicación"><div className="billing-celda"><strong>{pozo.nombrePozo}</strong></div></td>
               <td data-label="Correo"><div className="billing-celda">{pozo.correo || 'Sin correo'}</div></td>
               <td data-label="Periodo">
@@ -412,13 +425,6 @@ export default function GestionFacturacion({ token }) {
                     {pozo.estadoActivo ? <FiCheckCircle aria-hidden="true" /> : <FiXCircle aria-hidden="true" />}
                     {pozo.estadoActivo ? 'Activo' : 'Inactivo'}
                   </span>
-                </div>
-              </td>
-              <td data-label="Acción">
-                <div className="billing-celda">
-                  <button className="billing-action-button" type="button" onClick={() => verDetalles(pozo)} title="Ver detalles">
-                    <FiEye />
-                  </button>
                 </div>
               </td>
             </tr>

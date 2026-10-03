@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { FiDownload } from 'react-icons/fi';
 import { API_URL } from '../services/api';
 
 // ============================================================================
@@ -452,6 +453,53 @@ export default function Chatbot({ token, uid }) {
     setHistorial([]);
   };
 
+  // Descarga la conversación actual como un archivo de texto: el usuario se
+  // lleva el chat completo (preguntas, respuestas y enlaces de las fuentes).
+  const descargarChat = () => {
+    if (!historial.length) return;
+
+    const fecha = new Date();
+    const dosDigitos = (n) => String(n).padStart(2, '0');
+    const marca = `${fecha.getFullYear()}${dosDigitos(fecha.getMonth() + 1)}${dosDigitos(fecha.getDate())}-${dosDigitos(fecha.getHours())}${dosDigitos(fecha.getMinutes())}`;
+
+    const lineas = [
+      'Conversación con el Asistente Virtual IA - North Services',
+      `Fecha de descarga: ${fecha.toLocaleString('es-PE', { timeZone: 'America/Lima' })}`,
+      '='.repeat(60),
+      '',
+    ];
+
+    historial.forEach((mensaje) => {
+      const autor = mensaje.emisor === 'usuario' ? 'Tú' : 'Asistente North Services';
+      lineas.push(`${autor}:`);
+      lineas.push(mensaje.texto || '(sin contenido)');
+
+      const descargas = (mensaje.fuentes || [])
+        .flatMap((fuente) => fuente.descargas || [])
+        .filter((descarga, indice, lista) => lista.findIndex((item) => item.ruta === descarga.ruta) === indice);
+
+      if (descargas.length) {
+        lineas.push('');
+        lineas.push('Documentos relacionados:');
+        descargas.forEach((descarga) => lineas.push(`- ${descarga.etiqueta || descarga.ruta}`));
+      }
+
+      lineas.push('');
+      lineas.push('-'.repeat(60));
+      lineas.push('');
+    });
+
+    const blob = new Blob([lineas.join('\r\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const enlace = document.createElement('a');
+    enlace.href = url;
+    enlace.download = `chat-north-services-${marca}.txt`;
+    document.body.appendChild(enlace);
+    enlace.click();
+    document.body.removeChild(enlace);
+    URL.revokeObjectURL(url);
+  };
+
   // =========================================================================
   // Render
   // =========================================================================
@@ -464,32 +512,33 @@ export default function Chatbot({ token, uid }) {
         margin: '0 auto',
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '8px',
-        }}
-      >
-        {historial.length > 0 && (
-          <button
-            type="button"
-            onClick={limpiarChat}
-            disabled={cargando}
-            style={{
-              padding: '7px 12px',
-              border: '1px solid #d1d5db',
-              background: '#fff',
-              color: '#374151',
-              borderRadius: '6px',
-              cursor: cargando ? 'not-allowed' : 'pointer',
-              fontSize: '13px',
-            }}
-          >
-            Limpiar
-          </button>
-        )}
+      <div className="chatbot-toolbar">
+        <div className="chatbot-toolbar__left">
+          {historial.length > 0 && (
+            <button
+              type="button"
+              className="chatbot-tool-button"
+              onClick={limpiarChat}
+              disabled={cargando}
+              title="Borrar la conversación actual"
+            >
+              Limpiar
+            </button>
+          )}
+        </div>
+
+        <div className="chatbot-toolbar__right">
+          {historial.length > 0 && (
+            <button
+              type="button"
+              className="chatbot-tool-button"
+              onClick={descargarChat}
+              title="Descargar esta conversación como archivo de texto"
+            >
+              <FiDownload aria-hidden="true" /> Descargar chat
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Área del chat */}

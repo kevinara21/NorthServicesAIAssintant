@@ -282,7 +282,7 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
             </div>
           </header>
           <div className="floating-ai-content">
-            <Chatbot token={token} uid={usuario?.uid} />
+              <Chatbot token={token} uid={usuario?.uid} />
           </div>
         </section>
 
