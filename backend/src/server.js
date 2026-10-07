@@ -8,7 +8,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 
 const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
-const { connectDB, getDB } = require('./db/mongodb');
+const { connectDB, getDB, getDatabase } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
 const { crearServicioRecordatorios } = require('./services/starlinkReminders.service');
@@ -3369,6 +3369,71 @@ async function buscarPorSimilitudEnMemoria(coleccion, vectorConsulta, fuente, li
     });
 }
 
+const PALABRAS_VACIAS_BUSQUEDA = new Set([
+    'a', 'al', 'algo', 'como', 'con', 'cual', 'cuales', 'cuando', 'cuanto',
+    'cuantos', 'de', 'del', 'dame', 'donde', 'el', 'ella', 'en', 'es', 'esta',
+    'este', 'hay', 'la', 'las', 'lo', 'los', 'mas', 'mi', 'mio', 'para', 'por',
+    'que', 'se', 'si', 'sobre', 'su', 'sus', 'tiene', 'tienen', 'un', 'una',
+    'uno', 'unos', 'unas', 'y',
+]);
+
+function normalizarTerminosBusqueda(texto) {
+    return [...new Set(String(texto || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/baterias?/g, 'battery')
+      .match(/[\p{L}\p{N}]+/gu) || [])]
+      .filter((termino) => !PALABRAS_VACIAS_BUSQUEDA.has(termino));
+}
+
+async function buscarPorTextoEnMemoria(coleccion, pregunta, fuente, limite) {
+    const terminos = normalizarTerminosBusqueda(pregunta);
+    if (!terminos.length) return [];
+
+    const documentos = await coleccion
+      .find(
+        { embedding: { $exists: true } },
+        {
+          projection: {
+            manualId: 1,
+            recursoId: 1,
+            archivoId: 1,
+            nombreManual: 1,
+            titulo_seccion: 1,
+            rutaTitulos: 1,
+            pagina: 1,
+            contenido_texto: 1,
+          },
+        }
+      )
+      .limit(MAX_DOCUMENTOS_REVISADOS)
+      .toArray();
+
+    return documentos
+      .map((documento) => {
+        const contenido = normalizarTerminosBusqueda([
+          documento.nombreManual,
+          documento.titulo_seccion,
+          documento.rutaTitulos,
+          documento.contenido_texto,
+        ].filter(Boolean).join(' '));
+        const terminosEncontrados = terminos.filter((termino) => contenido.includes(termino));
+        const cobertura = terminosEncontrados.length / terminos.length;
+        return { documento, score: cobertura ? 0.56 + (cobertura * 0.44) : 0 };
+      })
+      .filter(({ score }) => score >= 0.56)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limite)
+      .map(({ documento, score }) => ({
+        ...documento,
+        score,
+        categoriaId: fuente.id,
+        categoriaNombre: fuente.nombre,
+        busquedaLexica: true,
+      }));
+}
+
 app.post(
   '/api/chat',
   verifyToken,
@@ -3381,7 +3446,8 @@ app.post(
 
     try {
       const {
-        pregunta
+        pregunta,
+        contextoConversacion,
       } = req.body;
 
       // --------------------------------------------------------
@@ -3401,6 +3467,13 @@ app.post(
 
       const preguntaLimpia =
         pregunta.trim();
+      const contextoUsuario = Array.isArray(contextoConversacion)
+        ? contextoConversacion
+          .filter((mensaje) => typeof mensaje === 'string')
+          .map((mensaje) => mensaje.trim().slice(0, 500))
+          .filter(Boolean)
+          .slice(-6)
+        : [];
 
       // --------------------------------------------------------
       // FILTRO DETERMINISTA DE ALCANCE (antes de llamar al modelo)
@@ -3531,6 +3604,417 @@ app.post(
           'Analizando consulta...'
       });
 
+      if (inventorySync.esConsultaAmbiguaConteoKits(preguntaLimpia, contextoUsuario)) {
+        const [kitsStarlink, ubicacionesMWD] = await Promise.all([
+          getDB().collection('starlink_bot').countDocuments({}),
+          getDatabase('mwd')
+            .collection('inventario_mwd')
+            .distinct('metadata_original.ubicacion', { tipo: 'mwd' }),
+        ]);
+
+        const kitsNumeradosMWD = ubicacionesMWD
+          .filter((ubicacion) => /^kit\s*\d+$/i.test(String(ubicacion || '')))
+          .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+        const extrasSinKitNumerado = ubicacionesMWD
+          .filter((ubicacion) => ubicacion && !/^kit\s*\d+$/i.test(String(ubicacion)))
+          .sort();
+        const detalleMWD = kitsNumeradosMWD.length
+          ? `En MWD hay ${kitsNumeradosMWD.length} kits de herramientas: ${kitsNumeradosMWD.join(', ')}.`
+          : 'No hay kits MWD numerados registrados.';
+        const detalleExtras = extrasSinKitNumerado.length
+          ? `Además, hay herramientas en otras ubicaciones: ${extrasSinKitNumerado.join(', ')}.`
+          : '';
+        const respuestaKits = `North Services registra ${kitsStarlink} kits Starlink y ${kitsNumeradosMWD.length} kits MWD de herramientas. Son categorías distintas. ${detalleMWD} ${detalleExtras} ¿Te refieres a los kits Starlink o a los kits de herramientas MWD?`;
+
+        enviarEvento({ tipo: 'texto', texto: respuestaKits });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: [
+            { documento: 'Registro de equipos Starlink', seccion: 'Total registrado', relevancia: 1, descargas: [] },
+            ...kitsNumeradosMWD.map((kit) => ({
+              documento: 'Inventario MWD',
+              seccion: kit,
+              relevancia: 1,
+              descargas: [],
+            })),
+          ],
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Conteo explícito de kits: ${kitsStarlink} Starlink, ${kitsNumeradosMWD.length} MWD.`);
+        return res.end();
+      }
+
+      const preguntaHerramientas = normalizar(preguntaLimpia);
+      const solicitaConteoHerramientas = /\b(?:cuant\w*|cantidad|numero|total)\b/.test(preguntaHerramientas);
+      const consultaConteoHerramientas = /\bherramientas?\b/.test(preguntaHerramientas)
+        && solicitaConteoHerramientas;
+      if (consultaConteoHerramientas) {
+        const kitsSolicitados = [...preguntaHerramientas.matchAll(/\bkits?\s*0*(\d+)\b|\by\s*0*(\d+)\b/g)]
+          .map((match) => String(Number(match[1] || match[2])))
+          .filter((kit, indice, kits) => kits.indexOf(kit) === indice);
+        const registrosHerramientas = await inventorySync.buscarHerramientas(kitsSolicitados);
+        const conteosPorKit = kitsSolicitados.map((kit) => {
+          const codigoKit = kit.padStart(2, '0');
+          const cantidad = registrosHerramientas.filter((registro) => (
+            new RegExp(`^kit\\s*0*${kit}$`, 'i').test(registro.metadata_original?.ubicacion || '')
+          )).length;
+          return { codigoKit, cantidad };
+        });
+        const detalleKits = conteosPorKit
+          .map(({ codigoKit, cantidad }) => `Kit ${codigoKit}: ${cantidad} herramientas`)
+          .join('; ');
+        const totalKitSolicitados = conteosPorKit.reduce((total, kit) => total + kit.cantidad, 0);
+        const textoRespuesta = kitsSolicitados.length
+          ? `${detalleKits}.${kitsSolicitados.length > 1 ? ` En conjunto, son ${totalKitSolicitados} herramientas.` : ''}`
+          : `Hay ${registrosHerramientas.length} herramientas registradas en total en el inventario MWD.`;
+        enviarEvento({ tipo: 'texto', texto: textoRespuesta });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: registrosHerramientas.map((registro) => ({
+            documento: 'Inventario MWD',
+            seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Conteo de herramientas: ${kitsSolicitados.length ? detalleKits : registrosHerramientas.length}.`);
+        return res.end();
+      }
+
+      const preguntaInspeccionMotores = normalizar(preguntaLimpia);
+      const solicitaInspeccionMotores = /\binspeccion\b/.test(preguntaInspeccionMotores)
+        && /\b(?:motor|motores|inventario|equipo|equipos)\b/.test(preguntaInspeccionMotores);
+      const solicitaUltimaInspeccionMotor = solicitaInspeccionMotores
+        && /\b(?:fecha|cuando|dia)\b/.test(preguntaInspeccionMotores)
+        && /\b(?:ultim\w*|mas reciente|reciente|latest)\b/.test(preguntaInspeccionMotores);
+      if (solicitaUltimaInspeccionMotor) {
+        const ultimasInspecciones = await inventorySync.buscarUltimaInspeccionMotores();
+        const detallesUltimaInspeccion = ultimasInspecciones.map(({ documento, fechaTexto }) => {
+            const metadata = documento.metadata_original || {};
+            const nombre = metadata.descripcion || metadata.nombre || 'Equipo';
+            const detalles = [
+              metadata.serial_number ? `serie ${metadata.serial_number}` : '',
+              metadata.ubicacion ? `ubicación ${metadata.ubicacion}` : '',
+              metadata.estado ? `estado ${metadata.estado}` : '',
+              metadata.pin_box_cnx ? `conexión ${metadata.pin_box_cnx}` : '',
+            ].filter(Boolean);
+            return `${nombre}${detalles.length ? ` (${detalles.join('; ')})` : ''}, inspección ${fechaTexto}`;
+          });
+        const textoUltimaInspeccion = detallesUltimaInspeccion.length
+          ? `La inspección más reciente registrada fue el ${ultimasInspecciones[0].fechaTexto}. ${detallesUltimaInspeccion.length > 1 ? `La comparten ${detallesUltimaInspeccion.length} equipos: ` : ''}${detallesUltimaInspeccion.join('; ')}.${ultimasInspecciones.some(({ documento }) => !documento.metadata_original?.serial_number) ? ' La serie no está disponible en los datos sincronizados.' : ''}`
+          : 'No hay una fecha exacta de inspección registrada en las observaciones del inventario de Motores.';
+        enviarEvento({ tipo: 'texto', texto: textoUltimaInspeccion });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: ultimasInspecciones.map(({ documento }) => ({
+            documento: 'Inventario de Motores',
+            seccion: [
+              documento.metadata_original?.descripcion || documento.metadata_original?.nombre,
+              documento.metadata_original?.serial_number,
+            ].filter(Boolean).join(' — ') || 'Registro de inspección',
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Última fecha de inspección registrada: ${ultimasInspecciones[0]?.fechaTexto || 'sin fecha disponible'}.`);
+        return res.end();
+      }
+
+      if (solicitaInspeccionMotores) {
+        const estadoInspeccion = /\bsin\s+inspeccion\b/.test(preguntaInspeccionMotores)
+          ? 'sin'
+          : /\bcon\s+inspeccion\b/.test(preguntaInspeccionMotores)
+            ? 'con'
+            : null;
+        const registrosInspeccion = await inventorySync.buscarMotoresPorInspeccion(estadoInspeccion);
+        const pideConteoInspeccion = /\b(?:cuant\w*|cantidad|numero|total)\b/.test(preguntaInspeccionMotores);
+        const detallesInspeccion = registrosInspeccion.map((registro) => {
+          const metadata = registro.metadata_original || {};
+          const codigo = metadata.codigo_visible || registro.codigo;
+          const descripcion = [metadata.nombre, metadata.descripcion]
+            .filter(Boolean)
+            .join(' — ');
+          const inspeccion = metadata.inspeccion || metadata.observaciones || '';
+          return `- ${codigo}${descripcion ? `: ${descripcion}` : ''} (${inspeccion})`;
+        });
+        const textoInspeccion = registrosInspeccion.length
+          ? pideConteoInspeccion
+            ? `Hay ${registrosInspeccion.length} equipos con datos de inspección${estadoInspeccion ? ` (${estadoInspeccion} inspección)` : ''} en el inventario de Motores.`
+            : `Equipos con datos de inspección${estadoInspeccion ? ` (${estadoInspeccion} inspección)` : ''}:\n${detallesInspeccion.join('\n')}`
+          : 'No hay equipos que coincidan con ese estado de inspección en el inventario de Motores.';
+        enviarEvento({ tipo: 'texto', texto: textoInspeccion });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: registrosInspeccion.map((registro) => ({
+            documento: 'Inventario de Motores',
+            seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Consulta de inspección de Motores: ${registrosInspeccion.length} registros.`);
+        return res.end();
+      }
+
+      const solicitaFechaRegistroMotor = /\bfecha\b/.test(preguntaInspeccionMotores)
+        && /\b(?:motor|motores|equipo|equipos|serie|serial|registro|registrado|registrada)\b/.test(preguntaInspeccionMotores);
+      if (solicitaFechaRegistroMotor) {
+        const registrosFecha = await inventorySync.buscarMotoresPorFechaRegistro(preguntaLimpia);
+        let textoFecha;
+        if (registrosFecha === null) {
+          textoFecha = 'Indícame el número de serie, código o descripción del motor para buscar su fecha de registro.';
+        } else if (registrosFecha.length) {
+          textoFecha = registrosFecha.map((registro) => {
+            const metadata = registro.metadata_original || {};
+            const codigo = metadata.codigo_visible || registro.codigo;
+            const identificador = metadata.serial_number ? `, serie ${metadata.serial_number}` : '';
+            const descripcion = metadata.descripcion ? ` — ${metadata.descripcion}` : '';
+            return `${codigo}${identificador}${descripcion}: fecha de registro ${metadata.fecha_registro}.`;
+          }).join('\n');
+        } else {
+          textoFecha = 'No encontré un motor coincidente con ese identificador que tenga una fecha de registro disponible.';
+        }
+        enviarEvento({ tipo: 'texto', texto: textoFecha });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: (registrosFecha || []).map((registro) => ({
+            documento: 'Inventario de Motores',
+            seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Consulta de fecha de registro de Motores: ${registrosFecha?.length ?? 0} coincidencias.`);
+        return res.end();
+      }
+
+      const clasificacionInventario = await inventorySync.clasificarConsultaEquipoMWD(
+        preguntaLimpia,
+        contextoUsuario
+      );
+      const clasificacionesMultiples = await inventorySync.clasificarConsultasEquipoMWD(preguntaLimpia);
+      const solicitaConsultaExactaMultiple = /\b(?:cuant\w*|cantidad|numero|total|cuales|lista\w*|enumer\w*|nombra\w*|how\s+many|list|name)\b/.test(preguntaLimpia.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase());
+      if (clasificacionesMultiples.length > 1 && solicitaConsultaExactaMultiple) {
+        const resultadosPorEquipo = await Promise.all(clasificacionesMultiples.map(async (clasificacion) => ({
+          clasificacion,
+          registros: await inventorySync.buscarInventario(preguntaLimpia, clasificacion),
+        })));
+        const solicitaConteoMultiple = /\b(?:cuant\w*|cantidad|numero|total|how\s+many)\b/.test(preguntaLimpia.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase());
+        const lineaPorEquipo = resultadosPorEquipo.map(({ clasificacion, registros }) => {
+          const nombreEquipo = clasificacion.equipo.nombre;
+          const nombreNormalizado = nombreEquipo.toLowerCase();
+          const etiqueta = /\bbattery\b/.test(nombreNormalizado)
+            ? 'baterías'
+            : /\blaptop\b/.test(nombreNormalizado)
+              ? 'laptops'
+              : /\btransmiter\b/.test(nombreNormalizado)
+                ? 'transmisores'
+                : /\bpulser\b/.test(nombreNormalizado)
+                  ? `equipos ${nombreEquipo}`
+                  : nombreEquipo;
+          if (solicitaConteoMultiple) return `${etiqueta}: ${registros.length}`;
+          const identificadores = registros.map((registro) => {
+            const metadata = registro.metadata_original || {};
+            const codigo = metadata.tool_id || metadata.codigo_visible || registro.codigo;
+            const ubicacion = metadata.ubicacion || metadata.location;
+            return `  - ${codigo}${ubicacion ? ` (${ubicacion})` : ''}`;
+          });
+          return `${etiqueta} (${registros.length}):${identificadores.length ? `\n${identificadores.join('\n')}` : '\n  - No hay registros.'}`;
+        });
+        const respuestaMultiple = solicitaConteoMultiple
+          ? `Cantidades exactas por tipo de equipo:\n${lineaPorEquipo.map((linea) => `- ${linea}`).join('\n')}`
+          : `Registros encontrados por tipo de equipo:\n${lineaPorEquipo.join('\n')}`;
+        const registrosMultiples = resultadosPorEquipo.flatMap(({ registros }) => registros);
+        enviarEvento({ tipo: 'texto', texto: respuestaMultiple });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: registrosMultiples.map((registro) => ({
+            documento: 'Inventario MWD',
+            seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Consulta exacta de múltiples tipos MWD resuelta: ${resultadosPorEquipo.map(({ clasificacion, registros }) => `${clasificacion.equipo.nombre}=${registros.length}`).join(', ')}.`);
+        return res.end();
+      }
+      if (clasificacionInventario?.solicitaListado
+        || clasificacionInventario?.solicitaDescripcion
+        || clasificacionInventario?.solicitaNotas
+        || clasificacionInventario?.solicitaEstadoOperativo
+        || clasificacionInventario?.solicitaUbicacion) {
+        const registros = await inventorySync.buscarInventario(preguntaLimpia, clasificacionInventario);
+        const codigoKit = clasificacionInventario.kit?.padStart(2, '0');
+        if (clasificacionInventario.solicitaUbicacion) {
+          const ubicaciones = new Map();
+          for (const registro of registros) {
+            const metadata = registro.metadata_original || {};
+            const ubicacion = metadata.ubicacion || metadata.location || 'Sin ubicación registrada';
+            ubicaciones.set(ubicacion, (ubicaciones.get(ubicacion) || 0) + 1);
+          }
+          const detalleUbicaciones = [...ubicaciones.entries()]
+            .sort(([ubicacionA], [ubicacionB]) => ubicacionA.localeCompare(ubicacionB, undefined, { numeric: true }))
+            .map(([ubicacion, cantidad]) => `- ${ubicacion}: ${cantidad}`)
+            .join('\n');
+          const nombreEquipo = clasificacionInventario.equipo.nombre.toLowerCase();
+          const nombrePlural = /\bbattery\b/.test(nombreEquipo)
+            ? 'baterías'
+            : /\blaptop\b/.test(nombreEquipo)
+              ? 'laptops'
+              : /\belectronic\b/.test(nombreEquipo)
+                ? 'equipos electrónicos'
+                : `equipos ${clasificacionInventario.equipo.nombre}`;
+          const textoUbicaciones = registros.length
+            ? `Hay ${registros.length} ${nombrePlural} en total. Su ubicación en el inventario es:\n${detalleUbicaciones}`
+            : `No encontré registros de ${nombrePlural} con ubicación en el inventario.`;
+          enviarEvento({ tipo: 'texto', texto: textoUbicaciones });
+          enviarEvento({
+            tipo: 'fuentes',
+            fuentes: registros.map((registro) => ({
+              documento: 'Inventario MWD',
+              seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+              relevancia: 1,
+              descargas: [],
+            })),
+          });
+          enviarEvento({ tipo: 'fin' });
+          console.log(`[CHAT] Consulta de ubicaciones MWD (${clasificacionInventario.equipo.nombre}): ${registros.length} registros.`);
+          return res.end();
+        }
+        if (clasificacionInventario.solicitaDescripcion || clasificacionInventario.solicitaNotas) {
+          const lineasDescripciones = registros.map((registro, indice) => {
+            const metadata = registro.metadata_original || {};
+            const codigo = metadata.codigo_visible || registro.codigo;
+            const descripcion = clasificacionInventario.solicitaNotas
+              ? String(metadata.observaciones || '').trim()
+              : String(metadata.observaciones || '').trim()
+                || String(metadata.descripcion || '')
+                .replace(/(?:^|;\s*)identificador externo\s+[^;]*/gi, '')
+                .replace(/;\s*horas de operaci[oó]n\s+[^;]*/gi, '')
+                .replace(/;\s*horas circuladas\s+[^;]*/gi, '')
+                .replace(/;\s*requiere mantenimiento\s+[^;]*/gi, '')
+                .replace(/^;\s*|\s*;\s*$/g, '')
+                .trim();
+            const etiquetaCampo = clasificacionInventario.solicitaNotas ? 'nota' : 'descripción';
+            const detalleDescripcion = descripcion || `Sin ${etiquetaCampo} adicional registrada en el inventario.`;
+            const ubicacion = metadata.ubicacion ? ` — ${metadata.ubicacion}` : '';
+            return `${indice + 1}. ${codigo}${ubicacion}: ${detalleDescripcion}`;
+          });
+          const textoRespuesta = registros.length
+            ? `Datos registrados para ${registros.length} equipos ${clasificacionInventario.equipo.etiqueta} en el inventario:\n${lineasDescripciones.join('\n')}`
+            : `No se encontraron registros de ${clasificacionInventario.equipo.etiqueta} en el inventario.`;
+
+          enviarEvento({ tipo: 'texto', texto: textoRespuesta });
+          enviarEvento({
+            tipo: 'fuentes',
+            fuentes: registros.map((registro) => ({
+              documento: 'Inventario MWD',
+              seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+              relevancia: 1,
+              descargas: [],
+            })),
+          });
+          enviarEvento({ tipo: 'fin' });
+          console.log(`[CHAT] Consulta exacta MWD resuelta con ${registros.length} registros.`);
+          return res.end();
+        }
+
+        if (clasificacionInventario.solicitaEstadoOperativo) {
+          const nombreEquipo = clasificacionInventario.equipo.nombre;
+          const tipoNormalizado = nombreEquipo.toLowerCase();
+          const nombrePlural = /\bbattery\b/.test(tipoNormalizado)
+            ? 'baterías'
+            : /\belectronic\b/.test(tipoNormalizado)
+              ? 'equipos electrónicos'
+              : `equipos ${nombreEquipo}`;
+          const adjetivoOperativo = /\bbattery\b/.test(tipoNormalizado) ? 'operativas' : 'operativos';
+          const participioRegistrado = /\bbattery\b/.test(tipoNormalizado) ? 'registradas' : 'registrados';
+          const nombreSingular = /\bbattery\b/.test(tipoNormalizado)
+            ? 'Batería'
+            : /\belectronic\b/.test(tipoNormalizado)
+              ? 'Equipo electrónico'
+              : nombreEquipo;
+          const alcance = codigoKit ? ` en el Kit ${codigoKit}` : '';
+          const pideSoloConteo = clasificacionInventario.solicitaListado
+            && !clasificacionInventario.solicitaDetalleOperativos;
+          if (pideSoloConteo) {
+            const textoRespuesta = registros.length
+              ? `Hay ${registros.length} ${nombrePlural} ${adjetivoOperativo}${alcance}.`
+              : `No hay ${nombrePlural} ${adjetivoOperativo}${alcance} ${participioRegistrado} en el inventario.`;
+            enviarEvento({ tipo: 'texto', texto: textoRespuesta });
+            enviarEvento({
+              tipo: 'fuentes',
+              fuentes: registros.map((registro) => ({
+                documento: 'Inventario MWD',
+                seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+                relevancia: 1,
+                descargas: [],
+              })),
+            });
+            enviarEvento({ tipo: 'fin' });
+            console.log(`[CHAT] Conteo de equipos operativos (${nombreEquipo}): ${registros.length} registros.`);
+            return res.end();
+          }
+
+          const detalleOperativos = registros.map((registro) => {
+            const metadata = registro.metadata_original || {};
+            const identificador = metadata.tool_id || metadata.codigo_visible || registro.codigo;
+            const ubicacion = metadata.ubicacion || metadata.location;
+            const horas = metadata.run_hours;
+            const horasCirculadas = metadata.circulated_hours;
+            const detalles = [
+              ubicacion ? `ubicación ${ubicacion}` : '',
+              horas !== undefined ? `${horas} horas de operación` : '',
+              horasCirculadas !== undefined ? `${horasCirculadas} horas circuladas` : '',
+            ].filter(Boolean);
+            return `- ${nombreSingular} ${identificador}${detalles.length ? ` (${detalles.join('; ')})` : ''}`;
+          });
+          const textoRespuesta = registros.length
+            ? `Hay ${registros.length} ${nombrePlural} ${adjetivoOperativo}${alcance}:\n${detalleOperativos.join('\n')}`
+            : `No hay ${nombrePlural} ${adjetivoOperativo}${alcance} ${participioRegistrado} en el inventario.`;
+          enviarEvento({ tipo: 'texto', texto: textoRespuesta });
+          enviarEvento({
+            tipo: 'fuentes',
+            fuentes: registros.map((registro) => ({
+              documento: 'Inventario MWD',
+              seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+              relevancia: 1,
+              descargas: [],
+            })),
+          });
+          enviarEvento({ tipo: 'fin' });
+          console.log(`[CHAT] Consulta de equipos operativos (${nombreEquipo}) resuelta con ${registros.length} registros.`);
+          return res.end();
+        }
+
+        const codigos = registros.map((registro) => (
+          registro.metadata_original?.codigo_visible || registro.codigo
+        ));
+        const alcance = codigoKit ? `en el Kit ${codigoKit}` : 'en el inventario MWD completo';
+        const textoRespuesta = registros.length
+          ? `Hay ${registros.length} registros de ${clasificacionInventario.equipo.etiqueta} ${alcance}. Sus códigos visibles son ${codigos.join(', ')}.`
+          : `No hay registros de ${clasificacionInventario.equipo.etiqueta} ${alcance}.`;
+
+        enviarEvento({ tipo: 'texto', texto: textoRespuesta });
+        enviarEvento({
+          tipo: 'fuentes',
+          fuentes: registros.map((registro) => ({
+            documento: 'Inventario MWD',
+            seccion: registro.metadata_original?.codigo_visible || registro.codigo,
+            relevancia: 1,
+            descargas: [],
+          })),
+        });
+        enviarEvento({ tipo: 'fin' });
+        console.log(`[CHAT] Consulta exacta de inventario MWD resuelta con ${registros.length} registros.`);
+        return res.end();
+      }
+
       // ========================================================
       // 1. EMBEDDING
       // ========================================================
@@ -3538,10 +4022,18 @@ app.post(
       const inicioEmbedding =
         Date.now();
 
-      const vectorConsulta =
-        await generarEmbedding(
-          preguntaLimpia
-        );
+      let vectorConsulta = null;
+      let errorEmbedding = null;
+      try {
+        vectorConsulta = await generarEmbedding(preguntaLimpia);
+      } catch (error) {
+        errorEmbedding = error;
+        console.warn(`[CHAT] Gemini no pudo generar el embedding; se usará búsqueda textual y Ollama: ${error.message}`);
+        enviarEvento({
+          tipo: 'estado',
+          mensaje: 'Gemini no está disponible; buscando coincidencias textuales y preparando respuesta local...',
+        });
+      }
 
       const tiempoEmbedding =
         Date.now() -
@@ -3608,6 +4100,17 @@ app.post(
       const buscarEnFuente = async (fuente) => {
         // Las colecciones de papelera nunca participan en la búsqueda.
         if (ragCategorias.esColeccionPapelera(fuente.coleccion)) return [];
+
+        if (!vectorConsulta) {
+          const porTexto = await buscarPorTextoEnMemoria(
+            mongoDb.collection(fuente.coleccion),
+            preguntaLimpia,
+            fuente,
+            RAG_LIMIT
+          );
+          console.log(`[CHAT] "${fuente.coleccion}": ${porTexto.length} coincidencias por texto (respaldo sin embedding)`);
+          return porTexto;
+        }
 
         // Una categoría recién creada todavía no tiene índice vectorial, y
         // Atlas NO avisa cuando se consulta un índice inexistente: devuelve
@@ -3711,7 +4214,9 @@ const resultadosPorFuente = esPreguntaDeReportes
 
 const resultadosInventario = esPreguntaDeReportes
   ? []
-  : await inventorySync.buscarInventario(preguntaLimpia)
+  : await (vectorConsulta
+    ? inventorySync.buscarInventario(preguntaLimpia)
+    : inventorySync.buscarInventarioPorTexto(preguntaLimpia))
     .catch((error) => {
       console.error(`[CHAT] No se pudo consultar el inventario RAG: ${error.message}`);
       return [];
@@ -3737,9 +4242,15 @@ const filasInventario = resultadosInventario.map((fila) => ({
       // solo desviaría la respuesta hacia el catálogo de productos.
       const resultadosWeb = esPreguntaDeReportes
         ? []
-        : await webEmpresa.buscarEnWebEmpresa(
+        : vectorConsulta
+          ? await webEmpresa.buscarEnWebEmpresa(
           vectorConsulta
-        );
+          )
+          : [];
+
+      if (!vectorConsulta) {
+        console.warn('[CHAT] Se omite la búsqueda semántica en la web porque no hay embedding de consulta.');
+      }
 
       console.log(
         `[WEB] Fragmentos de la web de la empresa recuperados: ${resultadosWeb.length}`
@@ -3981,8 +4492,10 @@ const filasInventario = resultadosInventario.map((fila) => ({
         'ubicacion', 'ubicación', 'oficinas', 'lote', 'campo', 'yacimiento',
         'fecha ultimo pago', 'fecha último pago', 'inicio periodo',
       ];
-      const preguntaMinuscula = preguntaLimpia.toLowerCase();
-      const esPreguntaStarlink = palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
+      const consultaConContexto = [...contextoUsuario.slice(-2), preguntaLimpia].join(' ');
+      const preguntaMinuscula = consultaConContexto.toLowerCase();
+      const esPreguntaStarlink = !clasificacionInventario
+        && palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
 
       console.log(`[CHAT] Pregunta: "${preguntaLimpia}"`);
       console.log(`[CHAT] ¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
@@ -4007,6 +4520,39 @@ const filasInventario = resultadosInventario.map((fila) => ({
           const mongoDb = getDB();
           const datosStarlink = await mongoDb.collection('starlink_bot').find({}).toArray();
           console.log(`[CHAT] Se encontraron ${datosStarlink.length} registros de Starlink`);
+
+          const normalizarConsultaStarlink = (texto) => texto
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase();
+          const consultaStarlink = normalizarConsultaStarlink(consultaConContexto);
+          const preguntaStarlinkActual = normalizarConsultaStarlink(preguntaLimpia);
+          const consultaPideConteoStarlink = /\b(?:cuant\w*|cantidad|numero|total|how\s+many)\b/.test(preguntaStarlinkActual);
+          const consultaPideListadoStarlink = /\b(?:kit|kits|starlink)\b/.test(consultaStarlink);
+          const preguntaListaStarlink = /\b(?:lista|listar|nombra|detalla|cuales)\b/.test(consultaStarlink)
+            || /\bkits?\s+starlink\b/.test(preguntaStarlinkActual);
+          if (consultaPideListadoStarlink && (consultaPideConteoStarlink || preguntaListaStarlink)) {
+            const textoStarlink = consultaPideConteoStarlink
+              ? `Hay ${datosStarlink.length} equipos Starlink registrados.`
+              : datosStarlink.length
+                ? `Hay ${datosStarlink.length} equipos Starlink registrados:\n${datosStarlink.map((equipo, indice) => (
+                  `${indice + 1}. ${equipo.ubicacion || 'Ubicación no registrada'}${equipo.codigoKit ? ` — ${equipo.codigoKit}` : ''}`
+                )).join('\n')}`
+                : 'No hay equipos Starlink registrados.';
+            enviarEvento({ tipo: 'texto', texto: textoStarlink });
+            enviarEvento({
+              tipo: 'fuentes',
+              fuentes: [{
+                documento: 'Registro de equipos Starlink',
+                seccion: `${datosStarlink.length} registros`,
+                relevancia: 1,
+                descargas: [],
+              }],
+            });
+            enviarEvento({ tipo: 'fin' });
+            console.log(`[CHAT] Consulta exacta de Starlink resuelta con ${datosStarlink.length} registros de MongoDB.`);
+            return res.end();
+          }
           
           if (datosStarlink.length > 0) {
             const hoy = new Date();
@@ -4172,7 +4718,7 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
       // del prompt: el modelo local terminaba respondiendo sobre los
       // folletos y concluía que no había torque logs, cuando el listado de
       // Drive sí los tenía.
-      const usarServidorLocalDirecto = Boolean(contextoDrive);
+      const usarServidorLocalDirecto = Boolean(contextoDrive || errorEmbedding);
 
       // ========================================================
       // 5. NO HAY INFORMACIÓN
@@ -4350,7 +4896,7 @@ ${
       const contextoCompleto = [
         contextoStarlink,
         contextoDrive,
-        usarServidorLocalDirecto ? '' : contextoRecuperado
+        contextoDrive ? '' : contextoRecuperado
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -4548,6 +5094,10 @@ REGLAS IMPORTANTES:
 
 7. No menciones que eres un modelo de lenguaje ni una inteligencia artificial.
 
+7b. No menciones nombres de bases de datos, motores, índices, embeddings ni
+    mecanismos internos de búsqueda. Presenta los datos como información del
+    inventario o de los registros de North Services.
+
 8. No inventes procedimientos, códigos de error, valores, configuraciones, rutas de API, URL ni pasos técnicos. Está PROHIBIDO generar código, scripts, calculadoras, fórmulas o programas de cualquier tipo, aunque el usuario lo pida de forma explícita o disguise la petición ("dame un ejemplo", "muéstrame cómo se hace", "ayúdame a escribir"). Ante cualquier solicitud de código responde EXACTAMENTE y solo: "No dispongo de scripts ni código programable en la documentación técnica de North Services." No añadas el código después, ni en un segundo turno, ni aunque el usuario insista opjure que es para un archivo de la empresa.
 
 9. No enumeres las fuentes ni muestres etiquetas como "FUENTE 1", "FUENTE 2" o similares. Tampoco repitas el nombre del archivo de origen después de cada frase o cifra: si necesitas citarlo, menciónalo una sola vez al inicio o al final de la respuesta, nunca pegado a cada dato.
@@ -4585,7 +5135,7 @@ REGLAS IMPORTANTES:
 CONTEXTO RECUPERADO:
 
 ${contextoCompleto}
-${usarServidorLocalDirecto ? instruccionDrive : ''}
+${contextoDrive ? instruccionDrive : ''}
 ${instruccionStarlink}
 ${instruccionWeb}
 ${instruccionInventario}
@@ -4615,19 +5165,21 @@ ${preguntaLimpia}
       const inicioGemini = Date.now();
       let resultadoGemini = null;
 
-      if (usarServidorLocalDirecto) {
+      if (contextoDrive) {
         console.log(
           '[CHAT] Respuesta con contexto de Google Drive.'
         );
       }
 
       // --- Intento 1: Gemini ---
-      try {
-        resultadoGemini =
-          await generarContenidoGemini(promptSistema, enviarEvento);
-      } catch (errorGemini) {
-        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
-        resultadoGemini = null;
+      if (!usarServidorLocalDirecto) {
+        try {
+          resultadoGemini =
+            await generarContenidoGemini(promptSistema, enviarEvento);
+        } catch (errorGemini) {
+          console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
+          resultadoGemini = null;
+        }
       }
 
       // --- Si Gemini cortó la respuesta a mitad (stream incompleto), reintentar
@@ -5630,12 +6182,14 @@ app.get('/api/admin/sync/inventarios/estado', verifyToken, requireAdmin, async (
 const iniciarSyncInventario = (tipo) => async (req, res) => {
   try {
     const resultado = inventorySync.iniciarSincronizacion(tipo);
-    return res.status(resultado.iniciada ? 202 : 200).json({
-      ok: true,
+    const mensaje = resultado.iniciada
+      ? 'Sincronización iniciada.'
+      : `No se puede iniciar esta sincronización mientras ${resultado.tipoActivo === 'mwd' ? 'el inventario MWD' : 'el inventario de Motores'} esté en curso.`;
+    return res.status(resultado.iniciada ? 202 : 409).json({
+      ok: resultado.iniciada,
       ...resultado,
-      mensaje: resultado.iniciada
-        ? 'Sincronización iniciada.'
-        : 'Ya hay una sincronización de este inventario en curso.',
+      mensaje,
+      ...(resultado.iniciada ? {} : { error: mensaje }),
     });
   } catch (error) {
     return res.status(400).json({ ok: false, error: error.message });

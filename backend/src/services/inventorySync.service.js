@@ -16,21 +16,61 @@ const EMBEDDING_MIN_INTERVAL_MS = Number(process.env.INVENTARIO_EMBEDDING_MIN_IN
 const EMBEDDING_MAX_RETRIES = Number(process.env.INVENTARIO_EMBEDDING_MAX_RETRIES || 3);
 const MAX_AUTOMATIC_RETRY_WAIT_MS = 2 * 60 * 1000;
 const SYNC_STALE_AFTER_MS = 2 * 60 * 1000;
-const FIELDS = [
-  'codigo',
-  'nombre',
-  'descripcion',
-  'estado',
-  'ubicacion',
-  'lote',
-  'ultimo_mantenimiento',
-  'responsable',
-  'observaciones',
-];
-
 const INVENTORIES = {
-  mwd: { tipo: 'mwd', label: 'Inventario MWD', database: 'mwd', collection: 'inventario_mwd' },
-  motores: { tipo: 'motor', label: 'Inventario Motores', database: 'motores', collection: 'inventario_motores' },
+  mwd: {
+    tipo: 'mwd',
+    label: 'Inventario MWD',
+    database: 'mwd',
+    collection: 'inventario_mwd',
+    fields: [
+      'codigo',
+      'id',
+      'tool_type',
+      'tool_id',
+      'location',
+      'requires_maintenance',
+      'run_hours',
+      'circulated_hours',
+      'percentage',
+      'last_maintenance_date',
+      'status',
+      'notes',
+      'created_at',
+      'updated_at',
+      'nombre',
+      'descripcion',
+      'estado',
+      'ubicacion',
+      'ultimo_mantenimiento',
+      'observaciones',
+    ],
+    textFields: ['codigo', 'nombre', 'descripcion', 'estado', 'ubicacion', 'ultimo_mantenimiento', 'observaciones'],
+  },
+  motores: {
+    tipo: 'motor',
+    label: 'Inventario Motores',
+    database: 'motores',
+    collection: 'inventario_motores',
+    fields: [
+      'codigo',
+      'seccion_id',
+      'tipo_equipo_id',
+      'seccion',
+      'nombre',
+      'descripcion',
+      'serial_number',
+      'pin_box_cnx',
+      'und',
+      'ubicacion_id',
+      'estado',
+      'estado_id',
+      'ubicacion',
+      'inspeccion',
+      'inspeccion_id',
+      'observaciones',
+      'fecha_registro',
+    ],
+  },
 };
 
 const running = new Map();
@@ -225,18 +265,27 @@ function obtenerCodigoVisible(tipo, row, codigoInterno) {
     : identificadorExterno;
 }
 
-function construirTextoPlano(tipo, metadata) {
+function construirTextoPlano(tipo, metadata, fields) {
   const etiquetas = {
     nombre: 'nombre',
     descripcion: 'descripción',
+    seccion: 'sección',
+    seccion_id: 'identificador de sección',
+    tipo_equipo_id: 'identificador de tipo de equipo',
+    serial_number: 'número de serie',
+    pin_box_cnx: 'conexión',
+    und: 'unidades',
+    ubicacion_id: 'identificador de ubicación',
     estado: 'estado',
+    estado_id: 'identificador de estado',
     ubicacion: 'ubicación',
-    lote: 'lote',
+    inspeccion: 'inspección',
+    inspeccion_id: 'identificador de inspección',
     ultimo_mantenimiento: 'último mantenimiento',
-    responsable: 'responsable',
     observaciones: 'observaciones',
+    fecha_registro: 'fecha de registro',
   };
-  const detalles = FIELDS
+  const detalles = fields
     .filter((field) => field !== 'codigo' && metadata[field])
     .map((field) => `${etiquetas[field]} ${metadata[field]}`);
   const nombre = tipo === 'mwd' ? 'Inventario MWD' : 'Inventario de motores';
@@ -367,6 +416,7 @@ async function ejecutarSincronizacion(tipo, config, job) {
     });
 
     const collection = obtenerColeccionVectores(tipo);
+    const { fields, textFields = fields } = INVENTORIES[tipo];
     const existentes = await collection.find(
       { tipo: tipoDocumento },
       { projection: { codigo: 1, contenido_hash: 1, embedding_modelo: 1, embedding: 1 } }
@@ -377,9 +427,11 @@ async function ejecutarSincronizacion(tipo, config, job) {
       const lote = rows.slice(offset, offset + BATCH_SIZE);
       const operaciones = [];
       for (const row of lote) {
-        const metadata = Object.fromEntries(FIELDS.map((field) => [field, normalizarValor(row[field])]));
+        const metadata = Object.fromEntries(fields
+          .map((field) => [field, normalizarValor(row[field])])
+          .filter(([, value]) => value !== ''));
         metadata.codigo_visible = obtenerCodigoVisible(tipo, row, metadata.codigo);
-        const textoPlano = construirTextoPlano(tipo, metadata);
+        const textoPlano = construirTextoPlano(tipo, metadata, textFields);
         const contenidoHash = hashContenido(textoPlano);
         const existente = existentesPorCodigo.get(metadata.codigo);
         const embeddingValido = Array.isArray(existente?.embedding) && existente.embedding.length === 768;
@@ -462,7 +514,10 @@ async function ejecutarSincronizacion(tipo, config, job) {
 
 function iniciarSincronizacion(tipo) {
   if (!INVENTORIES[tipo]) throw new Error('Tipo de inventario no válido.');
-  if (running.has(tipo)) return { iniciada: false, estado: running.get(tipo) };
+  if (running.size > 0) {
+    const [tipoActivo, estado] = running.entries().next().value;
+    return { iniciada: false, tipoActivo, estado };
+  }
 
   const config = obtenerConfiguracionPuente(tipo);
   const job = {
@@ -531,9 +586,272 @@ function similitudCoseno(a, b) {
   return producto / (Math.sqrt(normaA) * Math.sqrt(normaB));
 }
 
-async function buscarInventario(pregunta) {
+function normalizarConsultaInventario(pregunta) {
+  return String(pregunta || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\bbaterias?\b/g, 'battery')
+    .replace(/\bpulsars?\b/g, 'pulser')
+    .replace(/\btransmisores?\b/g, 'transmiter')
+    .replace(/\btransmitters?\b/g, 'transmiter');
+}
+
+function normalizarTerminosEquipo(texto) {
+  return normalizarConsultaInventario(texto)
+    .match(/[\p{L}\p{N}]+/gu)
+    ?.map((termino) => termino.length > 4 && termino.endsWith('s') ? termino.slice(0, -1) : termino)
+    || [];
+}
+
+let nombresEquipoMwdEnCache = [];
+let cacheNombresEquipoMwdExpira = 0;
+
+async function obtenerNombresEquipoMWD() {
+  if (cacheNombresEquipoMwdExpira > Date.now()) return nombresEquipoMwdEnCache;
+  await prepararColeccionesInventario();
+  const nombres = await obtenerColeccionVectores('mwd').distinct(
+    'metadata_original.nombre',
+    { tipo: INVENTORIES.mwd.tipo, 'metadata_original.nombre': { $type: 'string', $ne: '' } }
+  );
+  nombresEquipoMwdEnCache = nombres
+    .filter((nombre) => typeof nombre === 'string' && nombre.trim())
+    .map((nombre) => ({
+      nombre: nombre.trim(),
+      terminos: normalizarTerminosEquipo(nombre),
+      terminosAlternativos: normalizarTerminosEquipo(nombre).includes('electronic')
+        ? [['electronico']]
+        : [],
+    }))
+    .filter((equipo) => equipo.terminos.length)
+    .sort((a, b) => b.terminos.length - a.terminos.length);
+  cacheNombresEquipoMwdExpira = Date.now() + 60 * 1000;
+  return nombresEquipoMwdEnCache;
+}
+
+function buscarEquipoEnPregunta(pregunta, nombresEquipo) {
+  const terminosConsulta = normalizarTerminosEquipo(pregunta);
+  return nombresEquipo.filter((equipo) => {
+    const variantes = [equipo.terminos, ...equipo.terminosAlternativos];
+    return variantes.some((terminos) => (
+      terminos.length <= terminosConsulta.length
+      && terminosConsulta.some((_, inicio) => (
+        terminos.every((termino, indice) => terminosConsulta[inicio + indice] === termino)
+      ))
+    ));
+  });
+}
+
+const PALABRAS_VACIAS_INVENTARIO = new Set([
+  'a', 'al', 'algun', 'alguna', 'algunas', 'algunos', 'como', 'con', 'cual',
+  'cuales', 'cuando', 'cuanta', 'cuantas', 'cuanto', 'cuantos', 'de', 'del',
+  'dame', 'donde', 'el', 'ella', 'en', 'es', 'esta', 'este', 'hay', 'la',
+  'las', 'lo', 'los', 'mas', 'mi', 'para', 'por', 'que', 'se', 'sobre', 'su',
+  'sus', 'tenemos', 'tiene', 'tienen', 'un', 'una', 'uno', 'unos', 'unas',
+  'tenemo', 'y', 'informacion', 'inventario', 'segun', 'podrias', 'podria', 'darme',
+  'exacta', 'exacto', 'exactamente', 'tambien', 'como',
+  'operativa', 'operativo', 'activo', 'activa', 'funcionando',
+]);
+
+const PALABRAS_INTENCION_INVENTARIO = new Set([
+  ...PALABRAS_VACIAS_INVENTARIO,
+  'dame', 'descripciones', 'descripcion', 'nota', 'notas', 'observacion',
+  'observaciones', 'detalle', 'detalles', 'nombre', 'nombres', 'codigo',
+  'codigos', 'equipo', 'equipos', 'electronico', 'electronicos', 'kit',
+  'starlink', 'listado', 'listar', 'nombra', 'nombres', 'todas', 'todos',
+  'toda', 'todo', 'sus', 'su', 'cuantas', 'cuantos', 'cuanta', 'cuanto',
+  'operativa', 'operativo', 'activo', 'activa', 'funcionando',
+]);
+
+async function clasificarConsultaEquipoMWD(pregunta, contexto = []) {
+  const nombresEquipo = await obtenerNombresEquipoMWD();
+  let preguntaEquipo = pregunta;
+  let equipoEncontrado = buscarEquipoEnPregunta(pregunta, nombresEquipo)[0] || null;
+  const preguntaNormalizada = normalizarConsultaInventario(pregunta).trim();
+  const esSeguimientoDeEquipo = /^(?:y\s+)?(?:su|sus|ese|esa|esos|esas|ellos|ellas)\b/i.test(preguntaNormalizada)
+    || (/^(?:y\s+)?(?:en\s+que|donde|cuales|que)\b/.test(preguntaNormalizada)
+      && /\b(?:kit|ubicacion|lugar)\b/.test(preguntaNormalizada));
+  if (!equipoEncontrado && esSeguimientoDeEquipo && Array.isArray(contexto)) {
+    for (const mensaje of contexto.slice(-6).reverse()) {
+      const equipoContextual = buscarEquipoEnPregunta(mensaje, nombresEquipo)[0];
+      if (!equipoContextual) continue;
+      preguntaEquipo = `${mensaje} ${pregunta}`;
+      equipoEncontrado = equipoContextual;
+      break;
+    }
+  }
+  if (!equipoEncontrado) return null;
+
+  const textoIntencion = normalizarConsultaInventario(preguntaEquipo);
+  const solicitaDescripcion = /\bdescripci\w*\b/.test(textoIntencion);
+  const solicitaNotas = /\b(?:nota|notas|observaci\w*)\b/.test(textoIntencion);
+  const solicitaListado = /\b(?:cuant\w*|cantidad|numero|total|nombra\w*|lista\w*|enumer\w*|cuales|que\s+\w+|how\s+many|list|name)\b/.test(textoIntencion);
+  const solicitaEstadoOperativo = /\b(?:operativ\w*|activ\w*|funcionando)\b/.test(textoIntencion);
+  const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion);
+  const solicitaUbicacion = /\b(?:donde|ubicacion|ubicado|ubicada|kit|kits)\b/.test(textoIntencion)
+    && /\b(?:que|cual|cuales|donde|est[aá]n|estan|ubicad[oa]s?)\b/.test(textoIntencion);
+  const kit = textoIntencion.match(/\bkit\s*0*(\d+)\b/);
+  const terminosEquipo = new Set([
+    ...equipoEncontrado.terminos,
+    ...equipoEncontrado.terminosAlternativos.flat(),
+  ]);
+  const terminosRegistro = solicitaEstadoOperativo || solicitaListado
+    ? []
+    : normalizarTerminosEquipo(pregunta)
+      .filter((termino) => !PALABRAS_INTENCION_INVENTARIO.has(termino)
+        && !/^(?:descrip|observacion|nota|electronico)/.test(termino)
+        && !terminosEquipo.has(termino)
+        && !/^\d+$/.test(termino));
+  const filtro = {
+    tipo: INVENTORIES.mwd.tipo,
+    'metadata_original.nombre': equipoEncontrado.nombre,
+  };
+  if (kit) {
+    filtro['metadata_original.ubicacion'] = new RegExp(`^kit\\s*0*${kit[1]}$`, 'i');
+  }
+  if (solicitaEstadoOperativo) {
+    const estadoOperativo = /^(?:operative|operativ[oa]|active|activ[oa]|funcionando)$/i;
+    filtro.$or = [
+      { 'metadata_original.status': { $regex: estadoOperativo } },
+      { 'metadata_original.estado': { $regex: estadoOperativo } },
+    ];
+  }
+
+  return {
+    equipo: { nombre: equipoEncontrado.nombre, etiqueta: equipoEncontrado.nombre },
+    solicitaListado,
+    solicitaDescripcion,
+    solicitaNotas,
+    solicitaEstadoOperativo,
+    solicitaDetalleOperativos,
+    solicitaUbicacion,
+    terminosRegistro,
+    kit: kit?.[1] || null,
+    filtro,
+  };
+}
+
+async function clasificarConsultasEquipoMWD(pregunta) {
+  const nombresEquipo = await obtenerNombresEquipoMWD();
+  const equiposEncontrados = buscarEquipoEnPregunta(pregunta, nombresEquipo);
+  if (equiposEncontrados.length < 2) return [];
+
+  const textoIntencion = normalizarConsultaInventario(pregunta);
+  return equiposEncontrados.map((equipo) => {
+    const solicitaDescripcion = /\bdescripci\w*\b/.test(textoIntencion);
+    const solicitaNotas = /\b(?:nota|notas|observaci\w*)\b/.test(textoIntencion);
+    const solicitaListado = /\b(?:cuant\w*|cantidad|numero|total|nombra\w*|lista\w*|enumer\w*|cuales|que\s+\w+|how\s+many|list|name)\b/.test(textoIntencion);
+    const solicitaEstadoOperativo = /\b(?:operativ\w*|activ\w*|funcionando)\b/.test(textoIntencion);
+    const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion);
+    const solicitaUbicacion = /\b(?:donde|ubicacion|ubicado|ubicada|kit|kits)\b/.test(textoIntencion)
+      && /\b(?:que|cual|cuales|donde|est[aá]n|estan|ubicad[oa]s?)\b/.test(textoIntencion);
+    const kit = textoIntencion.match(/\bkit\s*0*(\d+)\b/);
+    const filtro = {
+      tipo: INVENTORIES.mwd.tipo,
+      'metadata_original.nombre': equipo.nombre,
+    };
+    if (kit) {
+      filtro['metadata_original.ubicacion'] = new RegExp(`^kit\\s*0*${kit[1]}$`, 'i');
+    }
+    if (solicitaEstadoOperativo) {
+      const estadoOperativo = /^(?:operative|operativ[oa]|active|activ[oa]|funcionando)$/i;
+      filtro.$or = [
+        { 'metadata_original.status': { $regex: estadoOperativo } },
+        { 'metadata_original.estado': { $regex: estadoOperativo } },
+      ];
+    }
+    return {
+      equipo: { nombre: equipo.nombre, etiqueta: equipo.nombre },
+      solicitaListado,
+      solicitaDescripcion,
+      solicitaNotas,
+      solicitaEstadoOperativo,
+      solicitaDetalleOperativos,
+      solicitaUbicacion,
+      terminosRegistro: [],
+      kit: kit?.[1] || null,
+      filtro,
+    };
+  });
+}
+
+function esConsultaAmbiguaConteoKits(pregunta, contexto = []) {
+  const preguntaNormalizada = normalizarConsultaInventario(pregunta);
+  const esSeguimiento = /^(?:y|tambien|ademas|en ese caso)\b/.test(preguntaNormalizada.trim());
+  const contextoRelevante = esSeguimiento && contexto.length
+    ? normalizarConsultaInventario(contexto[contexto.length - 1])
+    : '';
+  const consulta = `${preguntaNormalizada} ${contextoRelevante}`;
+  const pideConteo = /\b(?:cuant\w*|cantidad|numero|total|how\s+many)\b/.test(consulta);
+  const mencionaKits = /\bkits?\b(?!\s*\d)/.test(consulta);
+  const especificaCategoria = /\b(?:mwd|inventario|starlink)\b/.test(consulta);
+  const mencionaEquipo = /\b(?:battery|laptop|electronic|electronico|pulser|transmiter|ed[aá]q|gamma|xgamma|herramienta|herramientas)\b/.test(consulta);
+  return pideConteo && mencionaKits && !especificaCategoria && !mencionaEquipo;
+}
+
+function obtenerTerminosInventario(texto) {
+  return [...new Set(normalizarConsultaInventario(texto)
+    .replace(/baterias?/g, 'battery')
+    .match(/[\p{L}\p{N}]+/gu) || [])]
+    .filter((termino) => !PALABRAS_VACIAS_INVENTARIO.has(termino));
+}
+
+async function buscarInventarioPorTexto(pregunta) {
+  await prepararColeccionesInventario();
+  const terminos = obtenerTerminosInventario(pregunta);
+  if (!terminos.length) return [];
+
+  const resultados = [];
+  for (const [key, inventario] of Object.entries(INVENTORIES)) {
+    const documentos = await obtenerColeccionVectores(key)
+      .find({ tipo: inventario.tipo })
+      .toArray();
+    for (const documento of documentos) {
+      const texto = obtenerTerminosInventario([
+        documento.codigo,
+        documento.metadata_original?.codigo_visible,
+        documento.metadata_original?.nombre,
+        documento.metadata_original?.ubicacion,
+        ...Object.values(documento.metadata_original || {}),
+        documento.texto_plano,
+      ].filter(Boolean).join(' '));
+      const encontrados = terminos.filter((termino) => texto.includes(termino));
+      if (!encontrados.length) continue;
+      resultados.push({
+        ...documento,
+        score: 0.56 + (encontrados.length / terminos.length) * 0.44,
+      });
+    }
+  }
+  return resultados
+    .sort((a, b) => b.score - a.score)
+    .slice(0, VECTOR_LIMIT);
+}
+
+async function buscarInventario(pregunta, consultaClasificada = null) {
   const mongoDb = getDB();
   await prepararColeccionesInventario();
+  const consultaEquipo = consultaClasificada || await clasificarConsultaEquipoMWD(pregunta);
+  if (consultaEquipo?.solicitaListado || consultaEquipo?.solicitaDescripcion || consultaEquipo?.solicitaNotas) {
+    let documentos = await obtenerColeccionVectores('mwd')
+      .find(consultaEquipo.filtro)
+      .toArray();
+    if (consultaEquipo.terminosRegistro?.length) {
+      documentos = documentos.filter((documento) => {
+        const textoRegistro = normalizarConsultaInventario([
+          documento.codigo,
+          documento.texto_plano,
+          ...Object.values(documento.metadata_original || {}),
+        ].filter(Boolean).join(' '));
+        return consultaEquipo.terminosRegistro.every((termino) => textoRegistro.includes(termino));
+      });
+    }
+    return documentos
+      .map((documento) => ({ ...documento, score: 1 }))
+      .sort((a, b) => String(a.metadata_original?.codigo_visible || a.codigo)
+        .localeCompare(String(b.metadata_original?.codigo_visible || b.codigo), undefined, { numeric: true }));
+  }
+
   const disponibles = await Promise.all(Object.entries(INVENTORIES).map(async ([key, inventario]) => {
     const collection = obtenerColeccionVectores(key);
     const total = await collection.countDocuments({ tipo: inventario.tipo });
@@ -594,9 +912,160 @@ async function buscarInventario(pregunta) {
   return resultados.flat().sort((a, b) => b.score - a.score).slice(0, VECTOR_LIMIT);
 }
 
+async function buscarHerramientasPorKit(numeroKit) {
+  if (!/^\d+$/.test(String(numeroKit))) {
+    throw new Error('El número del kit debe ser numérico.');
+  }
+  await prepararColeccionesInventario();
+  return obtenerColeccionVectores('mwd')
+    .find({
+      tipo: INVENTORIES.mwd.tipo,
+      'metadata_original.ubicacion': new RegExp(`^kit\\s*0*${numeroKit}$`, 'i'),
+    })
+    .toArray();
+}
+
+async function buscarHerramientas(kits = []) {
+  if (!Array.isArray(kits) || kits.some((kit) => !/^\d+$/.test(String(kit)))) {
+    throw new Error('La lista de kits debe contener únicamente números.');
+  }
+  await prepararColeccionesInventario();
+  const filtro = { tipo: INVENTORIES.mwd.tipo };
+  if (kits.length) {
+    filtro.$or = kits.map((kit) => ({
+      'metadata_original.ubicacion': new RegExp(`^kit\\s*0*${kit}$`, 'i'),
+    }));
+  }
+  return obtenerColeccionVectores('mwd').find(filtro).toArray();
+}
+
+async function buscarMotoresPorInspeccion(estado = null) {
+  if (estado !== null && !['con', 'sin'].includes(estado)) {
+    throw new Error('El estado de inspección debe ser "con" o "sin".');
+  }
+  await prepararColeccionesInventario();
+  const filtro = { tipo: INVENTORIES.motores.tipo };
+  if (estado) {
+    const condicion = estado === 'con' ? 'CON' : 'SIN';
+    filtro.$or = [
+      {
+        'metadata_original.inspeccion': {
+          $regex: `^\\s*${condicion}\\s+INSPECCION$`,
+          $options: 'i',
+        },
+      },
+      {
+        'metadata_original.observaciones': {
+          $regex: `^\\s*(?:INSPECCI[OÓ]N\\s+)?${condicion}\\s+INSPECCION(?:\\s*;|$)`,
+          $options: 'i',
+        },
+      },
+    ];
+  } else {
+    filtro.$or = [
+      { 'metadata_original.inspeccion': { $type: 'string', $ne: '' } },
+      {
+        'metadata_original.observaciones': {
+          $regex: '^\\s*(?:INSPECCI[OÓ]N\\s+)?(?:CON|SIN)\\s+INSPECCION(?:\\s*;|$)',
+          $options: 'i',
+        },
+      },
+    ];
+  }
+  return obtenerColeccionVectores('motores')
+    .find(filtro)
+    .sort({ codigo: 1 })
+    .toArray();
+}
+
+async function buscarMotoresPorFechaRegistro(pregunta) {
+  await prepararColeccionesInventario();
+  const terminosIgnorados = new Set([
+    'a', 'al', 'con', 'cual', 'cuando', 'de', 'del', 'el', 'en', 'es',
+    'equipo', 'equipos', 'este', 'fue', 'la', 'las', 'los', 'motor',
+    'motores', 'para', 'por', 'que', 'registro', 'registrado', 'registrada',
+    'registraron', 'registrarse', 'se', 'su', 'sus', 'una', 'un',
+    'fecha', 'exacta', 'exacto', 'dia', 'dias', 'dame', 'indica', 'muestra',
+  ]);
+  const textoNormalizado = (valor) => String(valor || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const terminos = textoNormalizado(pregunta)
+    .match(/[\p{L}\p{N}]+/gu)
+    ?.filter((termino) => !terminosIgnorados.has(termino)
+      && (termino.length > 2 || /^\d{3,}$/.test(termino))) || [];
+  if (!terminos.length) return null;
+
+  const documentos = await obtenerColeccionVectores('motores')
+    .find({
+      tipo: INVENTORIES.motores.tipo,
+      'metadata_original.fecha_registro': { $exists: true, $ne: '' },
+    })
+    .toArray();
+  return documentos.filter((documento) => {
+    const textoRegistro = textoNormalizado([
+      documento.codigo,
+      documento.texto_plano,
+      ...Object.values(documento.metadata_original || {}),
+    ].join(' '));
+    return terminos.every((termino) => textoRegistro.includes(termino));
+  }).sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), undefined, { numeric: true }));
+}
+
+function extraerFechaInspeccion(texto) {
+  const coincidencia = String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .match(/\bfecha\s+(?:de\s+)?inspeccion\b\s*[:.-]?\s*(\d{1,2})[./-](\d{1,2})[./-](\d{4})/i);
+  if (!coincidencia) return null;
+  const [, diaTexto, mesTexto, anioTexto] = coincidencia;
+  const dia = Number(diaTexto);
+  const mes = Number(mesTexto);
+  const anio = Number(anioTexto);
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia));
+  if (
+    fecha.getUTCFullYear() !== anio
+    || fecha.getUTCMonth() !== mes - 1
+    || fecha.getUTCDate() !== dia
+  ) return null;
+  return {
+    fecha,
+    fechaTexto: `${diaTexto.padStart(2, '0')}-${mesTexto.padStart(2, '0')}-${anioTexto}`,
+  };
+}
+
+async function buscarUltimaInspeccionMotores() {
+  await prepararColeccionesInventario();
+  const documentos = await obtenerColeccionVectores('motores')
+    .find({ tipo: INVENTORIES.motores.tipo })
+    .toArray();
+  const inspecciones = documentos.flatMap((documento) => {
+    const metadata = documento.metadata_original || {};
+    const fechaInspeccion = extraerFechaInspeccion(metadata.fecha_inspeccion)
+      || extraerFechaInspeccion(metadata.observaciones);
+    return fechaInspeccion ? [{ documento, ...fechaInspeccion }] : [];
+  });
+  if (!inspecciones.length) return [];
+
+  const fechaMasReciente = Math.max(...inspecciones.map(({ fecha }) => fecha.getTime()));
+  return inspecciones
+    .filter(({ fecha }) => fecha.getTime() === fechaMasReciente)
+    .sort((a, b) => String(a.documento.codigo).localeCompare(String(b.documento.codigo), undefined, { numeric: true }));
+}
+
 module.exports = {
   iniciarSincronizacion,
   obtenerEstados,
   buscarInventario,
+  buscarHerramientasPorKit,
+  buscarHerramientas,
+  buscarMotoresPorInspeccion,
+  buscarMotoresPorFechaRegistro,
+  buscarUltimaInspeccionMotores,
+  buscarInventarioPorTexto,
+  clasificarConsultaEquipoMWD,
+  clasificarConsultasEquipoMWD,
+  esConsultaAmbiguaConteoKits,
   prepararColeccionesInventario,
 };

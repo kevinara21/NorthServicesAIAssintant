@@ -60,8 +60,16 @@ recursos de software y administración de pagos Starlink.
   avance, cantidad de registros y fecha de la última actualización.
 - Actualiza los registros existentes y retira de la colección de consulta los
   que ya no aparecen en el origen después de una sincronización completada.
-- Incluye códigos y características del equipo en la información consultable;
-  el código presentado al usuario corresponde al identificador visible del
+- Conserva los campos disponibles del equipo, como descripción, serie,
+  conexión, unidades, sección, ubicación, estado, inspección, observaciones y
+  fechas; los valores vacíos no se incorporan al registro sincronizado.
+- En MWD también conserva los campos originales de cada herramienta: tipo,
+  identificador, ubicación, mantenimiento requerido, horas de operación y
+  circuladas, porcentaje, estado, notas y marcas de creación/actualización.
+- Mantiene por separado los identificadores de las relaciones y sus nombres
+  legibles, para que las consultas puedan usar el detalle disponible sin
+  confundir la sección con la ubicación física.
+- El código presentado al usuario corresponde al identificador visible del
   inventario, no a una clave técnica interna.
 
 ### Operaciones y recursos

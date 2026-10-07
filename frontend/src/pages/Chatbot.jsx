@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FiDownload } from 'react-icons/fi';
+import { FiDownload, FiTrash2 } from 'react-icons/fi';
 import { API_URL } from '../services/api';
 
 // ============================================================================
@@ -230,6 +230,10 @@ export default function Chatbot({ token, uid }) {
           },
           body: JSON.stringify({
             pregunta: consultaUsuario,
+            contextoConversacion: historial
+              .filter((mensaje) => mensaje.emisor === 'usuario' && mensaje.texto)
+              .slice(-6)
+              .map((mensaje) => mensaje.texto),
           }),
         }
       );
@@ -456,7 +460,7 @@ export default function Chatbot({ token, uid }) {
   // Descarga la conversación actual como un archivo de texto: el usuario se
   // lleva el chat completo (preguntas, respuestas y enlaces de las fuentes).
   const descargarChat = () => {
-    if (!historial.length) return;
+    if (cargando || !historial.length) return;
 
     const fecha = new Date();
     const dosDigitos = (n) => String(n).padStart(2, '0');
@@ -489,7 +493,7 @@ export default function Chatbot({ token, uid }) {
       lineas.push('');
     });
 
-    const blob = new Blob([lineas.join('\r\n')], { type: 'text/plain;charset=utf-8' });
+    const blob = new Blob(['\uFEFF', lineas.join('\r\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const enlace = document.createElement('a');
     enlace.href = url;
@@ -504,24 +508,18 @@ export default function Chatbot({ token, uid }) {
   // Render
   // =========================================================================
   return (
-    <div
-      style={{
-        padding: '10px',
-        maxWidth: '900px',
-        width: '100%',
-        margin: '0 auto',
-      }}
-    >
+    <div className="chatbot-shell">
       <div className="chatbot-toolbar">
         <div className="chatbot-toolbar__left">
           {historial.length > 0 && (
             <button
               type="button"
-              className="chatbot-tool-button"
+              className="chatbot-tool-button chatbot-tool-button--clear"
               onClick={limpiarChat}
               disabled={cargando}
               title="Borrar la conversación actual"
             >
+              <FiTrash2 aria-hidden="true" />
               Limpiar
             </button>
           )}
@@ -531,9 +529,12 @@ export default function Chatbot({ token, uid }) {
           {historial.length > 0 && (
             <button
               type="button"
-              className="chatbot-tool-button"
+              className="chatbot-tool-button chatbot-tool-button--download"
               onClick={descargarChat}
-              title="Descargar esta conversación como archivo de texto"
+              disabled={cargando}
+              title={cargando
+                ? 'Espera a que termine la respuesta para descargar el chat'
+                : 'Descargar esta conversación como archivo de texto'}
             >
               <FiDownload aria-hidden="true" /> Descargar chat
             </button>
@@ -543,10 +544,10 @@ export default function Chatbot({ token, uid }) {
 
       {/* Área del chat */}
       <div
+        className="chatbot-conversation"
         ref={contenedorChatRef}
         onScroll={manejarScrollChat}
         style={{
-          height: '400px',
           border: '1px solid #cbd5e1',
           borderRadius: '8px',
           padding: '15px',
@@ -587,6 +588,7 @@ export default function Chatbot({ token, uid }) {
           return (
             <div
               key={i}
+              className="chat-message-row"
               style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -594,6 +596,7 @@ export default function Chatbot({ token, uid }) {
               }}
             >
               <div
+                className={`chat-message-bubble${esUsuario ? ' chat-message-bubble--user' : ''}`}
                 style={{
                   background:
                     esUsuario ? '#DD2226' : '#ffffff',
@@ -604,7 +607,6 @@ export default function Chatbot({ token, uid }) {
                     esUsuario
                       ? '12px 12px 3px 12px'
                       : '12px 12px 12px 3px',
-                  maxWidth: '82%',
                   lineHeight: 1.55,
                   fontSize: '14px',
                   whiteSpace: 'pre-wrap',
@@ -676,14 +678,7 @@ export default function Chatbot({ token, uid }) {
       </div>
 
       {/* Formulario */}
-      <form
-        onSubmit={manejarEnvio}
-        style={{
-          display: 'flex',
-          gap: '10px',
-          marginTop: '10px',
-        }}
-      >
+      <form className="chatbot-input-form" onSubmit={manejarEnvio}>
         <input
           className="chat-message-input"
           type="text"
@@ -705,6 +700,7 @@ export default function Chatbot({ token, uid }) {
         />
 
         <button
+          className="chatbot-submit"
           type="submit"
           disabled={cargando || !pregunta.trim()}
           style={{

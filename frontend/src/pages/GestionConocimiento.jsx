@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiAlertTriangle, FiCheck, FiCheckCircle, FiDatabase, FiEdit2, FiRefreshCw, FiShield, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch, API_URL } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
@@ -51,6 +51,8 @@ export default function GestionConocimiento({ token }) {
   const [estadosInventarios, setEstadosInventarios] = useState({});
   const [cargandoInventarios, setCargandoInventarios] = useState(true);
   const [errorInventarios, setErrorInventarios] = useState('');
+  const [iniciandoInventario, setIniciandoInventario] = useState(null);
+  const solicitudSyncEnCurso = useRef(false);
   const { notificarExito, notificarError } = useNotification();
 
   const cabeceras = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -192,6 +194,12 @@ export default function GestionConocimiento({ token }) {
   }, [consultarEstadoInventarios, estadosInventarios]);
 
   const sincronizarInventario = async (tipo) => {
+    const existeSincronizacionActiva = Object.values(estadosInventarios)
+      .some((estado) => estado.estado === 'sincronizando');
+    if (solicitudSyncEnCurso.current || existeSincronizacionActiva) return;
+
+    solicitudSyncEnCurso.current = true;
+    setIniciandoInventario(tipo);
     setErrorInventarios('');
     try {
       const ruta = tipo === 'mwd'
@@ -216,6 +224,10 @@ export default function GestionConocimiento({ token }) {
       await consultarEstadoInventarios();
     } catch (error) {
       setErrorInventarios(error.message);
+      await consultarEstadoInventarios();
+    } finally {
+      solicitudSyncEnCurso.current = false;
+      setIniciandoInventario(null);
     }
   };
 
@@ -485,6 +497,11 @@ const alternarActiva = async (categoria) => {
           <FiDatabase aria-hidden="true" />
         </div>
         {errorInventarios && <p className="inventario-sync__error" role="alert">{errorInventarios}</p>}
+        {iniciandoInventario && (
+          <p className="inventario-sync__metrica" role="status">
+            Iniciando sincronización del inventario {iniciandoInventario === 'mwd' ? 'MWD' : 'Motores'}…
+          </p>
+        )}
         <div className="inventario-sync__rejilla">
           {[
             { key: 'mwd', nombre: 'Inventario MWD', ruta: 'mwd' },
@@ -492,6 +509,9 @@ const alternarActiva = async (categoria) => {
           ].map(({ key, nombre, ruta }) => {
             const estado = estadosInventarios[key] || {};
             const enCurso = estado.estado === 'sincronizando';
+            const otraSincronizacionEnCurso = Object.entries(estadosInventarios)
+              .some(([tipo, estadoActual]) => tipo !== key && estadoActual.estado === 'sincronizando');
+            const bloqueado = enCurso || otraSincronizacionEnCurso || iniciandoInventario !== null;
             const estadoTexto = {
               sincronizando: 'Sincronizando',
               completado: 'Sincronización completada',
@@ -529,10 +549,16 @@ const alternarActiva = async (categoria) => {
                   type="button"
                   className="web-pagina__boton inventario-sync__boton"
                   onClick={() => sincronizarInventario(ruta)}
-                  disabled={enCurso}
+                  disabled={bloqueado}
                 >
                   <FiRefreshCw className={enCurso ? 'web-pagina__giro' : undefined} aria-hidden="true" />
-                  {enCurso ? 'Sincronizando…' : 'Sincronizar ahora'}
+                  {enCurso
+                    ? 'Sincronizando…'
+                    : iniciandoInventario === key
+                      ? 'Iniciando…'
+                      : otraSincronizacionEnCurso || iniciandoInventario !== null
+                        ? 'Bloqueado mientras se sincroniza el otro inventario'
+                        : 'Sincronizar ahora'}
                 </button>
               </article>
             );
