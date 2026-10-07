@@ -3855,11 +3855,21 @@ app.post(
           for (const registro of registros) {
             const metadata = registro.metadata_original || {};
             const ubicacion = metadata.ubicacion || metadata.location || 'Sin ubicación registrada';
-            ubicaciones.set(ubicacion, (ubicaciones.get(ubicacion) || 0) + 1);
+            const identificador = metadata.tool_id || metadata.codigo_visible;
+            const codigoNoDisponible = !identificador || /^na|n\/a|sin-tool-id$/i.test(identificador);
+            const nombreEquipo = clasificacionInventario.equipo.nombre.toLowerCase();
+            const nombreVisible = /\bbattery\b/.test(nombreEquipo)
+              ? 'Batería'
+              : clasificacionInventario.equipo.etiqueta;
+            const listado = ubicaciones.get(ubicacion) || [];
+            listado.push(codigoNoDisponible ? `${nombreVisible} sin identificador visible` : `${nombreVisible} ${identificador}`);
+            ubicaciones.set(ubicacion, listado);
           }
           const detalleUbicaciones = [...ubicaciones.entries()]
             .sort(([ubicacionA], [ubicacionB]) => ubicacionA.localeCompare(ubicacionB, undefined, { numeric: true }))
-            .map(([ubicacion, cantidad]) => `- ${ubicacion}: ${cantidad}`)
+            .map(([ubicacion, equipos]) => (
+              `- ${ubicacion}: ${equipos.length}\n${equipos.map((equipo) => `  - ${equipo}`).join('\n')}`
+            ))
             .join('\n');
           const nombreEquipo = clasificacionInventario.equipo.nombre.toLowerCase();
           const nombrePlural = /\bbattery\b/.test(nombreEquipo)
@@ -3870,7 +3880,7 @@ app.post(
                 ? 'equipos electrónicos'
                 : `equipos ${clasificacionInventario.equipo.nombre}`;
           const textoUbicaciones = registros.length
-            ? `Hay ${registros.length} ${nombrePlural} en total. Su ubicación en el inventario es:\n${detalleUbicaciones}`
+            ? `Hay ${registros.length} ${nombrePlural} en total. Ubicaciones y equipos:\n${detalleUbicaciones}`
             : `No encontré registros de ${nombrePlural} con ubicación en el inventario.`;
           enviarEvento({ tipo: 'texto', texto: textoUbicaciones });
           enviarEvento({
