@@ -171,7 +171,7 @@ export default function GestionFacturacion({ token }) {
         <span className="dashboard-eyebrow">Administración</span>
         <h1>Pagos de Starlink</h1>
         <p>Consulta y actualiza el estado de pago, manteniendo la información actualizada y disponible para el asistente.</p>
-        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+        <div className="billing-heading__acciones">
           <button 
             className="profile-primary-button" 
             onClick={abrirModalNuevo}

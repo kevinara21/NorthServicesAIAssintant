@@ -152,14 +152,16 @@ const NOMBRE_CATEGORIA_RECURSOS = 'Software y Manuales';
 // Categoría general: se devuelve si ya existe y se crea sola la primera vez
 // que alguien sube un archivo sin elegir categoría. Así el sistema nunca
 // empieza con categorías que el Administrador no haya creado, pero la
-// subida más antigua tampoco se queda sin destino.
-async function obtenerOCrearCategoriaGeneral(creadoPor = null) {
+// subida más antigua tampoco se queda sin destino. Se pasa el rol de quien
+// la crea para que esa categoría quede ligada a su rol automáticamente.
+async function obtenerOCrearCategoriaGeneral(creadoPor = null, rolCreador = null) {
   const existente = await obtenerCategoria(CATEGORIA_POR_DEFECTO);
   if (existente) return existente;
   return crearCategoria({
     nombre: NOMBRE_CATEGORIA_POR_DEFECTO,
     descripcion: 'Categoría compartida. Puedes renombrarla o cambiarla desde el panel.',
     creadoPor,
+    rolCreador,
   });
 }
 
@@ -181,7 +183,7 @@ async function obtenerOCrearCategoriaRecursos(creadoPor = null) {
 // ninguna, se usa la general (creándola si es la primera vez).
 async function resolverCategoriaParaIngesta(idSolicitado, opciones = {}) {
   const id = String(idSolicitado || '').trim();
-  if (!id) return obtenerOCrearCategoriaGeneral(opciones.creadoPor);
+  if (!id) return obtenerOCrearCategoriaGeneral(opciones.creadoPor, opciones.rolCreador);
 
   const categoria = await obtenerCategoria(id);
   if (!categoria) {
@@ -194,6 +196,15 @@ async function resolverCategoriaParaIngesta(idSolicitado, opciones = {}) {
     error.status = 400;
     throw error;
   }
+
+  // Quien sube un archivo en una categoría a la que su rol todavía no tiene
+  // acceso queda ligado a ella. Sin esto el archivo se indexa y luego no
+  // aparece en "Mis archivos" ni el rol puede consultarla en el chat, porque
+  // la lista de fuentes permitidas se filtra por rol.
+  if (opciones.rolCreador && !esAdministrador(opciones.rolCreador)) {
+    await otorgarCategoriaARol(opciones.rolCreador, categoria.id);
+  }
+
   return categoria;
 }
 

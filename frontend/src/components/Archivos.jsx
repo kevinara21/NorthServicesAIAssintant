@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { FiCheck, FiCheckSquare, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FiCheck, FiCheckSquare, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiRefreshCw, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from './common/OilLoader';
@@ -16,7 +16,6 @@ export default function Archivos({ token, usuario }) {
   const [archivosSeleccionados, setArchivosSeleccionados] = useState([]);
   const [idsSeleccionados, setIdsSeleccionados] = useState([]);
   const [modoSeleccion, setModoSeleccion] = useState(false);
-  const [nombre, setNombre] = useState('');
   const [descripcion, setDescripcion] = useState('');
   const [busqueda, setBusqueda] = useState('');
   const [filtroCategoria, setFiltroCategoria] = useState('');
@@ -31,6 +30,8 @@ export default function Archivos({ token, usuario }) {
   const esAdministrador = usuario?.rol?.toLowerCase() === 'administrador';
   const [confirmacion, setConfirmacion] = useState({ visible: false, titulo: '', mensaje: '', etiqueta: 'Enviar a papelera', onConfirm: null });
   const [modalSubirAbierto, setModalSubirAbierto] = useState(false);
+  const inputActualizacionRef = useRef(null);
+  const archivoActualizacionRef = useRef(null);
 
   // Crear una categoría nueva desde este mismo formulario, para no tener
   // que salir a Conocimiento y permisos por rol a medio trabajo.
@@ -111,6 +112,15 @@ const respuesta = await apiFetch('/api/rag/categorias', {
     }
   };
 
+  // Las categorías del sistema (Software y Manuales) no son conocimiento que
+  // se pueda repartir: a ellas no se les sube nada y no aparecen como filtro.
+  // Se apartan aquí una sola vez para que el resto del componente trabaje
+  // únicamente con lo que este usuario realmente puede elegir.
+  const categoriasSubida = useMemo(
+    () => categorias.filter((categoria) => !categoria.sistema),
+    [categorias]
+  );
+
   // Primero se aplica el filtro de categoria elegida y despues la busqueda
   // por texto, para que ambas condiciones se puedan combinar.
   const archivosFiltrados = useMemo(() => {
@@ -158,6 +168,9 @@ const respuesta = await apiFetch('/api/rag/categorias', {
     if (archivosProhibidos.includes(extension)) {
       return { valido: false, error: `No se permiten archivos ejecutables o scripts (${extension}). Solo se permite documentación.` };
     }
+    if (!archivosPermitidos.includes(extension)) {
+      return { valido: false, error: `El formato ${extension || 'sin extensión'} no está permitido. Selecciona un archivo de documentación compatible.` };
+    }
     return { valido: true };
   };
 
@@ -184,11 +197,15 @@ const respuesta = await apiFetch('/api/rag/categorias', {
         try {
           const datos = new FormData();
           datos.append('archivo', archivo);
-          datos.append('nombre', nombre.trim());
+          // No hay campo "Nombre" en el formulario: cada archivo lleva el suyo.
+          // Si no se envía, el backend guarda el nombre del archivo sin la
+          // extensión, que es exactamente lo que se quería.
           datos.append('descripcion', descripcion.trim());
           // El backend decide la colección de embeddings a partir de esto.
           datos.append('categoriaId', categoriaId);
-          const respuesta = await apiFetch('/api/archivos', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: datos });
+          const respuesta = await apiFetch('/api/archivos', { method: 'POST',           headers: {
+            Authorization: `Bearer ${token}`,
+          }, body: datos });
           const data = await respuesta.json();
           if (!respuesta.ok) throw new Error(data.error || 'No se pudo procesar.');
           subidos++;
@@ -196,7 +213,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       }
       if (subidos > 0) notificarExito(`${subidos} archivo${subidos > 1 ? 's' : ''} publicado${subidos > 1 ? 's' : ''}.`, { titulo: 'Archivos subidos' });
       if (errores > 0) notificarError(`${errores} archivo${errores > 1 ? 's' : ''} no se pudo${errores === 1 ? '' : ''} procesar.`, { titulo: 'Algunos archivos fallaron' });
-      setArchivosSeleccionados([]); setNombre(''); setDescripcion('');
+      setArchivosSeleccionados([]); setDescripcion('');
       document.getElementById('archivo-colaborativo').value = '';
       setModalSubirAbierto(false);
       await cargarArchivos();
@@ -214,6 +231,60 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       const url = URL.createObjectURL(await respuesta.blob());
       const enlace = document.createElement('a'); enlace.href = url; enlace.download = item.nombreArchivo; enlace.click(); URL.revokeObjectURL(url);
     } catch (error) { notificarError(error.message, { titulo: 'Error de descarga' }); }
+  };
+
+  const confirmarActualizacion = (item, archivoNuevo) => {
+    setConfirmacion({
+      visible: true,
+      titulo: `¿Reemplazar "${item.nombre || item.nombreArchivo}"?`,
+      mensaje: 'El documento anterior y sus fragmentos dejarán de estar disponibles para la IA. Se conservarán el nombre, la descripción, la categoría y los permisos; el archivo nuevo se volverá a procesar e indexar.',
+      etiqueta: 'Reemplazar documento',
+      onConfirm: async () => {
+        setConfirmacion({ visible: false });
+        setCargando(true);
+        try {
+          const datos = new FormData();
+          datos.append('archivo', archivoNuevo);
+          const respuesta = await apiFetch(`/api/archivos/${item.id}/actualizar`, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token },
+            body: datos,
+          });
+          const data = await respuesta.json();
+          if (!respuesta.ok) throw new Error(data.error || 'No se pudo reemplazar el documento.');
+          notificarExito(data.mensaje, { titulo: 'Documento actualizado' });
+          await cargarArchivos();
+        } catch (error) {
+          notificarError(error.message, { titulo: 'No se pudo actualizar el documento' });
+        } finally {
+          setCargando(false);
+          if (inputActualizacionRef.current) inputActualizacionRef.current.value = '';
+        }
+      },
+    });
+  };
+
+  const actualizarArchivoSeleccionado = (event) => {
+    const archivoNuevo = event.target.files?.[0];
+    const item = archivoActualizacionRef.current;
+    archivoActualizacionRef.current = null;
+    if (!archivoNuevo || !item) return;
+
+    const validacion = validarArchivo(archivoNuevo);
+    if (!validacion.valido) {
+      notificarError(validacion.error, { titulo: 'Formato no permitido' });
+      event.target.value = '';
+      return;
+    }
+    confirmarActualizacion(item, archivoNuevo);
+  };
+
+  const seleccionarArchivoParaActualizar = (item) => {
+    archivoActualizacionRef.current = item;
+    if (inputActualizacionRef.current) {
+      inputActualizacionRef.current.value = '';
+      inputActualizacionRef.current.click();
+    }
   };
 
   const descargarVarios = async (lista) => {
@@ -266,6 +337,13 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       <span className="dashboard-eyebrow">Contenido para IA</span>
       <h1>Archivos</h1>
       <p>Cualquier usuario activo puede subir archivos. Se indexan PDF, Word, Excel, PowerPoint, Visio y texto. No se permiten ejecutables ni scripts. Los archivos eliminados pasan a la papelera por 30 días y dejan de estar disponibles para la IA.</p>
+      <input
+        ref={inputActualizacionRef}
+        type="file"
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.vsdx,.txt,.rtf,.odt,.ods,.odp,.csv,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+        onChange={actualizarArchivoSeleccionado}
+        hidden
+      />
       
 
 
@@ -314,7 +392,6 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                     </div>
                   )}
                 </label>
-                <label>Nombre<input value={nombre} onChange={(event) => setNombre(event.target.value)} disabled={cargando} /></label>
                 <label>Descripción<input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} /></label>
 
                 <div className="archivo-categoria">
@@ -325,7 +402,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                     )}
                   </span>
 
-                  {categorias.length === 0 ? (
+                  {categoriasSubida.length === 0 ? (
                     <div className="archivo-categoria__vacio">
                       <span>Aún no hay categorías de conocimiento. Crea la primera para poder subir archivos.</span>
                     </div>
@@ -338,7 +415,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                         disabled={cargando}
                         required
                       >
-                        {categorias.filter((categoria) => !categoria.sistema).map((categoria) => (
+                        {categoriasSubida.map((categoria) => (
                           <option key={categoria.id} value={categoria.id}>{categoria.nombre}</option>
                         ))}
                       </select>
@@ -350,58 +427,54 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                     <p className="archivo-categoria__ayuda">{categoriaElegida.descripcion}</p>
                   )}
 
-                  {esAdministrador ? (
-                    <>
-                      <button
-                        type="button"
-                        className="archivo-categoria__nueva"
-                        onClick={alternarFormularioCategoria}
-                        disabled={cargando || guardandoCategoria}
-                      >
-                        <FiPlus aria-hidden="true" />
-                        {creandoCategoria ? 'Cancelar' : 'Crear nueva categoría'}
-                      </button>
+                  {/* Cualquier usuario activo puede crear una categoría: el
+                      backend la guarda y la otorga automáticamente a su rol,
+                      así que quien la crea ya ve su archivo sin intervención
+                      del Administrador. */}
+                  <>
+                    <button
+                      type="button"
+                      className="archivo-categoria__nueva"
+                      onClick={alternarFormularioCategoria}
+                      disabled={cargando || guardandoCategoria}
+                    >
+                      <FiPlus aria-hidden="true" />
+                      {creandoCategoria ? 'Cancelar' : 'Crear nueva categoría'}
+                    </button>
 
-                      {creandoCategoria && (
-                        <div className="archivo-categoria__form">
-                          <label>
-                            Nombre de la categoría
-                            <input
-                              value={nuevaCategoria.nombre}
-                              onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, nombre: event.target.value }))}
-                              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
-                              placeholder="Ej. Procedimientos de arranque"
-                              disabled={guardandoCategoria}
-                            />
-                          </label>
-                          <label>
-                            Descripción (opcional)
-                            <input
-                              value={nuevaCategoria.descripcion}
-                              onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, descripcion: event.target.value }))}
-                              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
-                              disabled={guardandoCategoria}
-                            />
-                          </label>
-                          <button
-                            className="profile-primary-button"
-                            type="button"
-                            onClick={crearCategoriaDesdeSubida}
-                            disabled={guardandoCategoria || !nuevaCategoria.nombre.trim()}
-                          >
-                            <FiCheck />
-                            {guardandoCategoria ? 'Creando…' : 'Crear categoría'}
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    !creandoCategoria && categorias.length === 0 && (
-                      <p className="archivo-categoria__nota">
-                        Solo el Administrador crea categorías, desde Conocimiento y permisos por rol.
-                      </p>
-                    )
-                  )}
+                    {creandoCategoria && (
+                      <div className="archivo-categoria__form">
+                        <label>
+                          Nombre de la categoría
+                          <input
+                            value={nuevaCategoria.nombre}
+                            onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, nombre: event.target.value }))}
+                            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
+                            placeholder="Ej. Procedimientos de arranque"
+                            disabled={guardandoCategoria}
+                          />
+                        </label>
+                        <label>
+                          Descripción (opcional)
+                          <input
+                            value={nuevaCategoria.descripcion}
+                            onChange={(event) => setNuevaCategoria((actual) => ({ ...actual, descripcion: event.target.value }))}
+                            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); crearCategoriaDesdeSubida(); } }}
+                            disabled={guardandoCategoria}
+                          />
+                        </label>
+                        <button
+                          className="profile-primary-button"
+                          type="button"
+                          onClick={crearCategoriaDesdeSubida}
+                          disabled={guardandoCategoria || !nuevaCategoria.nombre.trim()}
+                        >
+                          <FiCheck />
+                          {guardandoCategoria ? 'Creando…' : 'Crear categoría'}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 </div>
 
                 <button className="profile-primary-button" type="submit" disabled={cargando}><FiUploadCloud /> {cargando ? 'Procesando…' : 'Subir archivo'}</button>
@@ -412,11 +485,11 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       )}
       <div className="library-toolbar">
         <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, archivo o autor…" /></label>
-        {categorias.length > 0 && (
+        {categoriasSubida.length > 0 && (
           <div className="library-filtros-categoria" role="group" aria-label="Filtrar por categoría">
             <FiFilter aria-hidden="true" />
             <button type="button" className={!filtroCategoria ? 'active' : ''} onClick={() => setFiltroCategoria('')}>Todas</button>
-            {categorias.filter((categoria) => categoria.id !== 'software_y_manuales').map((categoria) => (
+            {categoriasSubida.map((categoria) => (
               <button
                 key={categoria.id}
                 type="button"
@@ -466,7 +539,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                 <p><strong>{nombreCategoria(item)}</strong> · {item.estadoIndexacion === 'completada' ? 'Disponible para el asistente IA.' : item.estadoIndexacion === 'sin_texto' ? 'Guardado; este formato no se puede indexar automáticamente.' : 'Procesamiento pendiente o con error.'}</p>
               </div>
             </div>
-            <div className="file-card-actions"><button type="button" className="profile-primary-button" onClick={() => descargar(item)} aria-label="Descargar"><FiDownload /></button>{puedeEliminar && <button type="button" className="billing-cancel" onClick={() => enviarAPapelera([item])} aria-label="Enviar a papelera"><FiTrash2 /></button>}</div>
+            <div className="file-card-actions"><button type="button" className="profile-primary-button" onClick={() => descargar(item)} aria-label="Descargar"><FiDownload /></button>{puedeEliminar && <><button type="button" className="library-icon-button" onClick={() => seleccionarArchivoParaActualizar(item)} disabled={cargando} aria-label="Actualizar documento" title="Actualizar documento"><FiRefreshCw /></button><button type="button" className="billing-cancel" onClick={() => enviarAPapelera([item])} aria-label="Enviar a papelera"><FiTrash2 /></button></>}</div>
           </article>;
         })}
       </div>

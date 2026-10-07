@@ -458,6 +458,32 @@ async function enviarOtpCorporativo(opts) {
   }
 }
 
+async function enviarCorreoCorporativo({ para, asunto, texto, html }) {
+  const t = obtenerTransporte();
+
+  if (!t) {
+    return { ok: false, error: 'MAIL_NOT_CONFIGURED' };
+  }
+
+  if (!para || !asunto || (!texto && !html)) {
+    return { ok: false, error: 'MAIL_INVALID_ARGUMENTS' };
+  }
+
+  try {
+    const info = await t.sendMail({
+      from: `"${CpanelMailConfig.fromName}" <${CpanelMailConfig.user}>`,
+      to: para,
+      subject: asunto,
+      text: texto,
+      html,
+    });
+
+    return { ok: true, messageId: info.messageId };
+  } catch (error) {
+    return { ok: false, error: error.message || 'SMTP_ERROR' };
+  }
+}
+
 
 // ==========================================================
 // EXPORTACIONES
@@ -465,5 +491,6 @@ async function enviarOtpCorporativo(opts) {
 
 module.exports = {
   enviarOtpCorporativo,
+  enviarCorreoCorporativo,
   plantillaOtpHtml,
 };

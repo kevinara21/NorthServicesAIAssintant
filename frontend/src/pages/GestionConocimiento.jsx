@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FiAlertTriangle, FiCheck, FiCheckCircle, FiEdit2, FiRefreshCw, FiShield, FiTrash2, FiX } from 'react-icons/fi';
+import { FiAlertTriangle, FiCheck, FiCheckCircle, FiDatabase, FiEdit2, FiRefreshCw, FiShield, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch, API_URL } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from '../components/common/OilLoader';
+
+async function leerRespuestaInventario(respuesta) {
+  const contentType = respuesta.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `La ruta de inventarios devolvió HTML en vez de JSON (HTTP ${respuesta.status}). ` +
+      'Abre el frontend local en http://localhost:5173 y confirma que el backend esté ejecutándose en el puerto 8000. ' +
+      'Si abriste el sitio publicado, su servidor aún no tiene conectada esta API.'
+    );
+  }
+  return respuesta.json();
+}
 
 // ============================================================
 // GESTIÓN DE CONOCIMIENTO Y PERMISOS RAG
@@ -36,6 +48,9 @@ export default function GestionConocimiento({ token }) {
   const [estadoWeb, setEstadoWeb] = useState(null);
   const [actualizandoWeb, setActualizandoWeb] = useState(false);
   const [avisoWeb, setAvisoWeb] = useState(null);
+  const [estadosInventarios, setEstadosInventarios] = useState({});
+  const [cargandoInventarios, setCargandoInventarios] = useState(true);
+  const [errorInventarios, setErrorInventarios] = useState('');
   const { notificarExito, notificarError } = useNotification();
 
   const cabeceras = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -144,6 +159,65 @@ export default function GestionConocimiento({ token }) {
       }
     });
   }, [consultarEstadoWeb, sondearEstadoWeb, token]);
+
+  const consultarEstadoInventarios = useCallback(async () => {
+    if (!token) return null;
+    try {
+      const respuesta = await apiFetch('/api/admin/sync/inventarios/estado', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const datos = await leerRespuestaInventario(respuesta);
+      if (!respuesta.ok) throw new Error(datos.error || 'No se pudo cargar el estado de los inventarios.');
+      setEstadosInventarios(datos.inventarios || {});
+      setErrorInventarios('');
+      return datos.inventarios || {};
+    } catch (error) {
+      setErrorInventarios(error.message);
+      return null;
+    } finally {
+      setCargandoInventarios(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    consultarEstadoInventarios();
+  }, [consultarEstadoInventarios]);
+
+  useEffect(() => {
+    const enCurso = Object.values(estadosInventarios)
+      .some((estado) => estado.estado === 'sincronizando');
+    if (!enCurso) return undefined;
+    const intervalo = window.setInterval(consultarEstadoInventarios, 2000);
+    return () => window.clearInterval(intervalo);
+  }, [consultarEstadoInventarios, estadosInventarios]);
+
+  const sincronizarInventario = async (tipo) => {
+    setErrorInventarios('');
+    try {
+      const ruta = tipo === 'mwd'
+        ? '/api/admin/sync/inventario-mwd'
+        : '/api/admin/sync/inventario-motores';
+      const respuesta = await apiFetch(ruta, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const datos = await leerRespuestaInventario(respuesta);
+      if (!respuesta.ok) throw new Error(datos.error || 'No se pudo iniciar la sincronización.');
+      if (datos.estado) {
+        setEstadosInventarios((actual) => ({
+          ...actual,
+          [tipo]: {
+            ...actual[tipo],
+            ...datos.estado,
+            estado: 'sincronizando',
+          },
+        }));
+      }
+      await consultarEstadoInventarios();
+    } catch (error) {
+      setErrorInventarios(error.message);
+    }
+  };
 
   const alternarCategoria = (rol, categoriaId) => {
     setBorrador((actual) => {
@@ -401,6 +475,70 @@ const alternarActiva = async (categoria) => {
           <span>{avisoWeb.texto}</span>
         </div>
       )}
+
+      <section className="inventario-sync" aria-labelledby="inventario-sync-titulo">
+        <div className="inventario-sync__encabezado">
+          <div>
+            <h3 id="inventario-sync-titulo">Sincronización de inventarios externos</h3>
+            <p>Actualiza el índice de búsqueda del asistente sin mover los inventarios de sus sistemas actuales.</p>
+          </div>
+          <FiDatabase aria-hidden="true" />
+        </div>
+        {errorInventarios && <p className="inventario-sync__error" role="alert">{errorInventarios}</p>}
+        <div className="inventario-sync__rejilla">
+          {[
+            { key: 'mwd', nombre: 'Inventario MWD', ruta: 'mwd' },
+            { key: 'motores', nombre: 'Inventario Motores', ruta: 'motores' },
+          ].map(({ key, nombre, ruta }) => {
+            const estado = estadosInventarios[key] || {};
+            const enCurso = estado.estado === 'sincronizando';
+            const estadoTexto = {
+              sincronizando: 'Sincronizando',
+              completado: 'Sincronización completada',
+              error: 'Error en la última sincronización',
+            }[estado.estado] || 'Aún no sincronizado';
+            return (
+              <article className="inventario-sync__tarjeta" key={key}>
+                <div className="inventario-sync__tarjeta-cabecera">
+                  <strong>{nombre}</strong>
+                  <span className={`inventario-sync__estado inventario-sync__estado--${estado.estado || 'pendiente'}`}>
+                    {estadoTexto}
+                  </span>
+                </div>
+                <p className="inventario-sync__metrica">
+                  Registros vectorizados: <strong>{estado.totalRegistros ?? (cargandoInventarios ? '…' : 0)}</strong>
+                </p>
+                <p className="inventario-sync__metrica">
+                  Última sincronización: <strong>
+                    {estado.ultimaSync
+                      ? new Date(estado.ultimaSync).toLocaleString('es-PE', { timeZone: 'America/Lima' })
+                      : 'Nunca'}
+                  </strong>
+                </p>
+                {enCurso && (
+                  <div className="inventario-sync__progreso">
+                    <div className="inventario-sync__progreso-detalle">
+                      <span>{estado.procesados || 0} de {estado.total || 0} registros</span>
+                      <span>{estado.progreso || 0}%</span>
+                    </div>
+                    <progress value={estado.progreso || 0} max="100" aria-label={`Progreso de ${nombre}`} />
+                  </div>
+                )}
+                {estado.error && <p className="inventario-sync__error" role="alert">{estado.error}</p>}
+                <button
+                  type="button"
+                  className="web-pagina__boton inventario-sync__boton"
+                  onClick={() => sincronizarInventario(ruta)}
+                  disabled={enCurso}
+                >
+                  <FiRefreshCw className={enCurso ? 'web-pagina__giro' : undefined} aria-hidden="true" />
+                  {enCurso ? 'Sincronizando…' : 'Sincronizar ahora'}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="panel-conocimiento__tabla-wrap" style={{ marginBottom: '28px' }}>
         <table className="panel-conocimiento__tabla">

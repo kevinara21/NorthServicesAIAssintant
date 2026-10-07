@@ -5,17 +5,22 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
-const PDFParser = require('pdf2json');
 const crypto = require('crypto');
-const zlib = require('zlib');
 
 const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
 const { connectDB, getDB } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
+const { crearServicioRecordatorios } = require('./services/starlinkReminders.service');
+const inventorySync = require('./services/inventorySync.service');
 const driveOperaciones = require('./services/googleDrive');
 const ragCategorias = require('./services/ragCategorias.service');
 const webEmpresa = require('./services/webEmpresa.service');
+const {
+  prepararContenidoIndexable,
+  prepararFragmentos,
+  tituloSeccionDelFragmento,
+} = require('./services/ingesta.service');
 const {
   DRIVE_MAX_ARCHIVOS,
   DRIVE_INLINE_MAX_BYTES,
@@ -233,114 +238,6 @@ function crearSlug(texto) {
 }
 
 // ============================================================
-// EXTRAER TEXTO PDF
-// ============================================================
-
-function extraerTextoPDF(buffer) {
-  return new Promise((resolve, reject) => {
-    const pdfParser = new PDFParser(null, 1);
-
-    pdfParser.on(
-      'pdfParser_dataError',
-      (errData) => {
-        reject(errData.parserError);
-      }
-    );
-
-    pdfParser.on(
-      'pdfParser_dataReady',
-      () => {
-        try {
-          const textoBruto =
-            pdfParser.getRawTextContent();
-
-          try {
-            const textoDecodificado =
-              decodeURIComponent(textoBruto);
-
-            resolve(textoDecodificado);
-          } catch {
-            resolve(textoBruto);
-          }
-        } catch (error) {
-          reject(error);
-        }
-      }
-    );
-
-    pdfParser.parseBuffer(buffer);
-  });
-}
-
-function decodificarEntidadesXML(texto) {
-  return texto
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, codigo) => String.fromCharCode(Number(codigo)))
-    .replace(/\s+/g, ' ').trim();
-}
-
-// Los formatos Office modernos son archivos ZIP con XML. Esta lectura evita
-// depender de una aplicación instalada en el servidor y cubre DOCX, XLSX y PPTX.
-function leerZipOffice(buffer) {
-  const eocd = buffer.lastIndexOf(Buffer.from('PK\x05\x06'));
-  if (eocd < 0) throw new Error('El documento Office no tiene un contenedor ZIP válido.');
-  const totalEntradas = buffer.readUInt16LE(eocd + 10);
-  let cursor = buffer.readUInt32LE(eocd + 16);
-  const archivos = new Map();
-  for (let indice = 0; indice < totalEntradas; indice += 1) {
-    if (buffer.readUInt32LE(cursor) !== 0x02014b50) break;
-    const metodo = buffer.readUInt16LE(cursor + 10);
-    const comprimido = buffer.readUInt32LE(cursor + 20);
-    const nombreLongitud = buffer.readUInt16LE(cursor + 28);
-    const extraLongitud = buffer.readUInt16LE(cursor + 30);
-    const comentarioLongitud = buffer.readUInt16LE(cursor + 32);
-    const offsetLocal = buffer.readUInt32LE(cursor + 42);
-    const nombre = buffer.subarray(cursor + 46, cursor + 46 + nombreLongitud).toString('utf8');
-    if (buffer.readUInt32LE(offsetLocal) === 0x04034b50) {
-      const nombreLocal = buffer.readUInt16LE(offsetLocal + 26);
-      const extraLocal = buffer.readUInt16LE(offsetLocal + 28);
-      const inicio = offsetLocal + 30 + nombreLocal + extraLocal;
-      const datos = buffer.subarray(inicio, inicio + comprimido);
-      archivos.set(nombre, metodo === 8 ? zlib.inflateRawSync(datos) : datos);
-    }
-    cursor += 46 + nombreLongitud + extraLongitud + comentarioLongitud;
-  }
-  return archivos;
-}
-
-async function extraerTextoArchivo(file) {
-  const extension = path.extname(file.originalname || '').toLowerCase();
-  const buffer = await fs.promises.readFile(file.path);
-  if (extension === '.pdf') return extraerTextoPDF(buffer);
-  if (['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log'].includes(extension)) {
-    return buffer.toString('utf8');
-  }
-  if (['.docx', '.xlsx', '.pptx', '.vsdx'].includes(extension)) {
-    const zip = leerZipOffice(buffer);
-    let partes = [];
-    if (extension === '.docx') {
-      partes = ['word/document.xml', ...[...zip.keys()].filter((nombre) => /^word\/(header|footer)\d+\.xml$/.test(nombre))];
-    } else if (extension === '.xlsx') {
-      partes = [...zip.keys()].filter((nombre) => nombre === 'xl/sharedStrings.xml' || /^xl\/worksheets\/sheet\d+\.xml$/.test(nombre));
-    } else if (extension === '.vsdx') {
-      partes = [...zip.keys()].filter((nombre) => /^visio\/pages\/page\d+\.xml$/.test(nombre) || nombre === 'visio/document.xml');
-    } else {
-      partes = [...zip.keys()].filter((nombre) => /^ppt\/slides\/slide\d+\.xml$/.test(nombre));
-    }
-    return partes
-      .map((nombre) => zip.get(nombre)?.toString('utf8') || '')
-      .map(decodificarEntidadesXML)
-      .filter(Boolean)
-      .join('\n');
-  }
-  // El archivo queda disponible para descarga aunque su formato no permita
-  // extraer texto automáticamente (por ejemplo imágenes, ZIP o ejecutables).
-  return '';
-}
-
-// ============================================================
 // MULTER
 // ============================================================
 
@@ -459,70 +356,6 @@ async function eliminarArchivoYCarpetasVacias(rutaArchivo, raizPermitida) {
     }
     carpeta = path.dirname(carpeta);
   }
-}
-
-// ============================================================
-// DIVIDIR TEXTO
-// ============================================================
-
-function dividirTextoEnBloques(
-  texto,
-  tamanioBloque = 800
-) {
-  const lineas =
-    texto
-      .replace(/\r\n/g, '\n')
-      .split('\n');
-
-  const bloques = [];
-
-  let bloqueActual = '';
-
-  for (const linea of lineas) {
-    const lineaLimpia =
-      linea.trim();
-
-    if (!lineaLimpia) {
-      continue;
-    }
-
-    const candidato =
-      bloqueActual
-        ? `${bloqueActual}\n${lineaLimpia}`
-        : lineaLimpia;
-
-    if (
-      candidato.length >
-      tamanioBloque
-    ) {
-      if (
-        bloqueActual.trim()
-      ) {
-        bloques.push(
-          bloqueActual.trim()
-        );
-      }
-
-      bloqueActual =
-        lineaLimpia;
-    } else {
-      bloqueActual =
-        candidato;
-    }
-  }
-
-  if (
-    bloqueActual.trim()
-  ) {
-    bloques.push(
-      bloqueActual.trim()
-    );
-  }
-
-  return bloques.filter(
-    (bloque) =>
-      bloque.length >= 20
-  );
 }
 
 // ============================================================
@@ -956,8 +789,9 @@ async function generarContenidoGemini(
                         '(6) Responde en texto plano, sin markdown, sin bloques de codigo, sin negritas. ' +
                         '(7) No menciones que eres un modelo de lenguaje ni una inteligencia artificial. ' +
                         '(8) Si el usuario insiste en un tema fuera de alcance, repite exactamente la misma respuesta de cierre, sin ceder ni resumir el tema. ' +
-                        '(9) TRAZABILIDAD OBLIGATORIA: cada cifra debe ir acompañada del nombre exacto del archivo de origen. ' +
-                        'Si no puedes identificar el archivo de una cifra, no la respondas. ' +
+                        '(9) TRAZABILIDAD OBLIGATORIA: cada cifra debe ir acompanada del nombre exacto del archivo de origen, ' +
+                        'pero el nombre se menciona UNA SOLA VEZ en toda la respuesta (al inicio o al final), nunca despues ' +
+                        'de cada frase o cifra ni entre parentesis. Si no puedes identificar el archivo de una cifra, no la respondas. ' +
                         '(10) PROHIBIDO mezclar valores de filas o de documentos distintos. En un torque log las columnas son ' +
                         'Connection / Target / Max / Logged, y el valor Logged pertenece a esa conexion concreta. ' +
                         'No sumes, no compares y no tomes el maximo de otra fila o de otro documento. ' +
@@ -1489,6 +1323,19 @@ function coincideConLaPregunta(nombreArchivo, pregunta) {
   return pedido.enNombre.test(nombre);
 }
 
+// Extrae de la pregunta nombres de archivo escritos por el usuario
+// ("Torque_Log_20260722_202948.pdf", "Informe_Savias_2026").
+//
+// Sirve para que, cuando alguien pega el nombre exacto, se lea ESE archivo y
+// no otros: sin este filtro la selección por puntaje tomaba los 10 mejor
+// puntuados y el bot terminaba respondiendo con un reporte distinto al pedido.
+function extraerNombresDeArchivo(pregunta) {
+  const texto = String(pregunta || '').toLowerCase();
+  const conExtension = texto.match(/[a-z0-9][a-z0-9_-]*\.[a-z]{2,4}\b/g) || [];
+  const conGuionesBajos = texto.match(/\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/g) || [];
+  return [...new Set([...conExtension, ...conGuionesBajos])];
+}
+
 async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
   try {
     // Se interpreta la petición antes de listar: define el orden y cuántos
@@ -1573,7 +1420,34 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
       );
     };
 
+    // Nombres de archivo escritos a mano por el usuario en la pregunta.
+    const nombresPreguntados = extraerNombresDeArchivo(pregunta);
+
     const seleccionados = (() => {
+      // Coincidencia con el nombre exacto que escribió el usuario. Tiene
+      // prioridad sobre todo lo demás: si pidió un archivo concreto, ese es
+      // el que debe leerse, aunque su fecha no sea la más reciente.
+      if (nombresPreguntados.length) {
+        const coincidencias = archivos.filter((archivo) => {
+          const nombre = String(archivo.name || '').toLowerCase();
+          return nombresPreguntados.some(
+            (buscado) => nombre === buscado || nombre.includes(buscado) || buscado.includes(nombre)
+          );
+        });
+
+        if (coincidencias.length) {
+          console.log(
+            `[DRIVE] Coincidencia con el nombre indicado por el usuario: ${coincidencias.map((archivo) => archivo.name).join(', ')}`
+          );
+          return coincidencias.slice(0, DRIVE_MAX_ARCHIVOS);
+        }
+
+        // El archivo que pidió no está en la carpeta compartida: se avisa para
+        // que el modelo lo diga en vez de responder con otro reporte.
+        console.log(`[DRIVE] No se encontró "${nombresPreguntados.join('", "')}" en la carpeta de Operaciones.`);
+        return [];
+      }
+
       // Cuando el usuario pide un número concreto ("los últimos dos"), la
       // lista YA viene en el orden correcto y filtrada. Reordenar por
       // coincidencias de nombre tiraría ese orden a la basura, que es
@@ -1597,6 +1471,36 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
         .slice(0, DRIVE_MAX_ARCHIVOS)
         .map((item) => item.archivo);
     })();
+
+    // El usuario pidió un archivo por su nombre y no está en la carpeta
+    // compartida. Se devuelve un contexto explícito para que el modelo lo diga
+    // tal cual en lugar de contestar con otro reporte ni inventar el contenido.
+    if (nombresPreguntados.length && !seleccionados.length) {
+      const parecidos = archivos
+        .filter((archivo) => {
+          const nombre = String(archivo.name || '').toLowerCase();
+          return nombresPreguntados.some((buscado) => {
+            const base = buscado.replace(/\.[a-z]{2,4}$/, '');
+            return nombre.includes(base) || base.includes(nombre.replace(/\.[a-z]{2,4}$/, ''));
+          });
+        })
+        .slice(0, 10);
+
+      return `
+INFORMACIÓN DE REPORTES DE OPERACIONES (Google Drive)
+=============================================================
+ARCHIVO SOLICITADO NO ENCONTRADO
+
+El usuario pidió: ${nombresPreguntados.join(', ')}
+No existe en la carpeta compartida de Operaciones.
+
+Total de documentos PDF disponibles: ${archivos.length}
+${parecidos.length ? `Archivos con un nombre parecido:\n${listar(parecidos)}` : 'No hay archivos con un nombre parecido.'}
+
+Indica claramente que ese archivo no está en la carpeta compartida. No
+describas su contenido ni lo sustituyas por otro documento.
+`;
+    }
 
     // Con cantidad concreta el catálogo se reduce a lo pedido. Sin ella se
     // mantiene el listado completo, que es lo que permite preguntas del tipo
@@ -1996,10 +1900,13 @@ app.post(
             filePdf.path
           );
 
-        const textoExtraido =
-          await extraerTextoPDF(
-            buffer
-          );
+        const preparadoManual = await prepararContenidoIndexable({
+          buffer,
+          nombreArchivo: filePdf.filename,
+          extension: '.pdf',
+        });
+
+        const textoExtraido = preparadoManual.texto;
 
         if (
           !textoExtraido ||
@@ -2014,14 +1921,10 @@ app.post(
         // CHUNKS
         // ------------------------------------------------------
 
-        const bloques =
-          dividirTextoEnBloques(
-            textoExtraido,
-            800
-          );
+        const bloques = prepararFragmentos(preparadoManual);
 
         console.log(
-          `[RAG] Bloques encontrados: ${bloques.length}`
+          `[RAG] Bloques encontrados: ${bloques.length} (parser: ${preparadoManual.fuenteParser}${preparadoManual.modeloParser ? `, ${preparadoManual.modeloParser}` : ''})`
         );
 
         if (
@@ -2082,7 +1985,7 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
 
               const vector =
                 await generarEmbedding(
-                  fragmento
+                  fragmento.texto
                 );
 
               return {
@@ -2093,10 +1996,18 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
                   nombre,
 
                 titulo_seccion:
-                  `${nombre} (Parte ${indice + 1})`,
+                  tituloSeccionDelFragmento(fragmento, nombre, indice, bloques.length),
+
+                rutaTitulos: fragmento.rutaTitulos || '',
+                pagina: fragmento.pagina ?? null,
+                indiceFragmento: indice + 1,
+                totalFragmentos: bloques.length,
+                formatoContenido: preparadoManual.formato,
+                fuenteParser: preparadoManual.fuenteParser,
+                modeloParser: preparadoManual.modeloParser || null,
 
                 contenido_texto:
-                  fragmento,
+                  fragmento.texto,
 
                 embedding:
                   vector,
@@ -2646,9 +2557,11 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
     if (!req.file) return res.status(400).json({ ok: false, error: 'Debes seleccionar un archivo.' });
 
     // El tipo de conocimiento se resuelve contra las categorías dinámicas
-    // de MongoDB. Si no se envía, se usa la categoría general.
+    // de MongoDB. Si no se envía, se usa la categoría general. El rol de
+    // quien sube se pasa para que la fuente quede ligada a ese rol.
     const categoria = await ragCategorias.resolverCategoriaParaIngesta(req.body.categoriaId, {
       creadoPor: req.user?.uid,
+      rolCreador: req.user?.rol,
     });
 
     const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
@@ -2674,8 +2587,12 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
       fechaCreacion: new Date(),
     });
 
-    const texto = await extraerTextoArchivo(req.file);
-    const bloques = dividirTextoEnBloques(texto, 800);
+    const preparado = await prepararContenidoIndexable({
+      buffer: await fs.promises.readFile(req.file.path),
+      nombreArchivo: req.file.originalname,
+      extension: path.extname(req.file.originalname || '').toLowerCase(),
+    });
+    const bloques = prepararFragmentos(preparado);
     if (!bloques.length) {
       await referencia.update({ estadoIndexacion: 'sin_texto', actualizadoEn: new Date() });
       return res.status(201).json({ ok: true, archivo: { id: referencia.id }, mensaje: 'Archivo guardado. Este formato no contiene texto que pueda indexarse automáticamente.' });
@@ -2685,9 +2602,18 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
       archivoId: referencia.id,
       nombreArchivo: req.file.originalname,
       nombreManual: String(req.body.nombre || path.parse(req.file.originalname).name).trim(),
-      titulo_seccion: `${req.file.originalname} (Parte ${indice + 1})`,
-      contenido_texto: fragmento,
-      embedding: await generarEmbedding(fragmento),
+      titulo_seccion: tituloSeccionDelFragmento(fragmento, req.file.originalname, indice, bloques.length),
+      // Rastro del parser estructurado: sin esto no se puede saber si un
+      // fragmento salió de Markdown o de pdf2json ni en qué parte va.
+      rutaTitulos: fragmento.rutaTitulos || '',
+      pagina: fragmento.pagina ?? null,
+      indiceFragmento: indice + 1,
+      totalFragmentos: bloques.length,
+      formatoContenido: preparado.formato,
+      fuenteParser: preparado.fuenteParser,
+      modeloParser: preparado.modeloParser || null,
+      contenido_texto: fragmento.texto,
+      embedding: await generarEmbedding(fragmento.texto),
       // La categoría se graba en cada vector para poder auditar y aislar
       // el origen del embedding.
       categoriaId: categoria.id,
@@ -2710,6 +2636,276 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
     res.status(error.status || 500).json({ ok: false, error: error.message || 'No se pudo procesar el archivo.' });
   }
 });
+
+async function cargarArchivoParaActualizar(req, res, next) {
+  try {
+    if (!usuarioActivo(req, res)) return;
+    const documento = await db.collection('archivos').doc(req.params.id).get();
+    if (!documento.exists || documento.data().activo !== true || documento.data().eliminado === true) {
+      return res.status(404).json({ ok: false, error: 'Archivo no encontrado.' });
+    }
+    const item = documento.data();
+    if (!puedeGestionarArchivo(req.user, item)) {
+      return res.status(403).json({ ok: false, error: 'Solo la persona que subió el archivo o un administrador puede actualizarlo.' });
+    }
+
+    const permitidas = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
+    const permitidasIds = new Set(permitidas.map((categoria) => categoria.id));
+    if (!puedeVerArchivoEnCategoria(item, permitidasIds)) {
+      return res.status(403).json({ ok: false, error: 'No tienes acceso a la categoría de este archivo.' });
+    }
+
+    next();
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message || 'No se pudo validar el archivo.' });
+  }
+}
+
+app.post(
+  '/api/archivos/:id/actualizar',
+  verifyToken,
+  cargarArchivoParaActualizar,
+  uploadArchivo.single('archivo'),
+  async (req, res) => {
+    const referencia = db.collection('archivos').doc(req.params.id);
+    let lockAdquirido = false;
+    let vectoresNuevosInsertados = false;
+    let vectoresAnteriores = [];
+    let coleccionVectores = null;
+    let archivoAnterior = null;
+    const versionNueva = crypto.randomUUID();
+
+    const limpiarArchivoNuevo = async () => {
+      if (req.file?.path) {
+        await eliminarArchivoYCarpetasVacias(
+          req.file.path,
+          path.resolve(__dirname, '../storage/archivos')
+        );
+      }
+    };
+
+    const quitarLock = async () => {
+      if (lockAdquirido) {
+        await referencia.update({
+          actualizacionEnCurso: false,
+          actualizacionEnCursoPor: FieldValue.delete(),
+          actualizacionEnCursoEn: FieldValue.delete(),
+        });
+        lockAdquirido = false;
+      }
+    };
+
+    try {
+      if (!req.file) return res.status(400).json({ ok: false, error: 'Debes seleccionar el nuevo documento.' });
+      const extensionesPermitidas = new Set([
+        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.vsdx',
+        '.txt', '.rtf', '.odt', '.ods', '.odp', '.csv',
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
+      ]);
+      const extensionNueva = path.extname(req.file.originalname || '').toLowerCase();
+      if (!extensionesPermitidas.has(extensionNueva)) {
+        await limpiarArchivoNuevo();
+        return res.status(400).json({ ok: false, error: 'Este formato de archivo no está permitido.' });
+      }
+
+      const bloqueo = await db.runTransaction(async (transaccion) => {
+        const documento = await transaccion.get(referencia);
+        if (!documento.exists) return 'Archivo no encontrado.';
+        const item = documento.data();
+        if (item.activo !== true || item.eliminado === true) return 'El archivo ya no está disponible.';
+        if (!puedeGestionarArchivo(req.user, item)) return 'Solo la persona que subió el archivo o un administrador puede actualizarlo.';
+        const creadoLock = parseFechaFirestore(item.actualizacionEnCursoEn);
+        const lockVigente = item.actualizacionEnCurso === true
+          && creadoLock
+          && Date.now() - creadoLock.getTime() < 20 * 60 * 1000;
+        if (lockVigente) return 'Este archivo ya se está actualizando. Inténtalo de nuevo en unos minutos.';
+
+        transaccion.update(referencia, {
+          actualizacionEnCurso: true,
+          actualizacionEnCursoPor: req.user.uid,
+          actualizacionEnCursoEn: new Date(),
+        });
+        return null;
+      });
+      if (bloqueo) {
+        await limpiarArchivoNuevo();
+        return res.status(bloqueo === 'Archivo no encontrado.' ? 404 : 409)
+          .json({ ok: false, error: bloqueo });
+      }
+      lockAdquirido = true;
+
+      const documentoActual = await referencia.get();
+      if (!documentoActual.exists) throw new Error('El archivo dejó de existir durante la actualización.');
+      archivoAnterior = documentoActual.data();
+      const { categoria, activa, error: errorCategoria } = await coleccionesDeCategoria(archivoAnterior);
+      if (errorCategoria || !categoria?.activa) {
+        throw new Error(errorCategoria || 'La categoría del archivo está inactiva.');
+      }
+      coleccionVectores = getDB().collection(activa);
+
+      const nombreArchivo = req.file.originalname;
+      const nombre = String(archivoAnterior.nombre || path.parse(nombreArchivo).name).trim();
+      const preparado = await prepararContenidoIndexable({
+        buffer: await fs.promises.readFile(req.file.path),
+        nombreArchivo,
+        extension: extensionNueva,
+      });
+      const bloques = prepararFragmentos(preparado);
+      const resultados = await procesarConcurrencia(
+        bloques,
+        EMBEDDING_CONCURRENCY,
+        async (fragmento, indice) => ({
+          archivoId: req.params.id,
+          versionArchivo: versionNueva,
+          nombreArchivo,
+          nombreManual: nombre,
+          titulo_seccion: tituloSeccionDelFragmento(fragmento, nombreArchivo, indice, bloques.length),
+          rutaTitulos: fragmento.rutaTitulos || '',
+          pagina: fragmento.pagina ?? null,
+          indiceFragmento: indice + 1,
+          totalFragmentos: bloques.length,
+          formatoContenido: preparado.formato,
+          fuenteParser: preparado.fuenteParser,
+          modeloParser: preparado.modeloParser || null,
+          contenido_texto: fragmento.texto,
+          embedding: await generarEmbedding(fragmento.texto),
+          categoriaId: categoria.id,
+          categoriaNombre: categoria.nombre,
+          fechaIndexacion: new Date(),
+        })
+      );
+      const vectoresNuevos = resultados.filter((resultado) => resultado && !resultado.error
+        && Array.isArray(resultado.embedding));
+      if (bloques.length && !vectoresNuevos.length) {
+        throw new Error('No se pudo generar embeddings para el nuevo documento.');
+      }
+
+      vectoresAnteriores = await coleccionVectores.find({ archivoId: req.params.id }).toArray();
+      if (vectoresNuevos.length) {
+        vectoresNuevosInsertados = true;
+        await coleccionVectores.insertMany(vectoresNuevos, { ordered: false });
+      }
+      await coleccionVectores.deleteMany({
+        archivoId: req.params.id,
+        versionArchivo: { $ne: versionNueva },
+      });
+
+      const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
+      await referencia.update({
+        nombreArchivo,
+        rutaLocal,
+        tipoMime: req.file.mimetype || 'application/octet-stream',
+        tamano: req.file.size,
+        extension: extensionNueva,
+        estadoIndexacion: vectoresNuevos.length ? 'completada' : 'sin_texto',
+        fragmentosIndexados: vectoresNuevos.length,
+        fuenteParser: preparado.fuenteParser,
+        modeloParser: preparado.modeloParser || null,
+        actualizadoEn: new Date(),
+        actualizadoPor: req.user.uid,
+        actualizadoPorNombre: nombreUsuarioActual(req.user),
+        actualizacionEnCurso: false,
+        actualizacionEnCursoPor: FieldValue.delete(),
+        actualizacionEnCursoEn: FieldValue.delete(),
+      });
+      lockAdquirido = false;
+
+      if (archivoAnterior.rutaLocal) {
+        const raizArchivos = path.resolve(__dirname, '../storage/archivos');
+        const rutaAnterior = path.resolve(__dirname, '..', archivoAnterior.rutaLocal);
+        if (!rutaAnterior.startsWith(`${raizArchivos}${path.sep}`)) {
+          console.error(`[ARCHIVOS] Se conservó una ruta anterior fuera del almacenamiento permitido (archivo ${req.params.id}).`);
+        } else if (rutaAnterior !== path.resolve(req.file.path)) {
+          try {
+            await eliminarArchivoYCarpetasVacias(rutaAnterior, raizArchivos);
+          } catch (error) {
+            console.error(`[ARCHIVOS] El documento se actualizó, pero no se pudo retirar el archivo anterior (${req.params.id}):`, error.message);
+          }
+        }
+      }
+
+      res.json({
+        ok: true,
+        archivo: { id: req.params.id, nombreArchivo, categoriaId: categoria.id },
+        mensaje: vectoresNuevos.length
+          ? `Documento reemplazado e indexado correctamente en "${categoria.nombre}" para el asistente IA.`
+          : 'Documento reemplazado. El formato no contiene texto que pueda indexarse automáticamente.',
+      });
+    } catch (error) {
+      if (coleccionVectores && vectoresNuevosInsertados) {
+        try {
+          await coleccionVectores.deleteMany({
+            archivoId: req.params.id,
+            versionArchivo: versionNueva,
+          });
+        } catch (errorLimpieza) {
+          console.error(`[ARCHIVOS] No se pudieron retirar los nuevos vectores tras un fallo (${req.params.id}):`, errorLimpieza.message);
+        }
+      }
+      if (coleccionVectores && vectoresAnteriores.length) {
+        try {
+          await coleccionVectores.bulkWrite(
+            vectoresAnteriores.map((vector) => ({
+              replaceOne: {
+                filter: { _id: vector._id },
+                replacement: vector,
+                upsert: true,
+              },
+            })),
+            { ordered: false }
+          );
+        } catch (errorRestauracion) {
+          console.error(`[ARCHIVOS] No se pudieron restaurar todos los vectores anteriores (${req.params.id}):`, errorRestauracion.message);
+        }
+      }
+      if (lockAdquirido) {
+        try {
+          const camposAnteriores = [
+            'nombreArchivo',
+            'rutaLocal',
+            'tipoMime',
+            'tamano',
+            'extension',
+            'estadoIndexacion',
+            'fragmentosIndexados',
+            'fuenteParser',
+            'modeloParser',
+            'actualizadoEn',
+            'actualizadoPor',
+            'actualizadoPorNombre',
+          ];
+          const restauracion = Object.fromEntries(camposAnteriores.map((campo) => [
+            campo,
+            Object.prototype.hasOwnProperty.call(archivoAnterior || {}, campo)
+              ? archivoAnterior[campo]
+              : FieldValue.delete(),
+          ]));
+          await referencia.update({
+            ...restauracion,
+            actualizacionEnCurso: false,
+            actualizacionEnCursoPor: FieldValue.delete(),
+            actualizacionEnCursoEn: FieldValue.delete(),
+          });
+          lockAdquirido = false;
+        } catch (errorRestauracion) {
+          console.error(`[ARCHIVOS] No se pudieron restaurar los metadatos anteriores (${req.params.id}):`, errorRestauracion.message);
+        }
+      }
+      try {
+        await limpiarArchivoNuevo();
+      } catch (errorLimpieza) {
+        console.error(`[ARCHIVOS] No se pudo retirar el archivo temporal de reemplazo (${req.params.id}):`, errorLimpieza.message);
+      }
+      try {
+        await quitarLock();
+      } catch (errorLock) {
+        console.error(`[ARCHIVOS] No se pudo liberar el bloqueo de actualización (${req.params.id}):`, errorLock.message);
+      }
+      console.error(`[ARCHIVOS] Error al actualizar el archivo ${req.params.id}:`, error.message);
+      res.status(error.status || 500).json({ ok: false, error: error.message || 'No se pudo reemplazar el documento.' });
+    }
+  }
+);
 
 // Un archivo solo se lista y se descarga si su categoría está entre las
 // fuentes permitidas para el rol. Así, quitarle una categoría a un rol en
@@ -2828,6 +3024,11 @@ async function moverArchivoAPapelera(id, user) {
   if (!documento.exists) return { id, ok: false, error: 'Archivo no encontrado.' };
   const item = documento.data();
   if (item.eliminado === true) return { id, ok: false, error: 'El archivo ya está en la papelera.' };
+  const fechaInicioActualizacion = parseFechaFirestore(item.actualizacionEnCursoEn);
+  const actualizacionVigente = item.actualizacionEnCurso === true
+    && fechaInicioActualizacion
+    && Date.now() - fechaInicioActualizacion.getTime() < 20 * 60 * 1000;
+  if (actualizacionVigente) return { id, ok: false, error: 'El archivo se está actualizando. Inténtalo de nuevo en unos minutos.' };
   if (!puedeGestionarArchivo(user, item)) return { id, ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' };
 
   // Migrar los vectores de RAG a la papelera DE SU CATEGORÍA, para no
@@ -3135,6 +3336,8 @@ async function buscarPorSimilitudEnMemoria(coleccion, vectorConsulta, fuente, li
           archivoId: 1,
           nombreManual: 1,
           titulo_seccion: 1,
+          rutaTitulos: 1,
+          pagina: 1,
           contenido_texto: 1,
           embedding: 1,
         },
@@ -3457,6 +3660,10 @@ app.post(
 
                   titulo_seccion: 1,
 
+                  rutaTitulos: 1,
+
+                  pagina: 1,
+
                   contenido_texto: 1,
 
                   score: {
@@ -3502,7 +3709,25 @@ const resultadosPorFuente = esPreguntaDeReportes
           fuentesListas.map(buscarEnFuente)
         );
 
-      // ========================================================
+const resultadosInventario = esPreguntaDeReportes
+  ? []
+  : await inventorySync.buscarInventario(preguntaLimpia)
+    .catch((error) => {
+      console.error(`[CHAT] No se pudo consultar el inventario RAG: ${error.message}`);
+      return [];
+    });
+const filasInventario = resultadosInventario.map((fila) => ({
+  nombreManual: fila.tipo === 'mwd' ? 'Registro de inventario MWD' : 'Registro de inventario Motores',
+  titulo_seccion: fila.metadata_original?.codigo_visible || fila.codigo,
+  contenido_texto: fila.texto_plano,
+  score: Number(fila.score || 0),
+  esInventario: true,
+  inventarioTipo: fila.tipo,
+  codigoVisible: fila.metadata_original?.codigo_visible || fila.codigo,
+  metadataOriginal: fila.metadata_original || {},
+}));
+
+// ========================================================
       // 2B. WEB DE LA EMPRESA (northservices.com.pe)
       // ========================================================
       // Esta fuente no es una categoría de conocimiento: describe la casa y sus
@@ -3522,6 +3747,7 @@ const resultadosPorFuente = esPreguntaDeReportes
 
       const filasContexto = [
         ...resultadosPorFuente.flat(),
+        ...filasInventario,
         ...resultadosWeb
       ];
 
@@ -3567,6 +3793,8 @@ const resultadosPorFuente = esPreguntaDeReportes
             fila.score >= (
               fila.origenWeb
                 ? webEmpresa.UMBRAL_RELEVANCIA
+                : fila.esInventario
+                  ? Number(process.env.INVENTARIO_RAG_SCORE_THRESHOLD || '0.45')
                 : RAG_SCORE_THRESHOLD
             )
         );
@@ -3861,6 +4089,15 @@ CÓMO RESPONDER A PREGUNTAS DE ESTA SECCIÓN:
 - Si la pregunta es SOBRE PAGO de un kit específico, indica
   explícitamente el valor de estadoPago de ese equipo, su
   ubicación, su código KIT y si corresponde comentario.
+- "Total de equipos registrados" NO es "total de equipos operativos".
+  Para decir cuántos están operativos usa EXCLUSIVAMENTE la línea
+  "Equipos activos" de ESTADO DE SERVICIO, y para pagados usa
+  "Equipos pagados". Nunca presentes el total de registros como un
+  total de equipos en operación.
+- Todo total que escribas debe coincidir exactamente con el desglose que
+  muestras debajo. Si detallas 1 kit pagado y 2 pendientes, di "3 kits en
+  total: 1 pagado y 2 pendientes"; no digas "3 kits operativos y 2 en
+  reserva", porque eso sumaría 5.
 
 ESTADO DE PAGOS GENERAL:
 - Equipos pagados: ${datosStarlink.filter(p => p.estadoPago === 'pagado').length}
@@ -4050,9 +4287,31 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
         resultadosRelevantes
           .map(
             (f, index) => {
+              if (f.esInventario) {
+                const inventarioNombre = f.inventarioTipo === 'mwd'
+                  ? 'MWD'
+                  : 'Motores';
+                return `
+REGISTRO DE INVENTARIO ${inventarioNombre}
+Código visible del equipo: ${f.codigoVisible}
+Tipo de equipo: ${f.metadataOriginal.nombre || 'no especificado'}
+Relevancia: ${Number(f.score || 0).toFixed(4)}
+Datos registrados:
+${f.contenido_texto}
+`;
+              }
+
               const descargasFuente = obtenerDescargasFuente(f);
               const bloqueDescargas = descargasFuente.length
                 ? `\nMATERIALES DESCARGABLES LIGADOS A ESTE DOCUMENTO (el sistema ya muestra los botones de descarga en la interfaz): ${descargasFuente.map((d) => d.etiqueta).join(', ')}. REGLAS: (a) confirma al usuario que puede obtenerlos con el botón de descarga; (b) PROHIBIDO enumerar, listar o mencionar en tu respuesta los nombres de estos archivos (no digas ".zip", no digas ".pdf", no menciones los nombres de archivo); (c) no digas que no están disponibles ni que no se mencionan.\n`
+                : '';
+              // Solo existen cuando el fragmento salió del parser
+              // estructurado; con pdf2json no se añaden y no cambia nada.
+              const ubicacion = f.rutaTitulos
+                ? `Ubicación en el documento: ${f.rutaTitulos}\n`
+                : '';
+              const pagina = f.pagina
+                ? `Página: ${f.pagina}\n`
                 : '';
               return `
 FUENTE ${index + 1}${index === 0 ? ' (PRIMERA Y PRIORITARIA: si el usuario pregunta por "el primer torque log", esta es la fuente que debes usar)' : ''}
@@ -4064,7 +4323,7 @@ Sección: ${
                 f.titulo_seccion ||
                 'Sin sección'
               }
-Fecha del archivo: ${
+${ubicacion}${pagina}Fecha del archivo: ${
                 fechaDesdeNombre(f.nombreManual) ||
                 'no disponible'
               }
@@ -4176,6 +4435,21 @@ empresa y sus servicios.
    web describen justamente lo que se pregunta.
 ` : '';
 
+      const hayContextoInventario = resultadosRelevantes.some((fila) => fila.esInventario);
+      const instruccionInventario = hayContextoInventario ? `
+INSTRUCCIÓN ESPECÍFICA PARA INVENTARIOS:
+
+Los bloques "REGISTRO DE INVENTARIO" son filas actuales de los inventarios MWD
+o Motores, no archivos, manuales ni documentos. Usa el campo "Código visible
+del equipo" y no muestres identificadores internos de base de datos ni claves
+compuestas de sincronización. Para MWD, el código visible corresponde al
+identificador Tool ID; si es numérico, se presenta sin ceros iniciales. No
+conviertas un registro en el nombre de un archivo ni digas que los datos
+provienen de archivos con ese nombre. Responde solo con valores que estén
+presentes en los datos registrados y no atribuyas estados o fechas que no se
+indiquen.
+` : '';
+
       const promptSistema = `
 Eres el Asistente Virtual Oficial de North Services.
 
@@ -4209,10 +4483,18 @@ REGLAS IMPORTANTES:
    CATÁLOGO y el RESUMEN POR CARPETA de esa sección.
 
 2c. REGLAS DE TRAZABILIDAD OBLIGATORIA PARA REPORTES Y TORQUE LOGS (anti-alucinación):
-    - Cada cifra que respondas DEBE indicar obligatoriamente el documento de origen
+    - Cada cifra que respondas debe poder atribuirse a un documento del contexto
       (nombre exacto del archivo, por ejemplo "Torque_Log_20260701_101558.pdf").
       Si no puedes identificar el archivo de origen de una cifra, NO la respondas.
-    - PROHIBIDO mezclar valores de filas belonging a documentos o conexiones distintos.
+    - Cita el nombre del archivo como MÁXIMO UNA VEZ en toda la respuesta, y solo
+      cuando sea imprescindible para que el usuario sepa de dónde salió el dato
+      (por ejemplo, si hay varios archivos con cifras distintas). Si todos los
+      datos vienen del mismo archivo, menciónalo una sola vez al final.
+    - PROHIBIDO repetir el nombre del archivo después de cada dato, cifra, viñeta
+      o frase, y prohibido etiquetas tipo "Archivo:", "Fuente:" o el nombre entre
+      paréntesis pegado a cada valor. La respuesta se lee como una explicación
+      continua, no como una lista de citas.
+    - PROHIBIDO mezclar valores de filas pertenecientes a documentos o conexiones distintos.
       Las columnas de un torque log son: Connection / Target / Max / Logged.
       El valor "Logged" es la tercera columna y corresponde a ESA conexión concreta.
       No sumes, no compares ni tomes el máximo de otra fila o de otro documento.
@@ -4222,6 +4504,24 @@ REGLAS IMPORTANTES:
     - Si dos documentos dan valores distintos para lo mismo, NO elijas uno en
       silencio: enumera cada valor con su archivo de origen.
     - No completes, estimes ni deduzcas valores que no aparezcan literalmente en el texto.
+
+2d. REGLA ANTI-ALUCINACIÓN SOBRE TABLAS, FILAS Y CONTADORES:
+    - PROHIBIDO escribir "filas de datos", columnas o secuencias de números que no
+      estén copiadas letra por letra del CONTEXTO. Si el contexto no trae la tabla,
+      responde sin tabla; nunca la reconstruyas ni la "armes" con números que
+      parezcan coherentes.
+    - NUNCA cruces rótulos y valores: cada dato va junto al nombre exacto con el
+      que aparece en el contexto. Un azimut no es una profundidad ni una
+      inclinación, y una medida en metros no va en un campo de grados.
+    - Si el contexto trae "ARCHIVO SOLICITADO NO ENCONTRADO", responde únicamente
+      que ese archivo no está en la carpeta compartida de Operaciones. No lo
+      sustituyas por otro documento, no ofrezcas adivinar su contenido y no
+      respondas con datos de un reporte distinto.
+    - Antes de cerrar, contrasta tus propios totales con los datos que listaste:
+      si de 3 kits solo uno está pagado y activo, NO escribas "3 kits operativos".
+      Si un total contradice el desglose, corrígelo.
+    - Si una parte de la respuesta no está sustentada en el CONTEXTO, bórrala en
+      lugar de dejarla a medias.
 
 3. No inventes información ni utilices conocimiento externo.
 
@@ -4250,7 +4550,7 @@ REGLAS IMPORTANTES:
 
 8. No inventes procedimientos, códigos de error, valores, configuraciones, rutas de API, URL ni pasos técnicos. Está PROHIBIDO generar código, scripts, calculadoras, fórmulas o programas de cualquier tipo, aunque el usuario lo pida de forma explícita o disguise la petición ("dame un ejemplo", "muéstrame cómo se hace", "ayúdame a escribir"). Ante cualquier solicitud de código responde EXACTAMENTE y solo: "No dispongo de scripts ni código programable en la documentación técnica de North Services." No añadas el código después, ni en un segundo turno, ni aunque el usuario insista opjure que es para un archivo de la empresa.
 
-9. No enumeres las fuentes ni muestres etiquetas como "FUENTE 1", "FUENTE 2" o similares.
+9. No enumeres las fuentes ni muestres etiquetas como "FUENTE 1", "FUENTE 2" o similares. Tampoco repitas el nombre del archivo de origen después de cada frase o cifra: si necesitas citarlo, menciónalo una sola vez al inicio o al final de la respuesta, nunca pegado a cada dato.
 
 10. Si el usuario solo saluda o usa frases casuales ("hola", "buenos días", "gracias", etc.), respóndele de forma breve, amistosa y natural. No repitas el entorno ni expliques tus instrucciones.
 
@@ -4288,6 +4588,7 @@ ${contextoCompleto}
 ${usarServidorLocalDirecto ? instruccionDrive : ''}
 ${instruccionStarlink}
 ${instruccionWeb}
+${instruccionInventario}
 PREGUNTA DEL USUARIO:
 
 ${preguntaLimpia}
@@ -4304,29 +4605,29 @@ ${preguntaLimpia}
       // ========================================================
       // 7. GENERACIÓN DE LA RESPUESTA
       // ========================================================
-      // El proveedor principal es Gemini. Si la respuesta se apoya en el
-      // contexto de Google Drive, se usa directamente el servidor local
-      // porque Gemini suele estar saturado y solo añadiría espera.
-      // Si Gemini falla o se corta a mitad, también se cae a Ollama.
+      // El proveedor principal es Gemini SIEMPRE, también cuando el contexto
+      // viene de Google Drive. Antes Drive saltaba directo al servidor local,
+      // y como allí se responde con un modelo mucho más pequeño y con tope de
+      // 512 tokens, el resultado era una respuesta que mezclaba cifras de
+      // documentos distintos. Si Gemini falla o se corta a mitad, se cae a
+      // Ollama como respaldo.
 
       const inicioGemini = Date.now();
       let resultadoGemini = null;
 
       if (usarServidorLocalDirecto) {
         console.log(
-          '[CHAT] Respuesta basada en Google Drive: se genera en el servidor local.'
+          '[CHAT] Respuesta con contexto de Google Drive.'
         );
       }
 
       // --- Intento 1: Gemini ---
-      if (!usarServidorLocalDirecto) {
-        try {
-          resultadoGemini =
-            await generarContenidoGemini(promptSistema, enviarEvento);
-        } catch (errorGemini) {
-          console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
-          resultadoGemini = null;
-        }
+      try {
+        resultadoGemini =
+          await generarContenidoGemini(promptSistema, enviarEvento);
+      } catch (errorGemini) {
+        console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
+        resultadoGemini = null;
       }
 
       // --- Si Gemini cortó la respuesta a mitad (stream incompleto), reintentar
@@ -4357,14 +4658,10 @@ ${preguntaLimpia}
       if (!resultadoGemini || !resultadoGemini.completo) {
         enviarEvento({ tipo: 'texto_reset' });
 
-        // Con contexto de Drive el servidor local ya es el proveedor
-        // principal, así que no se avisa de una caída que no ha ocurrido.
-        if (!usarServidorLocalDirecto) {
-          enviarEvento({
-            tipo: 'estado',
-            mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
-          });
-        }
+        enviarEvento({
+          tipo: 'estado',
+          mensaje: 'El proveedor principal está ocupado, intentando servidor local...'
+        });
 
         try {
           resultadoGemini =
@@ -4545,13 +4842,22 @@ app.get('/api/admin/rag/colecciones', verifyToken, requireAdmin, async (req, res
   }
 });
 
-// Categorías activas disponibles para la pantalla de subida de archivos.
-// No filtra por rol a propósito: elegir la categoría de un archivo nuevo
-// no es lo mismo que poder consultar el contenido ya publicado.
+// Categorías que este usuario puede usar de verdad: tanto para elegir dónde
+// subir como para filtrar lo que ya subió.
+//
+// Antes devolvía TODAS las categorías "a propósito", pero eso hacía que la
+// biblioteca mostrara filtros de conocimiento que el rol no puede consultar
+// (por ejemplo "Plot" en un perfil sin ese acceso), mientras que la lista de
+// fichas y la IA sí venían restringidas: el usuario veía un filtro que nunca
+// daba resultados. Ahora esta llamada usa EXACTAMENTE la misma regla que
+// GET /api/archivos, así filtro y fichas siempre coinciden.
+//
+// El Administrador sigue viendo todo. El resto ve las suyas, las compartidas
+// y las que creó él mismo, que el backend le otorga al crearlas.
 app.get('/api/rag/categorias', verifyToken, async (req, res) => {
   try {
     if (!usuarioActivo(req, res)) return;
-    const categorias = await ragCategorias.listarCategorias({ incluirInactivas: true });
+    const categorias = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
     res.json({ ok: true, categorias });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
@@ -5023,6 +5329,8 @@ function calcularEstadoPago(datos) {
   return 'no_pagado';
 }
 
+const servicioRecordatoriosStarlink = crearServicioRecordatorios({ db });
+
 app.get(
   '/api/admin/usuarios',
   verifyToken,
@@ -5311,6 +5619,32 @@ app.delete('/api/papelera/:id/definitivo', verifyToken, async (req, res) => {
 // existen para que el Administrador pueda reindexarla cuando la web cambie.
 // ============================================================
 
+app.get('/api/admin/sync/inventarios/estado', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    res.json({ ok: true, inventarios: await inventorySync.obtenerEstados() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+const iniciarSyncInventario = (tipo) => async (req, res) => {
+  try {
+    const resultado = inventorySync.iniciarSincronizacion(tipo);
+    return res.status(resultado.iniciada ? 202 : 200).json({
+      ok: true,
+      ...resultado,
+      mensaje: resultado.iniciada
+        ? 'Sincronización iniciada.'
+        : 'Ya hay una sincronización de este inventario en curso.',
+    });
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message });
+  }
+};
+
+app.post('/api/admin/sync/inventario-mwd', verifyToken, requireAdmin, iniciarSyncInventario('mwd'));
+app.post('/api/admin/sync/inventario-motores', verifyToken, requireAdmin, iniciarSyncInventario('motores'));
+
 app.get('/api/admin/web-empresa/estado', verifyToken, requireAdmin, async (req, res) => {
   try {
     const estado = await webEmpresa.obtenerEstado();
@@ -5378,6 +5712,7 @@ connectDB()
       console.log(`[CONFIG] RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`);
       console.log(`[CONFIG] EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`);
     });
+    servicioRecordatoriosStarlink.iniciar();
     purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar al iniciar:', error.message));
     setInterval(() => {
       purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar:', error.message));

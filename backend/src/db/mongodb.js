@@ -25,4 +25,14 @@ function getDB() {
   return dbInstance;
 }
 
-module.exports = { connectDB, getDB };
+function getDatabase(nombre) {
+  if (!dbInstance) {
+    throw new Error('La base de datos MongoDB no ha sido inicializada.');
+  }
+  if (!['north_services_db', 'mwd', 'motores'].includes(nombre)) {
+    throw new Error('Nombre de base de datos MongoDB no permitido.');
+  }
+  return client.db(nombre);
+}
+
+module.exports = { connectDB, getDB, getDatabase };

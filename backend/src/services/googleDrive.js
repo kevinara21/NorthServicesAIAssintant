@@ -1,9 +1,8 @@
 /**
  * Integración con Google Drive API para el RAG híbrido.
  *
- * Autenticación: estricta y únicamente mediante el archivo de credenciales
- * de Service Account `mantenimiento-476814-5b28adda0b55.json`
- * (cuenta: mantenimiento-drive-app-696@mantenimiento-476814.iam.gserviceaccount.com).
+ * Autenticación: Application Default Credentials en producción; archivo
+ * local ignorado por Git como respaldo de desarrollo.
  *
  * Uso: leer los reportes diarios (PDF) de la carpeta compartida de Operaciones
  * en modo buffer/media para pasarlos a Gemini (extracción de tablas y resumen).
@@ -55,18 +54,15 @@ const DRIVE_TIMEOUT_PDF_MS = Number(process.env.DRIVE_TIMEOUT_PDF_MS || '30000')
 let clienteAuthCache = null;
 
 function obtenerCredenciales() {
-  if (!fs.existsSync(RUTA_CREDENCIALES)) {
-    throw new Error(
-      `No se encontró el archivo de credenciales del Service Account en ${RUTA_CREDENCIALES}`
-    );
-  }
-  return RUTA_CREDENCIALES;
+  if (process.env.NODE_ENV === 'production' || process.env.GOOGLE_APPLICATION_CREDENTIALS) return null;
+  return fs.existsSync(RUTA_CREDENCIALES) ? RUTA_CREDENCIALES : null;
 }
 
 async function obtenerCliente() {
   if (clienteAuthCache) return clienteAuthCache;
+  const keyFile = obtenerCredenciales();
   const auth = new GoogleAuth({
-    keyFile: obtenerCredenciales(),
+    ...(keyFile ? { keyFile } : {}),
     scopes: [SCOPE],
   });
   clienteAuthCache = await auth.getClient();
@@ -352,7 +348,18 @@ async function listarReportesPdf({
 
   const palabrasClave = ['unna', 'olympic', 'gtg', 'savia', '2025', '2026'];
   const preguntaLower = (pregunta || '').toLowerCase();
-  const terminoCarpeta = palabrasClave.find(p => preguntaLower.includes(p));
+
+  // Si el usuario escribió un nombre de archivo concreto
+  // ("Torque_Log_20260722_202948.pdf"), el "2026" que aparece ahí dentro es la
+  // fecha del nombre, no una carpeta. Usarlo como término de carpeta acotaba el
+  // listado a una sola subcarpeta y el archivo pedido quedaba fuera: por eso el
+  // bot respondía "no existe ese archivo".
+  const contieneNombreDeArchivo =
+    /[a-z0-9][a-z0-9_-]*\.[a-z]{2,4}\b/.test(preguntaLower) ||
+    /\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/.test(preguntaLower);
+  const terminoCarpeta = contieneNombreDeArchivo
+    ? undefined
+    : palabrasClave.find(p => preguntaLower.includes(p));
 
   let archivos = [];
 

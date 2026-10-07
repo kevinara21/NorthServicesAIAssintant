@@ -461,9 +461,33 @@
 .web-pagina__aviso--info { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
 .web-pagina__aviso--exito { border-color: #bbf7d0; background: #f0fdf4; color: #15803d; }
 .web-pagina__aviso--error { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+.inventario-sync { margin: 0 0 28px; padding: 20px; border: 1px solid #e2e8f0; border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
+.inventario-sync__encabezado { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.inventario-sync__encabezado h3 { margin: 0; color: #0f172a; font-size: 17px; }
+.inventario-sync__encabezado p { margin: 5px 0 0; color: #64748b; font-size: 13px; line-height: 1.5; }
+.inventario-sync__encabezado > svg { flex: 0 0 auto; color: #b5181c; font-size: 22px; }
+.inventario-sync__rejilla { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.inventario-sync__tarjeta { min-width: 0; padding: 16px; border: 1px solid #e2e8f0; border-radius: 11px; background: #f8fafc; }
+.inventario-sync__tarjeta-cabecera { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.inventario-sync__tarjeta-cabecera > strong { color: #0f172a; font-size: 14px; }
+.inventario-sync__estado { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; background: #e2e8f0; color: #475569; font-size: 11px; font-weight: 700; }
+.inventario-sync__estado--sincronizando { background: #dbeafe; color: #1d4ed8; }
+.inventario-sync__estado--completado { background: #dcfce7; color: #15803d; }
+.inventario-sync__estado--error { background: #fee2e2; color: #b91c1c; }
+.inventario-sync__metrica { margin: 7px 0; color: #64748b; font-size: 12px; line-height: 1.5; }
+.inventario-sync__metrica strong { color: #334155; font-weight: 600; }
+.inventario-sync__progreso { margin: 12px 0; }
+.inventario-sync__progreso-detalle { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 5px; color: #475569; font-size: 11px; }
+.inventario-sync__progreso progress { display: block; width: 100%; height: 9px; accent-color: #b5181c; }
+.inventario-sync__error { margin: 10px 0; color: #b91c1c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.inventario-sync__boton { min-height: 38px; margin-top: 10px; padding: 8px 14px; font-size: 12px; }
 @media (max-width: 600px) {
   .web-pagina { align-items: stretch; }
   .web-pagina__boton { width: 100%; }
+  .inventario-sync { padding: 15px; }
+  .inventario-sync__rejilla { grid-template-columns: minmax(0, 1fr); }
+  .inventario-sync__tarjeta-cabecera { align-items: flex-start; flex-direction: column; }
+  .inventario-sync__boton { width: 100%; }
 }
 .admin-users-panel { overflow: hidden; width: 100%; }
 .admin-users-table-wrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -624,6 +648,9 @@
 .billing-heading { margin-bottom: 22px; width: 100%; }
 .billing-heading h1 { margin: 8px 0; font-size: clamp(2rem, 4vw, 3rem); }
 .billing-heading p { width: 100%; max-width: none; font-size: 15px; color: var(--color-text-muted); }
+/* Acciones de la cabecera de Starlink. Sin flex-wrap los botones se
+   apretaban en una sola fila cuando en móvil ganaba width:100%. */
+.billing-heading__acciones { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
 .billing-form { margin-bottom: 22px; padding: 24px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); box-shadow: var(--shadow-sm); width: 100%; }
 .billing-form-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
 .billing-form-header h3 { font-size: 18px; }
@@ -711,10 +738,15 @@
   .dashboard-topbar-user > span:first-child { display: none; }
   .dashboard-view { padding: 24px 20px; }
   .dashboard-home-layout { grid-template-columns: 1fr; gap: 28px; }
-  .company-inventory-links { grid-template-columns: 1fr; }
+  /* Los dos bloques del inicio (Tus herramientas y Administración) deben
+     apilarse igual en móvil. La regla de Administración es más específica
+     que la genérica, así que hay que repetirla aquí para que gane. */
+  .company-inventory-links,
+  .dashboard-admin .company-inventory-links { grid-template-columns: 1fr; }
   .dashboard-quick-links { grid-template-columns: 1fr; }
   .profile-grid, .profile-personal-grid, .profile-password-fields { grid-template-columns: 1fr; gap: 0; }
   .profile-primary-button, .profile-secondary-button { width: 100%; }
+  .billing-heading__acciones { flex-direction: column; }
   .floating-ai-button { right: 18px; bottom: 18px; }
   .floating-ai-panel { right: 16px; bottom: 76px; width: calc(100vw - 32px); }
 }
@@ -1012,7 +1044,10 @@
 .modal-monitoreo-pozo-overlay { z-index: 3000; align-items: flex-start; padding: 32px 16px; overflow-y: auto; background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); }
 .modal-monitoreo-pozo { width: min(820px, 100%); max-height: calc(100vh - 64px); display: flex; flex-direction: column; overflow: hidden; border-radius: var(--border-radius-lg); background: var(--color-white); box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28); animation: scaleIn var(--transition-medium); }
 .modal-monitoreo-pozo-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 22px; background: var(--color-black); color: var(--color-white); }
-.modal-monitoreo-pozo-header h2 { margin: 2px 0 0; color: var(--color-white); font-size: 20px; }
+/* sin min-width: 0 el bloque de texto no puede encogerse y empuja el botón de
+   cerrar fuera del modal cuando el nombre del pozo es largo. */
+.modal-monitoreo-pozo-header > div { min-width: 0; }
+.modal-monitoreo-pozo-header h2 { margin: 2px 0 0; color: var(--color-white); font-size: 20px; overflow-wrap: anywhere; }
 .modal-monitoreo-pozo-header .dashboard-eyebrow { color: var(--color-primary-light); }
 .modal-monitoreo-pozo-close { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: var(--border-radius-sm); background: transparent; color: var(--color-white); cursor: pointer; transition: background var(--transition-fast); }
 .modal-monitoreo-pozo-close:hover { background: var(--color-primary); color: #fff; }
@@ -1232,9 +1267,11 @@
 }
 
 /* ========== STARLINK DETAILS MODAL ========== */
+/* minmax(0, 1fr) y no 1fr: un correo largo empujaba la columna por encima de
+   su sitio porque la columna podía crecer hasta el tamaño intrínseco. */
 .starlink-details-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -1242,6 +1279,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   padding: 16px;
   background: #f8fafc;
   border-radius: 8px;
@@ -1266,12 +1304,14 @@
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
 }
 
 .starlink-detail-value {
   font-size: 14px;
   font-weight: 600;
   color: #0f172a;
+  overflow-wrap: anywhere;
 }
 
 .billing-action-button {
@@ -1345,6 +1385,47 @@
   
   .starlink-submit-button {
     width: 100%;
+  }
+
+  /* El modal de detalles debe comportarse igual que el de formulario:
+     si no, su botón "Editar" quedaba suelto a la derecha. */
+  .starlink-details-actions {
+    justify-content: stretch;
+  }
+
+  /* En pantallas angostas una sola columna: con dos, correos y fechas se
+     salían de su celda y "Comentario" (span 2) creaba una columna implícita
+     que desbordaba el modal. */
+  .starlink-details-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .starlink-detail-item-full {
+    grid-column: auto;
+  }
+
+  .starlink-detail-item {
+    padding: 13px;
+  }
+
+  /* Más aire para que el modal de detalles (y los que comparten la misma
+     estructura) quepa en pantalla en vez de cortar el contenido. */
+  .modal-monitoreo-pozo-overlay {
+    padding: 16px 10px;
+  }
+
+  .modal-monitoreo-pozo {
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+  }
+
+  .modal-monitoreo-pozo-header {
+    padding: 14px 16px;
+  }
+
+  .modal-monitoreo-pozo-body {
+    padding: 16px 16px 20px;
   }
 }
 .modal-monitoreo-pozo-intro { margin: 0 0 16px; font-size: 14px; color: var(--color-text-muted); }
