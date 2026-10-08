@@ -534,19 +534,17 @@ const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Ren
 async function generarContenidoCompat(
   prompt,
   enviarEvento,
-  { nombre, baseUrl, apiKey, modelo }
+  { nombre, baseUrl, apiKey, modelo, tiempoLimiteMs = 30000, maxTokens = 512 }
 ) {
   if (!baseUrl) {
     throw new Error(`${nombre}: URL base no configurada.`);
   }
 
-  const REQUEST_TIMEOUT = 30000;
-
   const controller =
     new AbortController();
 
   const timeout =
-    setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+    setTimeout(() => controller.abort(), tiempoLimiteMs);
 
   const headers = {
     'Content-Type': 'application/json'
@@ -569,7 +567,7 @@ async function generarContenidoCompat(
         body: JSON.stringify({
           model: modelo,
           stream: true,
-          max_tokens: 512,
+          max_tokens: maxTokens,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: prompt }
@@ -581,7 +579,7 @@ async function generarContenidoCompat(
     console.log(`[CHAT] ${nombre} HTTP: ${Date.now() - inicio} ms`);
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error(`${nombre} tardó demasiado en responder.`);
+      throw new Error(`${nombre} tardó demasiado en responder (${tiempoLimiteMs} ms).`);
     }
     throw error;
   } finally {
@@ -644,7 +642,9 @@ async function generarContenidoOllama(prompt, enviarEvento) {
     nombre: 'Ollama',
     baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
     apiKey: process.env.OLLAMA_API_KEY || '',
-    modelo: process.env.OLLAMA_MODEL || 'llama3.1'
+    modelo: process.env.OLLAMA_MODEL || 'llama3.1',
+    tiempoLimiteMs: Number(process.env.OLLAMA_TIMEOUT_MS || '90000'),
+    maxTokens: Number(process.env.OLLAMA_MAX_TOKENS || '2048'),
   });
 }
 
@@ -1151,7 +1151,8 @@ async function generarContenidoGemini(
 // ============================================================
 
 // Los reportes pueden ser diarios, semanales o por corrida; no se asume una
-// secuencia diaria. Se detecta cualquier consulta sobre reportes de operaciones.
+// secuencia diaria. El historial anual de pozos también aparece en documentos
+// de experiencia operacional y debe buscarse con el RAG, no solo en Drive.
 const PALABRAS_CLAVE_REPORTES = [
   'reporte', 'reportes', 'torque log', 'torque logs', 'torque',
   'casing', 'revestimiento', 'daily report', 'weekly report',
@@ -1254,10 +1255,16 @@ async function geminiExtraerDePdf(
       const url =
         `https://generativelanguage.googleapis.com/v1beta/models/` +
         `${modeloDrive}:generateContent?key=${clave}`;
+      const control = new AbortController();
+      const temporizador = setTimeout(
+        () => control.abort(),
+        Number(process.env.GEMINI_DRIVE_TIMEOUT_MS || '45000')
+      );
       try {
         const respuesta = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: control.signal,
           body: JSON.stringify({
             contents: [{ role: 'user', parts: partes }],
             generationConfig: {
@@ -1280,7 +1287,11 @@ async function geminiExtraerDePdf(
         if (texto && texto.trim()) return texto.trim();
         ultimoError = new Error('Gemini no devolvió texto en la extracción del PDF.');
       } catch (error) {
-        ultimoError = error;
+        ultimoError = error?.name === 'AbortError'
+          ? new Error(`Gemini excedió el límite de ${Number(process.env.GEMINI_DRIVE_TIMEOUT_MS || '45000')} ms al extraer los reportes.`)
+          : error;
+      } finally {
+        clearTimeout(temporizador);
       }
     }
     if (intento < reintentos - 1) {
@@ -1359,14 +1370,78 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
       }
     }
 
-    const archivos = await driveOperaciones.listarReportesPdf({
+    const archivosListados = await driveOperaciones.listarReportesPdf({
       maxResultados: 500,
       pregunta,
       orden
     });
-    if (!archivos.length) {
+    const anioSolicitado = String(pregunta || '').match(/\b(?:19|20)\d{2}\b/)?.[0];
+    let archivos = anioSolicitado
+      ? archivosListados.filter((archivo) =>
+        new RegExp(`(?:^|\\D)${anioSolicitado}(?:\\D|$)`).test(
+          `${archivo.name || ''} ${archivo.carpeta || ''}`
+        )
+      )
+      : archivosListados;
+    if (!archivosListados.length) {
       console.log('[DRIVE] No hay PDFs en la carpeta de Operaciones.');
       return '';
+    }
+    const textosPreextraidos = new Map();
+    if (!archivos.length) {
+      const aliasEmpresa = [
+        { patron: /\bolympic\b|\boly\b/i, archivo: /\bolympic\b|\boly\b/i },
+        { patron: /\bunna\b/i, archivo: /\bunna\b/i },
+        { patron: /\bgtg\b/i, archivo: /\bgtg\b/i },
+        { patron: /\bsavia\b/i, archivo: /\bsavia\b/i }
+      ];
+      const empresaSolicitada = aliasEmpresa.find(({ patron }) => patron.test(pregunta));
+      const candidatos = empresaSolicitada
+        ? archivosListados.filter((archivo) =>
+          empresaSolicitada.archivo.test(`${archivo.name || ''} ${archivo.carpeta || ''}`)
+        )
+        : [];
+
+      if (!candidatos.length) {
+        return { tipo: 'sin-reportes-del-anio', anio: anioSolicitado, candidatos: 0 };
+      }
+
+      if (candidatos.length > 40) {
+        console.warn(`[DRIVE] ${candidatos.length} PDFs relacionados con ${empresaSolicitada.patron} exceden el límite de revisión anual.`);
+        return { tipo: 'demasiados-candidatos', anio: anioSolicitado, cantidad: candidatos.length };
+      }
+
+      let candidatosLeidos = 0;
+      for (let offset = 0; offset < candidatos.length; offset += 3) {
+        const lote = await Promise.all(candidatos.slice(offset, offset + 3).map(async (archivo) => {
+          try {
+            const buffer = await driveOperaciones.descargarArchivoBuffer(archivo.id);
+            const texto = await driveOperaciones.extraerTextoPdf(buffer);
+            textosPreextraidos.set(archivo.id, texto);
+            return texto ? 1 : 0;
+          } catch (errorLectura) {
+            console.warn(`[DRIVE] No se pudo revisar ${archivo.name} para el año ${anioSolicitado}: ${errorLectura.message}`);
+            return 0;
+          }
+        }));
+        candidatosLeidos += lote.reduce((total, leido) => total + leido, 0);
+      }
+
+      archivos = candidatos.filter((archivo) =>
+        new RegExp(`\\b${anioSolicitado}\\b`).test(textosPreextraidos.get(archivo.id) || '')
+      );
+
+      if (!archivos.length) {
+        console.log(`[DRIVE] No hay contenido de reportes de ${empresaSolicitada ? 'la empresa solicitada' : 'archivos coincidentes'} que identifique el año ${anioSolicitado}.`);
+        return {
+          tipo: candidatosLeidos ? 'sin-reportes-del-anio' : 'revision-incompleta',
+          anio: anioSolicitado,
+          candidatos: candidatos.length
+        };
+      }
+    }
+    if (archivos.length > 40) {
+      return { tipo: 'demasiados-candidatos', anio: anioSolicitado, cantidad: archivos.length };
     }
 
     // Resumen por carpeta: responde preguntas de conteo/disponibilidad
@@ -1446,6 +1521,10 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
         // que el modelo lo diga en vez de responder con otro reporte.
         console.log(`[DRIVE] No se encontró "${nombresPreguntados.join('", "')}" en la carpeta de Operaciones.`);
         return [];
+      }
+
+      if (anioSolicitado) {
+        return archivos;
       }
 
       // Cuando el usuario pide un número concreto ("los últimos dos"), la
@@ -1528,28 +1607,36 @@ ${catalogoCompleto}`;
     const nombresUsados = [];
     const textosRespaldo = [];
 
-    for (const archivo of seleccionados) {
-      try {
-        const buffer = await driveOperaciones.descargarArchivoBuffer(archivo.id);
-        nombresUsados.push(archivo.name);
+    const concurrenciaLecturaDrive = 3;
+    for (let offset = 0; offset < seleccionados.length; offset += concurrenciaLecturaDrive) {
+      const lote = await Promise.all(seleccionados
+        .slice(offset, offset + concurrenciaLecturaDrive)
+        .map(async (archivo) => {
+          try {
+            const buffer = await driveOperaciones.descargarArchivoBuffer(archivo.id);
+            let textoPlano = '';
+            try {
+              textoPlano = textosPreextraidos.has(archivo.id)
+                ? textosPreextraidos.get(archivo.id)
+                : await driveOperaciones.extraerTextoPdf(buffer);
+            } catch (errorTexto) {
+              console.warn(`[DRIVE] No se pudo leer el texto de ${archivo.name}: ${errorTexto.message}`);
+            }
+            return { archivo, buffer, textoPlano };
+          } catch (errorArchivo) {
+            console.error(`[DRIVE] Error leyendo ${archivo.name}:`, errorArchivo.message);
+            return null;
+          }
+        }));
 
-        // El texto se lee una sola vez: sirve de contenido para Gemini cuando
-        // el PDF no cabe en línea y también de respaldo si la extracción con
-        // Gemini falla por saturación.
-        let textoPlano = '';
-        try {
-          textoPlano = await driveOperaciones.extraerTextoPdf(buffer);
-        } catch (errorTexto) {
-          console.warn(
-            `[DRIVE] No se pudo leer el texto de ${archivo.name}: ${errorTexto.message}`
-          );
-        }
+      for (const resultado of lote.filter(Boolean)) {
+        const { archivo, buffer, textoPlano } = resultado;
+        nombresUsados.push(archivo.name);
         if (textoPlano && textoPlano.trim()) {
           textosRespaldo.push(
             `DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}`
           );
         }
-
         if (buffer.length <= DRIVE_INLINE_MAX_BYTES) {
           partes.push({
             inlineData: { mimeType: 'application/pdf', data: buffer.toString('base64') }
@@ -1557,8 +1644,6 @@ ${catalogoCompleto}`;
         } else {
           partes.push({ text: `DOCUMENTO: ${archivo.name}\n${textoPlano.slice(0, DRIVE_TEXTO_MAX_CHARS)}` });
         }
-      } catch (errorArchivo) {
-        console.error(`[DRIVE] Error leyendo ${archivo.name}:`, errorArchivo.message);
       }
     }
 
@@ -3862,7 +3947,10 @@ app.post(
               ? 'Batería'
               : clasificacionInventario.equipo.etiqueta;
             const listado = ubicaciones.get(ubicacion) || [];
-            listado.push(codigoNoDisponible ? `${nombreVisible} sin identificador visible` : `${nombreVisible} ${identificador}`);
+            const porcentaje = clasificacionInventario.filtroPorcentaje
+              ? inventorySync.obtenerPorcentajeInventario(metadata)
+              : '';
+            listado.push(`${codigoNoDisponible ? `${nombreVisible} sin identificador visible` : `${nombreVisible} ${identificador}`}${porcentaje !== '' && porcentaje !== null ? ` (${porcentaje}%)` : ''}`);
             ubicaciones.set(ubicacion, listado);
           }
           const detalleUbicaciones = [...ubicaciones.entries()]
@@ -3879,8 +3967,20 @@ app.post(
               : /\belectronic\b/.test(nombreEquipo)
                 ? 'equipos electrónicos'
                 : `equipos ${clasificacionInventario.equipo.nombre}`;
+          const calificadorOperativo = clasificacionInventario.solicitaEstadoOperativo
+            ? (/\bbattery\b/.test(nombreEquipo) ? ' operativas' : ' operativos')
+            : '';
+          const filtroPorcentaje = clasificacionInventario.filtroPorcentaje;
+          const calificadorPorcentaje = filtroPorcentaje
+            ? ` con porcentaje ${({
+                gt: 'mayor de',
+                gte: 'de al menos',
+                lt: 'menor de',
+                lte: 'de como máximo',
+            })[filtroPorcentaje.operador]} ${filtroPorcentaje.valor}%`
+            : '';
           const textoUbicaciones = registros.length
-            ? `Hay ${registros.length} ${nombrePlural} en total. Ubicaciones y equipos:\n${detalleUbicaciones}`
+            ? `Hay ${registros.length} ${nombrePlural}${calificadorOperativo}${calificadorPorcentaje}${codigoKit ? ` en el Kit ${codigoKit}` : ''}. Ubicaciones y equipos:\n${detalleUbicaciones}`
             : `No encontré registros de ${nombrePlural} con ubicación en el inventario.`;
           enviarEvento({ tipo: 'texto', texto: textoUbicaciones });
           enviarEvento({
@@ -3977,10 +4077,14 @@ app.post(
             const ubicacion = metadata.ubicacion || metadata.location;
             const horas = metadata.run_hours;
             const horasCirculadas = metadata.circulated_hours;
+            const porcentaje = inventorySync.obtenerPorcentajeInventario(metadata);
             const detalles = [
               ubicacion ? `ubicación ${ubicacion}` : '',
               horas !== undefined ? `${horas} horas de operación` : '',
               horasCirculadas !== undefined ? `${horasCirculadas} horas circuladas` : '',
+              clasificacionInventario.filtroPorcentaje && porcentaje !== null
+                ? `${porcentaje}%`
+                : '',
             ].filter(Boolean);
             return `- ${nombreSingular} ${identificador}${detalles.length ? ` (${detalles.join('; ')})` : ''}`;
           });
@@ -4481,31 +4585,29 @@ const filasInventario = resultadosInventario.map((fila) => ({
       const inicioStarlink = Date.now();
       let contextoStarlink = '';
 
-      // Detectar si la pregunta está relacionada con Starlink.
-      //
-      // NOTA: la lista incluye términos que normalmente NO irían con
-      // "Starlink" pero que el usuario usa para referirse a un equipo
-      // específico (ej: "fluidos", "perforación", "oficinas", "lote vii",
-      // nombre de ubicación/comentario). Esto es intencional: después
-      // de consultar la BD, si ningún equipo coincide por esos términos,
-      // el contextoStarlink se genera igual pero con un preámbulo que
-      // le dice al LLM "esta información corresponde a kits Starlink",
-      // y si la pregunta no era de Starlink, simplemente no la usa.
+      // Detectar consultas explícitas de Starlink. Las palabras genéricas
+      // como "pozo", "lote" o "fluidos" no bastan: pueden desviar consultas
+      // de operaciones y servicios a la colección de facturación.
       const palabrasClaveStarlink = [
-        'starlink', 'internet satelital', 'vencer', 'pago starlink',
-        'facturación starlink', 'kit starlink', 'antena starlink',
-        'conexión satelital', 'equipo starlink', 'kit', 'antena',
-        'codigo kit', 'código kit', 'serie antena', 'equipo',
-        'pago', 'pagado', 'no pagado', 'vencido', 'factura', 'facturación',
-        'fluido', 'fluidos', 'linea de fluidos', 'línea de fluidos',
-        'perforacion', 'perforación', 'direccional', 'pozo', 'pozos',
-        'ubicacion', 'ubicación', 'oficinas', 'lote', 'campo', 'yacimiento',
-        'fecha ultimo pago', 'fecha último pago', 'inicio periodo',
+        'starlink', 'internet satelital', 'conexion satelital',
+        'kit starlink', 'antena starlink', 'equipo starlink',
+        'codigo kit', 'serie antena', 'fecha ultimo pago', 'inicio periodo',
       ];
       const consultaConContexto = [...contextoUsuario.slice(-2), preguntaLimpia].join(' ');
-      const preguntaMinuscula = consultaConContexto.toLowerCase();
+      const normalizarConsultaStarlink = (texto) => texto
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+      const contieneReferenciaStarlink = (texto) => {
+        const normalizado = normalizarConsultaStarlink(texto);
+        return palabrasClaveStarlink.some((palabra) => normalizado.includes(palabra));
+      };
+      const preguntaMinuscula = normalizarConsultaStarlink(consultaConContexto);
       const esPreguntaStarlink = !clasificacionInventario
-        && palabrasClaveStarlink.some(palabra => preguntaMinuscula.includes(palabra));
+        && (contieneReferenciaStarlink(preguntaLimpia)
+          || /\bkits?\b/.test(normalizarConsultaStarlink(preguntaLimpia))
+          || (/^(?:y|tambien|ademas|en ese caso)\b/i.test(normalizarConsultaStarlink(preguntaLimpia))
+            && contextoUsuario.slice(-2).some(contieneReferenciaStarlink)));
 
       console.log(`[CHAT] Pregunta: "${preguntaLimpia}"`);
       console.log(`[CHAT] ¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
@@ -4531,11 +4633,7 @@ const filasInventario = resultadosInventario.map((fila) => ({
           const datosStarlink = await mongoDb.collection('starlink_bot').find({}).toArray();
           console.log(`[CHAT] Se encontraron ${datosStarlink.length} registros de Starlink`);
 
-          const normalizarConsultaStarlink = (texto) => texto
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .toLowerCase();
-          const consultaStarlink = normalizarConsultaStarlink(consultaConContexto);
+          const consultaStarlink = preguntaMinuscula;
           const preguntaStarlinkActual = normalizarConsultaStarlink(preguntaLimpia);
           const consultaPideConteoStarlink = /\b(?:cuant\w*|cantidad|numero|total|how\s+many)\b/.test(preguntaStarlinkActual);
           const consultaPideListadoStarlink = /\b(?:kit|kits|starlink)\b/.test(consultaStarlink);
@@ -4719,6 +4817,28 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
         console.log(`[CHAT] Contexto Drive generado: ${contextoDrive ? 'SÍ' : 'NO'}`);
       }
 
+      if (contextoDrive && typeof contextoDrive === 'object') {
+        const respuestaDrive = contextoDrive.tipo === 'revision-incompleta'
+          ? `No pude verificar si hay reportes de ${contextoDrive.anio}: no se pudo leer el contenido de los archivos candidatos en Google Drive. No usaré documentos de otros años para estimar el total.`
+          : contextoDrive.tipo === 'demasiados-candidatos'
+            ? `Encontré ${contextoDrive.cantidad} archivos candidatos, demasiados para verificar de forma fiable el año ${contextoDrive.anio} en una sola consulta. No usaré reportes de otros años; intenta indicar el pozo o la carpeta.`
+            : `No encontré reportes de ${contextoDrive.anio} en los archivos de Google Drive relacionados con esta consulta. No puedo confirmar el total de pozos de ese año sin documentación que lo respalde.`;
+        enviarEvento({ tipo: 'texto', texto: respuestaDrive });
+        enviarEvento({
+          tipo: 'metricas',
+          metricas: {
+            embeddingMs: tiempoEmbedding,
+            mongoMs: tiempoMongo,
+            contextoMs: Date.now() - inicioDrive,
+            geminiMs: 0,
+            firstTokenMs: null,
+            totalMs: Date.now() - inicioTotal
+          }
+        });
+        enviarEvento({ tipo: 'fin' });
+        return res.end();
+      }
+
       // Cuando la respuesta se apoya en el contexto de Google Drive se va
       // directo al servidor local. Gemini devuelve 503 con mucha frecuencia
       // y, tras reintentar tres modelos, el usuario llegaba a esperar casi
@@ -4794,43 +4914,132 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
 
       const solicitaDescarga = /\b(descarga|descargar|download|software|instalador|archivo|archivos|manual|manuales|brochure|brochures|folleto|folletos|cat[áa]logo|cat[áa]logos|ficha|documento|documentos)\b/i.test(preguntaLimpia);
       const descargasPorFuente = new Map();
-      if (solicitaDescarga) {
-        const recursosIds = [...new Set(resultadosRelevantes.map((f) => f.recursoId).filter(Boolean))];
-        const archivosIds = [...new Set(resultadosRelevantes.map((f) => f.archivoId).filter(Boolean))];
-        const manualesIds = [...new Set(resultadosRelevantes.map((f) => f.manualId).filter(Boolean))];
+      const consultaInventario = Boolean(clasificacionInventario)
+        || /\b(?:inventario|mwd|battery|bater[ií]as?|motor(?:es)?|transmiter|pulser|herramientas mwd)\b/i.test(preguntaLimpia)
+        || /\b[A-Z]{2,}\d{4,}\b/.test(preguntaLimpia);
+      const filasConDocumento = resultadosRelevantes.filter((fila) =>
+        fila.recursoId || fila.archivoId || fila.manualId
+      );
+      const filasAResolver = solicitaDescarga
+        ? filasConDocumento
+        : consultaInventario
+          ? []
+          : filasConDocumento.slice(0, 1);
+      const obtenerDescargasFuente = (f) =>
+        f.recursoId
+          ? (descargasPorFuente.get(`recurso:${f.recursoId}`)?.adjuntos || [])
+          : (f.archivoId
+            ? (descargasPorFuente.get(`archivo:${f.archivoId}`)?.adjuntos || [])
+            : (descargasPorFuente.get(`manual:${f.manualId}`)?.adjuntos || []));
+      if (filasAResolver.length) {
+        const recursosIds = [...new Set(filasAResolver.map((f) => f.recursoId).filter(Boolean))];
+        const archivosIds = [...new Set(filasAResolver.map((f) => f.archivoId).filter(Boolean))];
+        const manualesIds = [...new Set(filasAResolver.map((f) => f.manualId).filter(Boolean))];
         const recursos = await Promise.all(recursosIds.map(async (id) => ({ id, documento: await db.collection('recursos').doc(id).get() })));
         const archivos = await Promise.all(archivosIds.map(async (id) => ({ id, documento: await db.collection('archivos').doc(id).get() })));
         const manuales = await Promise.all(manualesIds.map(async (id) => ({ id, documento: await db.collection('manuales').doc(id).get() })));
 
         // Verificar si el usuario tiene acceso al módulo software_y_manuales
         const tieneAccesoRecursos = await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales');
+        const normalizarNombre = (valor) => String(valor || '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase()
+          .replace(/\.[^.]+$/, '')
+          .replace(/[^a-z0-9]+/g, '');
+        const preguntaNormalizada = normalizarNombre(preguntaLimpia);
+        const esArchivoSolicitado = (nombre) => {
+          const nombreNormalizado = normalizarNombre(nombre);
+          return nombreNormalizado.length >= 8 && preguntaNormalizada.includes(nombreNormalizado);
+        };
 
         recursos.forEach(({ id, documento }) => {
           if (!documento.exists || documento.data().activo !== true) return;
           const recurso = documento.data();
-          const botones = [];
+          const adjuntos = [];
           // Solo agregar botones de descarga si el usuario tiene acceso al módulo software_y_manuales
           if (tieneAccesoRecursos) {
-            if (recurso.software?.rutaLocal) botones.push({ etiqueta: recurso.software?.nombreArchivo || 'software', ruta: `/api/recursos/${id}/software/download` });
-            if (recurso.manual?.rutaLocal) botones.push({ etiqueta: recurso.manual?.nombreArchivo || 'manual', ruta: `/api/recursos/${id}/manual/download` });
+            if (recurso.software?.rutaLocal) adjuntos.push({
+              etiqueta: recurso.software?.nombreArchivo || 'software',
+              nombreArchivo: recurso.software?.nombreArchivo,
+              ruta: `/api/recursos/${id}/software/download`,
+            });
+            if (recurso.manual?.rutaLocal) adjuntos.push({
+              etiqueta: recurso.manual?.nombreArchivo || 'manual',
+              nombreArchivo: recurso.manual?.nombreArchivo,
+              ruta: `/api/recursos/${id}/manual/download`,
+            });
           }
-          descargasPorFuente.set(`recurso:${id}`, botones);
+          descargasPorFuente.set(`recurso:${id}`, { adjuntos });
         });
         archivos.forEach(({ id, documento }) => {
           if (!documento.exists || documento.data().activo !== true || documento.data().eliminado === true) return;
-          descargasPorFuente.set(`archivo:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'archivo', ruta: `/api/archivos/${id}/download` }]);
+          const archivo = documento.data();
+          descargasPorFuente.set(`archivo:${id}`, {
+            adjuntos: [{
+              etiqueta: archivo.nombreArchivo || 'archivo',
+              nombreArchivo: archivo.nombreArchivo,
+              ruta: `/api/archivos/${id}/download`,
+            }],
+          });
         });
         manuales.forEach(({ id, documento }) => {
-          if (documento.exists && documento.data().activo === true) descargasPorFuente.set(`manual:${id}`, [{ etiqueta: documento.data().nombreArchivo || 'manual', ruta: `/api/manuales/${id}/download` }]);
+          if (!documento.exists || documento.data().activo !== true) return;
+          const manual = documento.data();
+          descargasPorFuente.set(`manual:${id}`, {
+            adjuntos: [{
+              etiqueta: manual.nombreArchivo || 'manual',
+              nombreArchivo: manual.nombreArchivo,
+              ruta: `/api/manuales/${id}/download`,
+            }],
+          });
         });
+        if (solicitaDescarga) {
+          descargasPorFuente.forEach((documento, clave) => {
+            const adjuntos = documento.adjuntos.filter((adjunto) =>
+              esArchivoSolicitado(adjunto.nombreArchivo)
+            );
+            if (adjuntos.length) {
+              descargasPorFuente.set(clave, { ...documento, adjuntos });
+            } else {
+              descargasPorFuente.delete(clave);
+            }
+          });
+          const mencionaArchivoConExtension = /\b[^\\/\s]+?\.(?:pdf|zip|docx?|xlsx?|pptx?|vsdx|csv|txt)\b/i.test(preguntaLimpia);
+          if (!descargasPorFuente.size && !mencionaArchivoConExtension) {
+            const primeraFuenteConDescarga = filasAResolver.find((fila) =>
+              obtenerDescargasFuente(fila).length
+            );
+            if (primeraFuenteConDescarga) {
+              const claveElegida = primeraFuenteConDescarga.recursoId
+                ? `recurso:${primeraFuenteConDescarga.recursoId}`
+                : primeraFuenteConDescarga.archivoId
+                  ? `archivo:${primeraFuenteConDescarga.archivoId}`
+                  : `manual:${primeraFuenteConDescarga.manualId}`;
+              const documento = descargasPorFuente.get(claveElegida);
+              descargasPorFuente.clear();
+              descargasPorFuente.set(claveElegida, {
+                ...documento,
+                adjuntos: documento.adjuntos.slice(0, 1),
+              });
+            }
+          }
+        } else {
+          const primeraFuenteConDescarga = filasAResolver.find((fila) =>
+            obtenerDescargasFuente(fila).length
+          );
+          if (primeraFuenteConDescarga) {
+            const claveElegida = primeraFuenteConDescarga.recursoId
+              ? `recurso:${primeraFuenteConDescarga.recursoId}`
+              : primeraFuenteConDescarga.archivoId
+                ? `archivo:${primeraFuenteConDescarga.archivoId}`
+                : `manual:${primeraFuenteConDescarga.manualId}`;
+            for (const clave of descargasPorFuente.keys()) {
+              if (clave !== claveElegida) descargasPorFuente.delete(clave);
+            }
+          }
+        }
       }
-
-      const obtenerDescargasFuente = (f) =>
-        f.recursoId
-          ? (descargasPorFuente.get(`recurso:${f.recursoId}`) || [])
-          : (f.archivoId
-            ? (descargasPorFuente.get(`archivo:${f.archivoId}`) || [])
-            : (descargasPorFuente.get(`manual:${f.manualId}`) || []));
 
       // ========================================================
       // 5. CONTEXTO

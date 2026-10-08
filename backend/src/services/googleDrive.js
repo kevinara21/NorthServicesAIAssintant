@@ -240,7 +240,13 @@ function limpiarCacheArbol() {
  * pozo/lote). Cada resultado incluye la ruta relativa dentro de la carpeta.
  * Respaldo global cuando la búsqueda inteligente por subcarpeta no aplica.
  */
-async function listarReportesPdfRecursivo({ maxResultados, maxProfundidad = 5, orden = 'modificados' }) {
+async function listarReportesPdfRecursivo({
+  maxResultados,
+  maxProfundidad = 5,
+  orden = 'modificados',
+  folderId = FOLDER_OPERACIONES,
+  carpetaInicial = '',
+}) {
   // El recorrido NO se corta por maxResultados. El árbol se visita carpeta
   // por carpeta, así que detenerse antes de terminar devolvería solo los
   // archivos de las primeras carpetas visitadas y, al ordenarlos después,
@@ -248,7 +254,7 @@ async function listarReportesPdfRecursivo({ maxResultados, maxProfundidad = 5, o
   // árbol (con un tope de seguridad) y recién ahí se ordena y se recorta.
   const limiteColeccion = 2000;
 
-  const claveCache = `${FOLDER_OPERACIONES}:${maxProfundidad}:${limiteColeccion}`;
+  const claveCache = `${folderId}:${maxProfundidad}:${limiteColeccion}:${carpetaInicial}`;
   let pdfs = leerCacheArbol(claveCache);
 
   if (!pdfs) {
@@ -292,7 +298,7 @@ async function listarReportesPdfRecursivo({ maxResultados, maxProfundidad = 5, o
       );
     }
 
-    await recorrer(FOLDER_OPERACIONES, 0, '');
+    await recorrer(folderId, 0, carpetaInicial);
     guardarCacheArbol(claveCache, pdfs);
   }
 
@@ -346,7 +352,7 @@ async function listarReportesPdf({
 } = {}) {
   const limit = maxResultados || DRIVE_MAX_ARCHIVOS;
 
-  const palabrasClave = ['unna', 'olympic', 'gtg', 'savia', '2025', '2026'];
+  const palabrasClave = ['unna', 'olympic', 'gtg', 'savia', '2025', '2026', '2022', '2023', '2024'];
   const preguntaLower = (pregunta || '').toLowerCase();
 
   // Si el usuario escribió un nombre de archivo concreto
@@ -357,9 +363,10 @@ async function listarReportesPdf({
   const contieneNombreDeArchivo =
     /[a-z0-9][a-z0-9_-]*\.[a-z]{2,4}\b/.test(preguntaLower) ||
     /\b[a-z0-9]+(?:_[a-z0-9]+){2,}\b/.test(preguntaLower);
+  const anioSolicitado = preguntaLower.match(/\b(?:19|20)\d{2}\b/)?.[0];
   const terminoCarpeta = contieneNombreDeArchivo
     ? undefined
-    : palabrasClave.find(p => preguntaLower.includes(p));
+    : anioSolicitado || palabrasClave.find(p => preguntaLower.includes(p));
 
   let archivos = [];
 
@@ -378,17 +385,16 @@ async function listarReportesPdf({
       const carpetas = dataCarpeta.files || [];
 
       if (carpetas.length > 0) {
-        const folderId = carpetas[0].id;
-        const nombreCarpeta = carpetas[0].name;
-        const pdfsDirectos = await listarPdfsDirectos({ folderId, limit, orden });
-        archivos = pdfsDirectos.map(pdf => ({
-          id: pdf.id,
-          name: pdf.name,
-          modifiedTime: pdf.modifiedTime,
-          createdTime: pdf.createdTime,
-          size: pdf.size,
-          carpeta: nombreCarpeta,
-        }));
+        const resultadosPorCarpeta = await Promise.all(carpetas.map(async (carpeta) =>
+          listarReportesPdfRecursivo({
+            maxResultados: limit,
+            maxProfundidad,
+            orden,
+            folderId: carpeta.id,
+            carpetaInicial: carpeta.name,
+          })
+        ));
+        archivos = resultadosPorCarpeta.flat().slice(0, limit);
       }
     } catch (err) {
       console.warn(

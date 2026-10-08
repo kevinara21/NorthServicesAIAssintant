@@ -172,7 +172,7 @@ export default function MonitoreoPozos({ token, usuario, onCerrar }) {
                     {item.descripcion && <div style={{ marginTop: 6, fontSize: 12, fontWeight: 600, color: '#0f172a' }}>{item.descripcion}</div>}
                     <div>
                       <button type="button" className="modal-monitoreo-pozo-card-link" onClick={() => abrirEnlace(item)} title="Abrir enlace del pozo">
-                        {item.link} <FiExternalLink aria-hidden="true" />
+                        Abrir link <FiExternalLink aria-hidden="true" />
                       </button>
                     </div>
                   </div>

@@ -604,6 +604,45 @@ function normalizarTerminosEquipo(texto) {
     || [];
 }
 
+function extraerFiltroPorcentaje(texto) {
+  const normalizado = normalizarConsultaInventario(texto);
+  const coincidencia = normalizado.match(
+    /\b(?:mas|mayor)\s+(?:de|que)\s*(\d+(?:[.,]\d+)?)\s*%?|\b(?:menos|menor)\s+(?:de|que)\s*(\d+(?:[.,]\d+)?)\s*%?|(?:>=|≥|<=|≤|>|<)\s*(\d+(?:[.,]\d+)?)\s*%?/
+  );
+  if (!coincidencia) return null;
+
+  const valor = Number((coincidencia[1] || coincidencia[2] || coincidencia[3]).replace(',', '.'));
+  if (!Number.isFinite(valor) || valor < 0 || valor > 100) return null;
+
+  const operador = coincidencia[1]
+    ? 'gt'
+    : coincidencia[2]
+      ? 'lt'
+      : ({ '>': 'gt', '>=': 'gte', '≥': 'gte', '<': 'lt', '<=': 'lte', '≤': 'lte' }[
+        coincidencia[0].match(/^(>=|≥|<=|≤|>|<)/)?.[0]
+      ]);
+
+  return operador ? { operador, valor } : null;
+}
+
+function obtenerPorcentajeInventario(metadata = {}) {
+  const valorDirecto = metadata.percentage;
+  const coincidenciaDescripcion = String(metadata.descripcion || metadata.description || '')
+    .match(/\bporcentaje\s+(\d+(?:[.,]\d+)?)\s*%?/i);
+  const valor = valorDirecto !== undefined && valorDirecto !== null && valorDirecto !== ''
+    ? valorDirecto
+    : coincidenciaDescripcion?.[1];
+  if (valor === undefined || valor === null || valor === '') return null;
+
+  const porcentaje = Number(String(valor).replace('%', '').replace(',', '.').trim());
+  return Number.isFinite(porcentaje) ? porcentaje : null;
+}
+
+function coincideEstadoOperativo(metadata = {}) {
+  const estado = normalizarConsultaInventario(metadata.status || metadata.estado || '');
+  return /^(?:operative|operativ[oa]|active|activ[oa]|funcionando)$/.test(estado);
+}
+
 let nombresEquipoMwdEnCache = [];
 let cacheNombresEquipoMwdExpira = 0;
 
@@ -687,7 +726,10 @@ async function clasificarConsultaEquipoMWD(pregunta, contexto = []) {
   const solicitaNotas = /\b(?:nota|notas|observaci\w*)\b/.test(textoIntencion);
   const solicitaListado = /\b(?:cuant\w*|cantidad|numero|total|nombra\w*|lista\w*|enumer\w*|cuales|que\s+\w+|how\s+many|list|name)\b/.test(textoIntencion);
   const solicitaEstadoOperativo = /\b(?:operativ\w*|activ\w*|funcionando)\b/.test(textoIntencion);
-  const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion);
+  const solicitaConteo = /\b(?:cuant\w*|cantidad|numero|total)\b/.test(textoIntencion);
+  const filtroPorcentaje = extraerFiltroPorcentaje(textoIntencion);
+  const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion)
+    || (solicitaEstadoOperativo && !solicitaConteo && /\bque\b/.test(textoIntencion));
   const solicitaUbicacion = /\b(?:donde|ubicacion|ubicado|ubicada|kit|kits)\b/.test(textoIntencion)
     && /\b(?:que|cual|cuales|donde|est[aá]n|estan|ubicad[oa]s?)\b/.test(textoIntencion);
   const kit = textoIntencion.match(/\bkit\s*0*(\d+)\b/);
@@ -709,13 +751,6 @@ async function clasificarConsultaEquipoMWD(pregunta, contexto = []) {
   if (kit) {
     filtro['metadata_original.ubicacion'] = new RegExp(`^kit\\s*0*${kit[1]}$`, 'i');
   }
-  if (solicitaEstadoOperativo) {
-    const estadoOperativo = /^(?:operative|operativ[oa]|active|activ[oa]|funcionando)$/i;
-    filtro.$or = [
-      { 'metadata_original.status': { $regex: estadoOperativo } },
-      { 'metadata_original.estado': { $regex: estadoOperativo } },
-    ];
-  }
 
   return {
     equipo: { nombre: equipoEncontrado.nombre, etiqueta: equipoEncontrado.nombre },
@@ -724,6 +759,7 @@ async function clasificarConsultaEquipoMWD(pregunta, contexto = []) {
     solicitaNotas,
     solicitaEstadoOperativo,
     solicitaDetalleOperativos,
+    filtroPorcentaje,
     solicitaUbicacion,
     terminosRegistro,
     kit: kit?.[1] || null,
@@ -742,7 +778,10 @@ async function clasificarConsultasEquipoMWD(pregunta) {
     const solicitaNotas = /\b(?:nota|notas|observaci\w*)\b/.test(textoIntencion);
     const solicitaListado = /\b(?:cuant\w*|cantidad|numero|total|nombra\w*|lista\w*|enumer\w*|cuales|que\s+\w+|how\s+many|list|name)\b/.test(textoIntencion);
     const solicitaEstadoOperativo = /\b(?:operativ\w*|activ\w*|funcionando)\b/.test(textoIntencion);
-    const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion);
+    const solicitaConteo = /\b(?:cuant\w*|cantidad|numero|total)\b/.test(textoIntencion);
+    const filtroPorcentaje = extraerFiltroPorcentaje(textoIntencion);
+    const solicitaDetalleOperativos = /\b(?:cuales|lista\w*|enumer\w*|nombra\w*|muestra\w*|detalles?)\b/.test(textoIntencion)
+      || (solicitaEstadoOperativo && !solicitaConteo && /\bque\b/.test(textoIntencion));
     const solicitaUbicacion = /\b(?:donde|ubicacion|ubicado|ubicada|kit|kits)\b/.test(textoIntencion)
       && /\b(?:que|cual|cuales|donde|est[aá]n|estan|ubicad[oa]s?)\b/.test(textoIntencion);
     const kit = textoIntencion.match(/\bkit\s*0*(\d+)\b/);
@@ -753,13 +792,6 @@ async function clasificarConsultasEquipoMWD(pregunta) {
     if (kit) {
       filtro['metadata_original.ubicacion'] = new RegExp(`^kit\\s*0*${kit[1]}$`, 'i');
     }
-    if (solicitaEstadoOperativo) {
-      const estadoOperativo = /^(?:operative|operativ[oa]|active|activ[oa]|funcionando)$/i;
-      filtro.$or = [
-        { 'metadata_original.status': { $regex: estadoOperativo } },
-        { 'metadata_original.estado': { $regex: estadoOperativo } },
-      ];
-    }
     return {
       equipo: { nombre: equipo.nombre, etiqueta: equipo.nombre },
       solicitaListado,
@@ -767,6 +799,7 @@ async function clasificarConsultasEquipoMWD(pregunta) {
       solicitaNotas,
       solicitaEstadoOperativo,
       solicitaDetalleOperativos,
+      filtroPorcentaje,
       solicitaUbicacion,
       terminosRegistro: [],
       kit: kit?.[1] || null,
@@ -845,6 +878,22 @@ async function buscarInventario(pregunta, consultaClasificada = null) {
         ].filter(Boolean).join(' '));
         return consultaEquipo.terminosRegistro.every((termino) => textoRegistro.includes(termino));
       });
+    }
+    if (consultaEquipo.filtroPorcentaje) {
+      const { operador, valor } = consultaEquipo.filtroPorcentaje;
+      documentos = documentos.filter((documento) => {
+        const porcentaje = obtenerPorcentajeInventario(documento.metadata_original);
+        if (porcentaje === null) return false;
+        if (operador === 'gt') return porcentaje > valor;
+        if (operador === 'gte') return porcentaje >= valor;
+        if (operador === 'lt') return porcentaje < valor;
+        return porcentaje <= valor;
+      });
+    }
+    if (consultaEquipo.solicitaEstadoOperativo) {
+      documentos = documentos.filter((documento) =>
+        coincideEstadoOperativo(documento.metadata_original)
+      );
     }
     return documentos
       .map((documento) => ({ ...documento, score: 1 }))
@@ -1058,6 +1107,7 @@ module.exports = {
   iniciarSincronizacion,
   obtenerEstados,
   buscarInventario,
+  obtenerPorcentajeInventario,
   buscarHerramientasPorKit,
   buscarHerramientas,
   buscarMotoresPorInspeccion,

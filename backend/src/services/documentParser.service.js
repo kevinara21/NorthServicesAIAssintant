@@ -39,13 +39,13 @@
 // CONFIGURACIÓN
 // ------------------------------------------------------------
 
-// Cadena de fallback por prioridad. `gemini-3.8-flash` es el primero porque
-// procesa bien los planos técnicos; `gemini-3.1-flash-lite` es el que ha
-// respondido de forma más estable; `gemini-2.5-flash` entra como modelo
-// estable de respaldo. Se puede sobrescribir con GEMINI_PARSER_MODELOS.
+// Cadena de fallback por prioridad. `gemini-3.1-flash-lite` va primero porque
+// ha dado resultados de parsing adecuados y estables; `gemini-3.8-flash` y
+// `gemini-2.5-flash` quedan como respaldo. Se puede sobrescribir con
+// GEMINI_PARSER_MODELOS.
 const MODELOS_POR_DEFECTO = [
-  'gemini-3.8-flash',
   'gemini-3.1-flash-lite',
+  'gemini-3.8-flash',
   'gemini-2.5-flash'
 ];
 

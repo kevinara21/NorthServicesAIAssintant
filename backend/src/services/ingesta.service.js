@@ -300,7 +300,7 @@ async function prepararContenidoIndexable({ buffer, nombreArchivo = '', extensio
       throw new Error('el Markdown no produjo fragmentos utilizables');
     } catch (error) {
       // Marca puesta por documentParser cuando la cadena de modelos entera
-      // (3.8-flash -> 3.1-flash-lite -> 2.5-flash) se quedó sin reintentos
+      // (3.1-flash-lite -> 3.8-flash -> 2.5-flash) se quedó sin reintentos
       // por demanda o red. Es el único caso en que el salto a pdf2json es
       // un fallo de disponibilidad y no del documento.
       if (error?.todosLosModelosAgotados) {
