@@ -4,7 +4,7 @@ import { API_URL } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 
 export default function SubirRecursos({ token, alCompletar }) {
-  const { notificarError, notificarExito } = useNotification();
+  const { notificarError, notificarExito, notificarProceso, actualizarNotificacion, eliminarNotificacion } = useNotification();
   const [nombre, setNombre] = useState('');
   const [version, setVersion] = useState('');
   const [descripcion, setDescripcion] = useState('');
@@ -77,6 +77,7 @@ export default function SubirRecursos({ token, alCompletar }) {
     setProgreso(0);
     setFase('Subiendo archivos...');
     setMensaje(null);
+    const procesoId = notificarProceso('Subiendo los archivos seleccionados...', { titulo: 'Publicación de recurso' });
 
     const formData = new FormData();
 
@@ -116,13 +117,14 @@ export default function SubirRecursos({ token, alCompletar }) {
       setProgreso(porcentaje);
 
       if (porcentaje >= 100) {
-        setFase(
-          archivoPdf
-            ? 'Archivo recibido. Indexando manual en MongoDB...'
-            : 'Archivo recibido. Finalizando publicación...'
-        );
+        const mensajeProceso = archivoPdf
+          ? 'Archivo recibido. Indexando el manual para el asistente IA...'
+          : 'Archivo recibido. Finalizando publicación...';
+        setFase(mensajeProceso);
+        actualizarNotificacion(procesoId, mensajeProceso);
       } else {
         setFase('Subiendo archivos...');
+        actualizarNotificacion(procesoId, `Subiendo archivos... ${porcentaje}%`);
       }
     };
 
@@ -170,14 +172,14 @@ export default function SubirRecursos({ token, alCompletar }) {
             alCompletar();
           }
         } else {
+          const mensajeError = data?.error || `Error al procesar el recurso. Código HTTP: ${xhr.status}`;
           setMensaje({
             tipo: 'error',
-            texto:
-              data?.error ||
-              `Error al procesar el recurso. Código HTTP: ${xhr.status}`,
+            texto: mensajeError,
           });
 
           setFase('El proceso terminó con errores.');
+          notificarError(mensajeError, { titulo: 'No se pudo publicar el recurso' });
         }
       } catch (error) {
         console.error(
@@ -191,7 +193,9 @@ export default function SubirRecursos({ token, alCompletar }) {
         });
 
         setFase('El proceso terminó con errores.');
+        notificarError('El servidor devolvió una respuesta inválida.', { titulo: 'No se pudo publicar el recurso' });
       } finally {
+        eliminarNotificacion(procesoId);
         setCargando(false);
       }
     };
@@ -206,6 +210,8 @@ export default function SubirRecursos({ token, alCompletar }) {
       });
 
       setFase('Error de conexión.');
+      notificarError('No se pudo conectar con el servidor. Verifica que el backend esté ejecutándose.', { titulo: 'Error de conexión' });
+      eliminarNotificacion(procesoId);
       setCargando(false);
     };
 
@@ -216,6 +222,8 @@ export default function SubirRecursos({ token, alCompletar }) {
       });
 
       setFase('Carga cancelada.');
+      notificarError('La carga fue cancelada.', { titulo: 'Carga cancelada' });
+      eliminarNotificacion(procesoId);
       setCargando(false);
     };
 
@@ -227,6 +235,8 @@ export default function SubirRecursos({ token, alCompletar }) {
       });
 
       setFase('Tiempo de espera agotado.');
+      notificarError('La solicitud tardó demasiado tiempo y fue cancelada.', { titulo: 'Tiempo de espera agotado' });
+      eliminarNotificacion(procesoId);
       setCargando(false);
     };
 

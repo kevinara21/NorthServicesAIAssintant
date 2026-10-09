@@ -61,7 +61,7 @@ export default function Papelera({ token, usuario }) {
   const [idsSeleccionados, setIdsSeleccionados] = useState([]);
   const [diasRetencion, setDiasRetencion] = useState(30);
   const [ahora, setAhora] = useState(() => Date.now());
-  const { notificarError, notificarExito } = useNotification();
+  const { notificarError, notificarExito, notificarProceso, eliminarNotificacion } = useNotification();
   const esAdmin = usuario?.rol?.toLowerCase() === 'administrador';
 
   const cargarPapelera = async () => {
@@ -140,6 +140,10 @@ const restaurar = async (lista) => {
   if (!restaurables.length) return;
 
   setProcesando(restaurables.join(','));
+  const procesoId = notificarProceso(
+    `Restaurando ${restaurables.length} elemento${restaurables.length === 1 ? '' : 's'}...`,
+    { titulo: 'Restauración en curso' }
+  );
   try {
     const res = await apiFetch('/api/papelera/lote/restaurar', {
       method: 'POST',
@@ -153,7 +157,10 @@ const restaurar = async (lista) => {
       notificarExito(`${data.procesados} elemento${data.procesados === 1 ? '' : 's'} restaurado${data.procesados === 1 ? '' : 's'}. La información vuelve a estar disponible para el asistente IA.`, { titulo: 'Restaurado' });
     } catch (error) {
       notificarError(error.message, { titulo: 'Error al restaurar' });
-    } finally { setProcesando(null); }
+    } finally {
+      eliminarNotificacion(procesoId);
+      setProcesando(null);
+    }
   };
 
   // El borrado definitivo se pide con un modal propio en vez de window.confirm:
@@ -162,6 +169,10 @@ const restaurar = async (lista) => {
 const eliminarDefinitivo = async (lista) => {
   const ids = lista.map((item) => item.id);
   setProcesando(ids.join(','));
+  const procesoId = notificarProceso(
+    `Eliminando definitivamente ${ids.length} elemento${ids.length === 1 ? '' : 's'}...`,
+    { titulo: 'Eliminación en curso' }
+  );
   try {
     const res = await apiFetch('/api/papelera/lote/definitivo', {
       method: 'POST',
@@ -175,7 +186,10 @@ const eliminarDefinitivo = async (lista) => {
     notificarExito(data.mensaje, { titulo: 'Eliminado permanentemente' });
   } catch (error) {
     notificarError(error.message, { titulo: 'Error al eliminar' });
-  } finally { setProcesando(null); }
+  } finally {
+    eliminarNotificacion(procesoId);
+    setProcesando(null);
+  }
   };
 
   const confirmarEliminacionDefinitiva = async () => {

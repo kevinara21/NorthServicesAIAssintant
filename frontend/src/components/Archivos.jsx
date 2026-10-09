@@ -1,8 +1,57 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FiCheck, FiCheckSquare, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiRefreshCw, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from './common/OilLoader';
+
+const DB_BORRADORES = 'north-services-borradores';
+const STORE_BORRADORES = 'subidas';
+
+function abrirBaseBorradores() {
+  return new Promise((resolve, reject) => {
+    const solicitud = indexedDB.open(DB_BORRADORES, 1);
+    solicitud.onupgradeneeded = () => {
+      if (!solicitud.result.objectStoreNames.contains(STORE_BORRADORES)) {
+        solicitud.result.createObjectStore(STORE_BORRADORES);
+      }
+    };
+    solicitud.onsuccess = () => resolve(solicitud.result);
+    solicitud.onerror = () => reject(solicitud.error || new Error('No se pudo abrir el almacenamiento de borradores.'));
+  });
+}
+
+async function leerBorradorSubida(uid) {
+  const db = await abrirBaseBorradores();
+  return new Promise((resolve, reject) => {
+    const solicitud = db.transaction(STORE_BORRADORES, 'readonly').objectStore(STORE_BORRADORES).get(uid);
+    solicitud.onsuccess = () => resolve(solicitud.result || null);
+    solicitud.onerror = () => reject(solicitud.error || new Error('No se pudo recuperar el borrador.'));
+    solicitud.transaction.oncomplete = () => db.close();
+    solicitud.transaction.onerror = () => db.close();
+  });
+}
+
+async function guardarBorradorSubida(uid, borrador) {
+  const db = await abrirBaseBorradores();
+  return new Promise((resolve, reject) => {
+    const transaccion = db.transaction(STORE_BORRADORES, 'readwrite');
+    transaccion.objectStore(STORE_BORRADORES).put(borrador, uid);
+    transaccion.oncomplete = () => { db.close(); resolve(); };
+    transaccion.onerror = () => { db.close(); reject(transaccion.error || new Error('No se pudo guardar el borrador.')); };
+    transaccion.onabort = () => { db.close(); reject(transaccion.error || new Error('Se interrumpió el guardado del borrador.')); };
+  });
+}
+
+async function eliminarBorradorSubida(uid) {
+  const db = await abrirBaseBorradores();
+  return new Promise((resolve, reject) => {
+    const transaccion = db.transaction(STORE_BORRADORES, 'readwrite');
+    transaccion.objectStore(STORE_BORRADORES).delete(uid);
+    transaccion.oncomplete = () => { db.close(); resolve(); };
+    transaccion.onerror = () => { db.close(); reject(transaccion.error || new Error('No se pudo limpiar el borrador.')); };
+    transaccion.onabort = () => { db.close(); reject(transaccion.error || new Error('Se interrumpió la limpieza del borrador.')); };
+  });
+}
 
 function formatearTamano(bytes = 0) {
   if (!bytes) return '0 B';
@@ -26,10 +75,15 @@ export default function Archivos({ token, usuario }) {
   const [categoriaId, setCategoriaId] = useState('');
   const [cargando, setCargando] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(true);
-  const { notificarError, notificarExito, notificarInfo } = useNotification();
+  const { notificarError, notificarExito, notificarInfo, notificarProceso, actualizarNotificacion, eliminarNotificacion } = useNotification();
   const esAdministrador = usuario?.rol?.toLowerCase() === 'administrador';
   const [confirmacion, setConfirmacion] = useState({ visible: false, titulo: '', mensaje: '', etiqueta: 'Enviar a papelera', onConfirm: null });
   const [modalSubirAbierto, setModalSubirAbierto] = useState(false);
+  const [confirmarSalidaSubida, setConfirmarSalidaSubida] = useState(false);
+  const [guardandoBorrador, setGuardandoBorrador] = useState(false);
+  const [borradorCargado, setBorradorCargado] = useState(false);
+  const [almacenamientoDisponible, setAlmacenamientoDisponible] = useState(true);
+  const draftCategoriaRef = useRef('');
   const inputActualizacionRef = useRef(null);
   const archivoActualizacionRef = useRef(null);
 
@@ -38,6 +92,70 @@ export default function Archivos({ token, usuario }) {
   const [creandoCategoria, setCreandoCategoria] = useState(false);
   const [guardandoCategoria, setGuardandoCategoria] = useState(false);
   const [nuevaCategoria, setNuevaCategoria] = useState({ nombre: '', descripcion: '' });
+  const usuarioUid = usuario?.uid;
+
+  useEffect(() => {
+    if (!usuarioUid) {
+      setBorradorCargado(true);
+      return undefined;
+    }
+
+    let vigente = true;
+    leerBorradorSubida(usuarioUid)
+      .then((borrador) => {
+        if (!vigente || !borrador) return;
+        setArchivosSeleccionados(borrador.archivos || []);
+        setDescripcion(borrador.descripcion || '');
+        setCategoriaId(borrador.categoriaId || '');
+        draftCategoriaRef.current = borrador.categoriaId || '';
+        setCreandoCategoria(Boolean(borrador.creandoCategoria));
+        setNuevaCategoria(borrador.nuevaCategoria || { nombre: '', descripcion: '' });
+        const tieneTrabajo = (borrador.archivos || []).length > 0
+          || Boolean(borrador.descripcion?.trim())
+          || Boolean(borrador.creandoCategoria)
+          || Boolean(borrador.nuevaCategoria?.nombre?.trim())
+          || Boolean(borrador.nuevaCategoria?.descripcion?.trim());
+        if (tieneTrabajo) {
+          setModalSubirAbierto(true);
+          notificarInfo('Recuperamos el borrador con los datos y archivos que habías seleccionado.', { titulo: 'Borrador recuperado' });
+        }
+      })
+      .catch((error) => {
+        if (vigente) {
+          setAlmacenamientoDisponible(false);
+          notificarError(error.message, { titulo: 'No se pudo recuperar el borrador' });
+        }
+      })
+      .finally(() => {
+        if (vigente) setBorradorCargado(true);
+      });
+
+    return () => { vigente = false; };
+  }, [usuarioUid, notificarError, notificarInfo]);
+
+  useEffect(() => {
+    if (!borradorCargado || !almacenamientoDisponible || !usuarioUid) return;
+
+    const borrador = {
+      archivos: archivosSeleccionados,
+      descripcion,
+      categoriaId,
+      creandoCategoria,
+      nuevaCategoria,
+    };
+    const tieneTrabajo = archivosSeleccionados.length > 0
+      || Boolean(descripcion.trim())
+      || creandoCategoria
+      || Boolean(nuevaCategoria.nombre.trim())
+      || Boolean(nuevaCategoria.descripcion.trim());
+    const guardar = tieneTrabajo
+      ? guardarBorradorSubida(usuarioUid, borrador)
+      : eliminarBorradorSubida(usuarioUid);
+
+    guardar.catch((error) => {
+      notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
+    });
+  }, [almacenamientoDisponible, archivosSeleccionados, borradorCargado, categoriaId, creandoCategoria, descripcion, nuevaCategoria, notificarError, usuarioUid]);
 
   const categoriaElegida = useMemo(
     () => categorias.find((categoria) => categoria.id === categoriaId) || null,
@@ -68,6 +186,9 @@ export default function Archivos({ token, usuario }) {
       // usuario puede cambiarla antes de subir.
       if (lista.length) {
         setCategoriaId((actual) => {
+          if (draftCategoriaRef.current && lista.some((categoria) => categoria.id === draftCategoriaRef.current)) {
+            return draftCategoriaRef.current;
+          }
           if (actual && lista.some((categoria) => categoria.id === actual)) return actual;
           const general = lista.find((categoria) => categoria.id === 'conocimiento_general');
           return general?.id || lista[0].id;
@@ -79,6 +200,57 @@ export default function Archivos({ token, usuario }) {
   };
 
   useEffect(() => { cargarArchivos(); cargarCategorias(); }, []);
+
+  const solicitarCerrarSubida = useCallback(() => {
+    if (cargando || guardandoCategoria) return;
+    const tieneTrabajo = archivosSeleccionados.length > 0
+      || Boolean(descripcion.trim())
+      || creandoCategoria
+      || Boolean(nuevaCategoria.nombre.trim())
+      || Boolean(nuevaCategoria.descripcion.trim());
+    if (tieneTrabajo) {
+      setConfirmarSalidaSubida(true);
+    } else {
+      setModalSubirAbierto(false);
+    }
+  }, [archivosSeleccionados.length, cargando, creandoCategoria, descripcion, guardandoCategoria, nuevaCategoria]);
+
+  const guardarBorradorYCerrar = async () => {
+    setGuardandoBorrador(true);
+    if (usuarioUid) {
+      try {
+        await guardarBorradorSubida(usuarioUid, {
+          archivos: archivosSeleccionados,
+          descripcion,
+          categoriaId,
+          creandoCategoria,
+          nuevaCategoria,
+        });
+      } catch (error) {
+        notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
+        setGuardandoBorrador(false);
+        return;
+      }
+    }
+    setConfirmarSalidaSubida(false);
+    setModalSubirAbierto(false);
+    notificarInfo('El borrador quedó guardado en este navegador. Puedes volver a Archivos para continuar.', { titulo: 'Borrador guardado' });
+    setGuardandoBorrador(false);
+  };
+
+  useEffect(() => {
+    if (!modalSubirAbierto || cargando || guardandoCategoria || guardandoBorrador) return undefined;
+    const manejarEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      if (confirmarSalidaSubida) {
+        setConfirmarSalidaSubida(false);
+      } else {
+        solicitarCerrarSubida();
+      }
+    };
+    window.addEventListener('keydown', manejarEscape);
+    return () => window.removeEventListener('keydown', manejarEscape);
+  }, [cargando, confirmarSalidaSubida, guardandoBorrador, guardandoCategoria, modalSubirAbierto, solicitarCerrarSubida]);
 
   const alternarFormularioCategoria = () => {
     setCreandoCategoria((actual) => !actual);
@@ -190,10 +362,12 @@ const respuesta = await apiFetch('/api/rag/categorias', {
     if (!archivosSeleccionados.length) return notificarInfo('Selecciona al menos un archivo para continuar.', { titulo: 'Archivo requerido' });
     if (!categoriaId) return notificarInfo('Selecciona el tipo de información del documento.', { titulo: 'Categoría requerida' });
     setCargando(true);
+    const procesoId = notificarProceso(`Preparando ${archivosSeleccionados.length} archivo${archivosSeleccionados.length === 1 ? '' : 's'} para publicar...`, { titulo: 'Subida de archivos' });
     let subidos = 0;
-    let errores = 0;
+    const errores = [];
     try {
-      for (const archivo of archivosSeleccionados) {
+      for (const [indice, archivo] of archivosSeleccionados.entries()) {
+        actualizarNotificacion(procesoId, `Procesando archivo ${indice + 1} de ${archivosSeleccionados.length}: ${archivo.name}`);
         try {
           const datos = new FormData();
           datos.append('archivo', archivo);
@@ -209,17 +383,31 @@ const respuesta = await apiFetch('/api/rag/categorias', {
           const data = await respuesta.json();
           if (!respuesta.ok) throw new Error(data.error || 'No se pudo procesar.');
           subidos++;
-        } catch { errores++; }
+        } catch (error) {
+              errores.push({ archivo, detalle: `${archivo.name}: ${error.message || 'Error desconocido'}` });
+        }
       }
       if (subidos > 0) notificarExito(`${subidos} archivo${subidos > 1 ? 's' : ''} publicado${subidos > 1 ? 's' : ''}.`, { titulo: 'Archivos subidos' });
-      if (errores > 0) notificarError(`${errores} archivo${errores > 1 ? 's' : ''} no se pudo${errores === 1 ? '' : ''} procesar.`, { titulo: 'Algunos archivos fallaron' });
-      setArchivosSeleccionados([]); setDescripcion('');
-      document.getElementById('archivo-colaborativo').value = '';
-      setModalSubirAbierto(false);
+      if (errores.length > 0) {
+            const detalleErrores = errores.slice(0, 3).map((error) => error.detalle).join(' · ');
+        const resumen = errores.length > 3 ? `${detalleErrores} · y ${errores.length - 3} error(es) más` : detalleErrores;
+        notificarError(`${errores.length} archivo${errores.length > 1 ? 's' : ''} no se pudo${errores.length === 1 ? '' : 'ieron'} procesar. ${resumen}`, { titulo: 'Algunos archivos fallaron' });
+            setArchivosSeleccionados(errores.map((error) => error.archivo));
+      } else {
+        setArchivosSeleccionados([]);
+        setDescripcion('');
+        setNuevaCategoria({ nombre: '', descripcion: '' });
+        setCreandoCategoria(false);
+        setModalSubirAbierto(false);
+        if (usuarioUid) await eliminarBorradorSubida(usuarioUid);
+      }
+      const inputSubida = document.getElementById('archivo-colaborativo');
+      if (inputSubida) inputSubida.value = '';
       await cargarArchivos();
     } catch (error) {
       notificarError(error.message, { titulo: 'Error al subir archivos' });
     } finally {
+      eliminarNotificacion(procesoId);
       setCargando(false);
     }
   };
@@ -242,6 +430,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       onConfirm: async () => {
         setConfirmacion({ visible: false });
         setCargando(true);
+        const procesoId = notificarProceso(`Reemplazando el archivo “${item.nombre || item.nombreArchivo}” y actualizando su contenido para la IA...`, { titulo: 'Actualización de archivo' });
         try {
           const datos = new FormData();
           datos.append('archivo', archivoNuevo);
@@ -257,6 +446,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
         } catch (error) {
           notificarError(error.message, { titulo: 'No se pudo actualizar el documento' });
         } finally {
+          eliminarNotificacion(procesoId);
           setCargando(false);
           if (inputActualizacionRef.current) inputActualizacionRef.current.value = '';
         }
@@ -315,6 +505,10 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       etiqueta: varios ? 'Enviar a papelera' : 'Enviar a papelera',
       onConfirm: async () => {
         setConfirmacion({ visible: false });
+        const procesoId = notificarProceso(
+          `Enviando ${elegibles.length} archivo${elegibles.length === 1 ? '' : 's'} a la papelera...`,
+          { titulo: 'Envío a papelera' }
+        );
         try {
           const ids = elegibles.map((item) => item.id);
           const respuesta = await apiFetch('/api/archivos/lote/eliminar', {
@@ -328,6 +522,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
           setIdsSeleccionados((actual) => actual.filter((id) => !ids.includes(id)));
           notificarExito(data.mensaje, { titulo: 'Enviado a la papelera' });
         } catch (error) { notificarError(error.message, { titulo: 'No se pudo eliminar' }); }
+        finally { eliminarNotificacion(procesoId); }
       },
     });
   };
@@ -348,13 +543,13 @@ const respuesta = await apiFetch('/api/rag/categorias', {
 
 
       {modalSubirAbierto && (
-        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Subir archivo" onClick={(event) => { if (event.target === event.currentTarget) setModalSubirAbierto(false); }}>
+        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-label="Subir archivo">
           <div className="modal-monitoreo-pozo">
             <header className="modal-monitoreo-pozo-header">
               <div>
                 <span className="dashboard-eyebrow">Subir archivo</span>
               </div>
-              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setModalSubirAbierto(false)} aria-label="Cerrar modal"><FiX aria-hidden="true" /></button>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={solicitarCerrarSubida} aria-label="Cerrar modal" disabled={cargando || guardandoCategoria || guardandoBorrador}><FiX aria-hidden="true" /></button>
             </header>
 
             <div className="modal-monitoreo-pozo-body">
@@ -378,7 +573,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                       notificarError(`Los siguientes archivos no están permitidos: ${archivosInvalidos.join(', ')}. Solo se permite documentación.`, { titulo: 'Archivos no permitidos' });
                     }
                     setArchivosSeleccionados(archivosValidos);
-                  }} disabled={cargando} required />
+                  }} disabled={cargando} />
                   <div className={archivosSeleccionados.length ? 'compact-file-picker selected' : 'compact-file-picker'}><FiPaperclip aria-hidden="true" /> {archivosSeleccionados.length ? `${archivosSeleccionados.length} archivo${archivosSeleccionados.length > 1 ? 's' : ''} seleccionado${archivosSeleccionados.length > 1 ? 's' : ''}` : 'Seleccionar archivo(s) para subir...'}</div>
                   {archivosSeleccionados.length > 0 && (
                     <div className="compact-selected-files">
@@ -483,6 +678,30 @@ const respuesta = await apiFetch('/api/rag/categorias', {
           </div>
         </div>
       )}
+      {confirmarSalidaSubida && (
+        <div className="modal-overlay modal-monitoreo-pozo-overlay" role="dialog" aria-modal="true" aria-labelledby="confirmar-salida-subida-titulo">
+          <div className="modal-monitoreo-pozo modal-confirmacion-borrador">
+            <header className="modal-monitoreo-pozo-header">
+              <div>
+                <span className="dashboard-eyebrow">Borrador de subida</span>
+                <h2 id="confirmar-salida-subida-titulo">¿Salir de la subida?</h2>
+              </div>
+              <button type="button" className="modal-monitoreo-pozo-close" onClick={() => setConfirmarSalidaSubida(false)} aria-label="Seguir trabajando">
+                <FiX aria-hidden="true" />
+              </button>
+            </header>
+            <div className="modal-monitoreo-pozo-body">
+              <p className="modal-monitoreo-pozo-intro">Se guardarán la descripción, la categoría y los archivos seleccionados en este navegador. Podrás volver a Archivos y continuar después.</p>
+              <div className="modal-monitoreo-pozo-actions">
+                <button type="button" className="btn-monitoreo-pozo-cancel" onClick={() => setConfirmarSalidaSubida(false)} disabled={guardandoBorrador}>Seguir trabajando</button>
+                <button type="button" className="profile-primary-button" onClick={guardarBorradorYCerrar} disabled={guardandoBorrador}>
+                  {guardandoBorrador ? 'Guardando…' : 'Guardar borrador y salir'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="library-toolbar">
         <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, archivo o autor…" /></label>
         {categoriasSubida.length > 0 && (
@@ -501,7 +720,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
             ))}
           </div>
         )}
-        <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title="Subir archivo">
+        <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title={archivosSeleccionados.length ? 'Continuar borrador de subida' : 'Subir archivo'}>
           <FiUploadCloud />
         </button>
         <button type="button" className={`library-select-toggle${modoSeleccion ? ' active' : ''}`} onClick={alternarModoSeleccion} title={modoSeleccion ? 'Cancelar selección' : 'Selección múltiple'}>

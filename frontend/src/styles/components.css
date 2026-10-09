@@ -370,6 +370,14 @@
   background: #3B82F6;
 }
 
+.toast-bubble.toast-proceso .toast-icon-container {
+  background: rgba(221, 34, 38, 0.12);
+  color: #B5181C;
+}
+.toast-bubble.toast-proceso .toast-icon-container svg {
+  animation: toastSpin 1s linear infinite;
+}
+
 .toast-icon-container {
   display: flex;
   align-items: center;
@@ -441,6 +449,10 @@
   transition: width 0.05s linear;
 }
 
+@keyframes toastSpin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes toastSlideIn {
   0% {
     opacity: 0;
@@ -490,4 +502,3 @@
     max-width: none;
   }
 }
-

@@ -1164,6 +1164,9 @@ const PALABRAS_CLAVE_REPORTES = [
 
 function esPreguntaReportesOperaciones(pregunta) {
   const texto = (pregunta || '').toLowerCase();
+  // Hook Load Torque se consulta como dato técnico en los documentos
+  // indexados en MongoDB, no como una lista de reportes de Google Drive.
+  if (/\bhook[\s_-]*load\b/.test(texto)) return false;
   return PALABRAS_CLAVE_REPORTES.some((palabra) => texto.includes(palabra));
 }
 
@@ -1440,7 +1443,7 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
         };
       }
     }
-    if (archivos.length > 40) {
+    if (anioSolicitado && archivos.length > 40) {
       return { tipo: 'demasiados-candidatos', anio: anioSolicitado, cantidad: archivos.length };
     }
 
@@ -3132,6 +3135,7 @@ async function moverArchivoAPapelera(id, user) {
       await mongoDb.collection(activa).deleteMany({ archivoId: id });
       console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} de "${activa}" a "${papelera}"`);
     }
+    await ragCategorias.eliminarPapeleraVacia(papelera);
   } catch (falloMigracion) {
     // Si los vectores no salen de la colección activa, el contenido seguiría
     // respondiendo en el chat. No se marca el archivo como eliminado para no
@@ -3189,6 +3193,7 @@ async function restaurarArchivoDePapelera(id) {
       await mongoDb.collection(papelera).deleteMany({ archivoId: id });
       console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} de "${papelera}" a "${activa}"`);
     }
+    await ragCategorias.eliminarPapeleraVacia(papelera);
   } catch (falloRestauracion) {
     console.error(`[PAPELERA] Error al restaurar vectores del archivo ${id}:`, falloRestauracion.message);
     return {
@@ -3221,6 +3226,7 @@ async function eliminarArchivoPermanentemente(id, data) {
       console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id} en ${coleccion}:`, error.message);
     }
   }
+  await ragCategorias.eliminarPapeleraVacia(papelera);
   if (data?.rutaLocal) {
     const raizArchivos = path.resolve(__dirname, '../storage/archivos');
     const rutaArchivo = path.resolve(__dirname, '..', data.rutaLocal);

@@ -90,6 +90,23 @@ function esColeccionPapelera(nombre) {
   return String(nombre || '').endsWith(SUFIJO_PAPELERA);
 }
 
+async function eliminarPapeleraVacia(nombre) {
+  if (!esColeccionPapelera(nombre)) return false;
+
+  const mongoDb = getDB();
+  const existe = await mongoDb.listCollections({ name: nombre }, { nameOnly: true }).hasNext();
+  if (!existe || await mongoDb.collection(nombre).countDocuments({}) > 0) return false;
+
+  try {
+    await mongoDb.collection(nombre).drop();
+    console.log(`[PAPELERA] Se eliminó la colección vacía "${nombre}".`);
+    return true;
+  } catch (error) {
+    if (error?.code === 26 || error?.codeName === 'NamespaceNotFound') return false;
+    throw error;
+  }
+}
+
 // ============================================================
 // CATEGORÍAS
 // ============================================================
@@ -338,7 +355,10 @@ async function moverDocumentosAColeccion(origen, destino) {
   if (!existentes.has(origen)) return vacio;
 
   const documentos = await mongoDb.collection(origen).countDocuments({});
-  if (!documentos) return { ...vacio, origen: 0 };
+  if (!documentos) {
+    if (esColeccionPapelera(origen)) await eliminarPapeleraVacia(origen);
+    return { ...vacio, origen: 0 };
+  }
 
   if (!existentes.has(destino)) {
     try {
@@ -358,7 +378,10 @@ async function moverDocumentosAColeccion(origen, destino) {
     movidos += 1;
   }
 
-  if (movidos) await mongoDb.collection(origen).deleteMany({});
+  if (movidos) {
+    await mongoDb.collection(origen).deleteMany({});
+    if (esColeccionPapelera(origen)) await eliminarPapeleraVacia(origen);
+  }
 
   return { movidos, origen: documentos, destino };
 }
@@ -1050,6 +1073,7 @@ module.exports = {
   crearCategoria,
   descubrirIndicesVectoriales,
   eliminarCategoria,
+  eliminarPapeleraVacia,
   esAdministrador,
   esColeccionPapelera,
   listarCategorias,

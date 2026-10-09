@@ -4,6 +4,7 @@ import {
   FiAlertCircle,
   FiAlertTriangle,
   FiInfo,
+  FiLoader,
   FiX,
 } from 'react-icons/fi';
 
@@ -48,6 +49,8 @@ function ToastItem({ notificacion, onCerrar }) {
 
   const obtenerIcono = () => {
     switch (tipo) {
+      case 'proceso':
+        return <FiLoader aria-hidden="true" />;
       case 'exito':
       case 'success':
         return <FiCheckCircle aria-hidden="true" />;
@@ -83,8 +86,8 @@ function ToastItem({ notificacion, onCerrar }) {
   return (
     <div
       className={`toast-bubble toast-${tipo} ${saliendo ? 'toast-exit' : 'toast-enter'}`}
-      role="alert"
-      aria-live="assertive"
+      role={tipo === 'proceso' ? 'status' : 'alert'}
+      aria-live={tipo === 'proceso' ? 'polite' : 'assertive'}
       onMouseEnter={() => setPausado(true)}
       onMouseLeave={() => setPausado(false)}
     >

@@ -24,20 +24,41 @@ export function NotificationProvider({ children }) {
       id,
       mensaje: typeof mensaje === 'string' ? mensaje : String(mensaje),
       titulo: opciones.titulo || null,
-      tipo: opciones.tipo || 'info', // 'exito' | 'error' | 'advertencia' | 'info'
+      tipo: opciones.tipo || 'info', // 'proceso' | 'exito' | 'error' | 'advertencia' | 'info'
       duracion: typeof opciones.duracion === 'number' ? opciones.duracion : 4500,
       icono: opciones.icono || null,
       creadoEn: Date.now(),
     };
 
     setNotificaciones((prev) => {
-      // Limitar a máximo 5 notificaciones en pantalla a la vez
-      const lista = prev.length >= 5 ? prev.slice(prev.length - 4) : prev;
+      // Keep active processes visible when the user generates more notifications.
+      const indiceTemporal = prev.findIndex((item) => item.duracion > 0);
+      const lista = prev.length >= 5 && indiceTemporal !== -1
+        ? prev.filter((_, index) => index !== indiceTemporal)
+        : prev;
       return [...lista, nuevaNotificacion];
     });
 
     return id;
   }, []);
+
+  const actualizarNotificacion = useCallback((id, mensaje, opciones = {}) => {
+    if (!id || !mensaje) return;
+    setNotificaciones((prev) => prev.map((item) => (
+      item.id === id
+        ? { ...item, mensaje: String(mensaje), titulo: opciones.titulo || item.titulo }
+        : item
+    )));
+  }, []);
+
+  const notificarProceso = useCallback((mensaje, opciones = {}) => {
+    return agregarNotificacion(mensaje, {
+      ...opciones,
+      tipo: 'proceso',
+      titulo: opciones.titulo || 'Proceso en curso',
+      duracion: 0,
+    });
+  }, [agregarNotificacion]);
 
   const notificarExito = useCallback((mensaje, opciones = {}) => {
     return agregarNotificacion(mensaje, {
@@ -76,7 +97,9 @@ export function NotificationProvider({ children }) {
   const contextValue = {
     notificaciones,
     agregarNotificacion,
+    actualizarNotificacion,
     eliminarNotificacion,
+    notificarProceso,
     notificar: agregarNotificacion,
     notificarExito,
     notificarError,
