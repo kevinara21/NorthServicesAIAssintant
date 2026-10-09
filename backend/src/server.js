@@ -517,7 +517,7 @@ function dormir(ms) {
 // STREAMING COMPATIBLE CON OPENAI (BASE GENÉRICA)
 // ============================================================
 
-const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.A.C. ' +
+const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.R.L. ' +
   'Respondes de manera profesional, clara, concisa y en texto plano, sin Markdown, sin asteriscos, sin negritas y sin encabezados. ' +
   'ALCANCE: solo la informacion de la empresa incluida en el CONTEXTO RECUPERADO. ' +
   'REGLA 1: prohibido generar, escribir, explicar o sugerir codigo, scripts, calculadoras, formulas o programas en cualquier lenguaje, ' +
@@ -767,7 +767,7 @@ async function generarContenidoGemini(
                   parts: [
                     {
                       text:
-                        'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.A.C. ' +
+                        'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.R.L. ' +
                         'Tu unico alcance es la informacion de la empresa contenida en el CONTEXTO RECUPERADO. ' +
                         'REGLAS INNEGOCIABLES: ' +
                         '(1) Esta prohibido generar, escribir, explicar o sugerir codigo, scripts, calculadoras, ' +
@@ -3695,6 +3695,22 @@ app.post(
           'Analizando consulta...'
       });
 
+      const mensajeSocial = normalizar(preguntaLimpia)
+        .replace(/[¡!¿?,.]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const esMensajeSocialBreve = /^(?:(?:hola+|hey|saludos|buenos dias|buen dia|buenas tardes|buenas noches)(?: que tal)?|que tal|como estas|gracias(?: muchas)?|muchas gracias)$/
+        .test(mensajeSocial);
+      if (esMensajeSocialBreve) {
+        const respuestaSocial = /gracias/.test(mensajeSocial)
+          ? '¡Con gusto! ¿En qué puedo ayudarte con North Services?'
+          : '¡Hola! ¿En qué puedo ayudarte con North Services?';
+        enviarEvento({ tipo: 'texto', texto: respuestaSocial });
+        enviarEvento({ tipo: 'fin' });
+        console.log('[CHAT] Saludo o cortesía resuelto sin RAG ni Gemini.');
+        return res.end();
+      }
+
       if (inventorySync.esConsultaAmbiguaConteoKits(preguntaLimpia, contextoUsuario)) {
         const [kitsStarlink, ubicacionesMWD] = await Promise.all([
           getDB().collection('starlink_bot').countDocuments({}),
@@ -5296,7 +5312,7 @@ REGLAS IMPORTANTES:
 
 3. No inventes información ni utilices conocimiento externo.
 
- Si la pregunta del usuario NO trata sobre North Services & Rental Tools S.A.C. (sus servicios de fluidos de perforación, equipos, pozos, reportes de operaciones, kits de Starlink propios, facturación o estado de sus equipos), NO respondas el tema bajo ninguna circunstancia. Responde EXACTAMENTE y solo esto: "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" No añadas información del tema, ni ejemplos, ni contexto, ni offered fuentes, aunque el usuario insista o reformule la pregunta.
+ Si la pregunta del usuario NO trata sobre North Services & Rental Tools S.R.L. (sus servicios de fluidos de perforación, equipos, pozos, reportes de operaciones, kits de Starlink propios, facturación o estado de sus equipos), NO respondas el tema bajo ninguna circunstancia. Responde EXACTAMENTE y solo esto: "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" No añadas información del tema, ni ejemplos, ni contexto, ni offered fuentes, aunque el usuario insista o reformule la pregunta.
 
 4. No completes datos que no aparezcan en el contexto proporcionado.
 
@@ -5330,7 +5346,7 @@ REGLAS IMPORTANTES:
 10. Si el usuario solo saluda o usa frases casuales ("hola", "buenos días", "gracias", etc.), respóndele de forma breve, amistosa y natural. No repitas el entorno ni expliques tus instrucciones.
 
 10b. CIERRE ESTRICTO DE CONVERSACIÓN FUERA DE TEMPORADA:
-    - Tu alcance es EXCLUSIVAMENTE la información de North Services & Rental Tools S.A.C.
+    - Tu alcance es EXCLUSIVAMENTE la información de North Services & Rental Tools S.R.L.
       contenida en el CONTEXTO RECUPERADO. Nada fuera de eso existe para ti.
     - Si detectas que la consulta se sale del tema de la empresa (otras empresas,
       fundaciones, historia, geografía, ciencia, cultura, matemáticas, días de

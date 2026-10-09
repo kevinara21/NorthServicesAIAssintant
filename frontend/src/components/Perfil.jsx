@@ -3,6 +3,7 @@ import { FiCheck, FiCheckCircle, FiEye, FiEyeOff, FiKey, FiLock, FiSave, FiSend 
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
 import { apiFetch } from '../services/api';
+import { useNotification } from '../context/NotificationContext';
 
 export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   const [nombre, setNombre] = useState(usuario?.nombre || '');
@@ -10,13 +11,13 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   const [telefono, setTelefono] = useState(usuario?.whatsapp || '');
   const [codigo, setCodigo] = useState('');
   const [canal, setCanal] = useState('sms');
-  const [mensaje, setMensaje] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [otpEnviado, setOtpEnviado] = useState(false);
   const [passwordActual, setPasswordActual] = useState('');
   const [nuevaPassword, setNuevaPassword] = useState('');
   const [repetirPassword, setRepetirPassword] = useState('');
   const [passwordVisible, setPasswordVisible] = useState({ actual: false, nueva: false, repetir: false });
+  const { notificarExito, notificarError } = useNotification();
 
   const llamada = async (ruta, opciones = {}) => {
     const respuesta = await apiFetch(ruta, {
@@ -37,46 +38,51 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   const guardarPerfil = async (event) => {
     if (event) event.preventDefault();
     setCargando(true);
-    setMensaje(null);
     try {
       const data = await llamada('/api/perfil', { method: 'PUT', body: JSON.stringify({ nombre, apellido }) });
       onUsuarioActualizado(data.usuario);
-      setMensaje({ tipo: 'exito', texto: 'Perfil actualizado. El correo generado también fue actualizado.' });
+      notificarExito('Perfil actualizado correctamente. El correo corporativo también fue actualizado.', {
+        titulo: 'Perfil actualizado',
+        duracion: 5000,
+      });
     } catch (error) {
-      setMensaje({ tipo: 'error', texto: error.message });
+      notificarError(error.message, { titulo: 'No se pudo actualizar el perfil', duracion: 5500 });
     } finally { setCargando(false); }
   };
 
   const enviarCodigo = async () => {
     setCargando(true);
-    setMensaje(null);
     try {
       await llamada('/api/otp/solicitar', { method: 'POST', body: JSON.stringify({ telefono, canal }) });
       setOtpEnviado(true);
-      setMensaje({ tipo: 'exito', texto: `Código enviado por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.` });
+      notificarExito(`Código enviado correctamente por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`, {
+        titulo: 'Código enviado',
+        duracion: 5000,
+      });
     } catch (error) {
-      setMensaje({ tipo: 'error', texto: error.message });
+      notificarError(error.message, { titulo: 'No se pudo enviar el código', duracion: 5500 });
     } finally { setCargando(false); }
   };
 
   const verificarCodigo = async (event) => {
     if (event) event.preventDefault();
     setCargando(true);
-    setMensaje(null);
     try {
       await llamada('/api/otp/verificar', { method: 'POST', body: JSON.stringify({ telefono, codigo }) });
       onUsuarioActualizado({ ...usuario, whatsapp: telefono, whatsappVerificado: true });
-      setMensaje({ tipo: 'exito', texto: `Número verificado mediante ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.` });
+      notificarExito(`Número verificado correctamente mediante ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`, {
+        titulo: 'Número verificado',
+        duracion: 5000,
+      });
       setOtpEnviado(false);
       setCodigo('');
     } catch (error) {
-      setMensaje({ tipo: 'error', texto: error.message });
+      notificarError(error.message, { titulo: 'No se pudo verificar el código', duracion: 5500 });
     } finally { setCargando(false); }
   };
 
   const cambiarPassword = async () => {
     setCargando(true);
-    setMensaje(null);
     try {
       if (nuevaPassword.length < 6) throw new Error('La nueva contraseña debe tener al menos 6 caracteres.');
       if (nuevaPassword !== repetirPassword) throw new Error('Las nuevas contraseñas no coinciden.');
@@ -88,12 +94,15 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
       setPasswordActual('');
       setNuevaPassword('');
       setRepetirPassword('');
-      setMensaje({ tipo: 'exito', texto: 'Contraseña actualizada correctamente.' });
+      notificarExito('La contraseña se actualizó correctamente.', {
+        titulo: 'Contraseña actualizada',
+        duracion: 5000,
+      });
     } catch (error) {
       const mensajeError = error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password'
-        ? 'La contraseña actual es incorrecta.'
+        ? 'La contraseña actual ingresada es incorrecta.'
         : error.message;
-      setMensaje({ tipo: 'error', texto: mensajeError });
+      notificarError(mensajeError, { titulo: 'Contraseña incorrecta', duracion: 5500 });
     } finally { setCargando(false); }
   };
 
@@ -103,7 +112,6 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
         <h1>Mi perfil</h1>
         <p>Administra tus datos de acceso y verifica el número asociado a tu cuenta.</p>
       </div>
-      {mensaje && <div className={`profile-message ${mensaje.tipo}`}>{mensaje.texto}</div>}
       <div className="profile-panel profile-panel-unified">
         <h3>Datos personales</h3>
         <form onSubmit={guardarPerfil}>

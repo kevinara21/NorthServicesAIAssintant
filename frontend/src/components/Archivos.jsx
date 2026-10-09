@@ -53,6 +53,13 @@ async function eliminarBorradorSubida(uid) {
   });
 }
 
+function tieneContenidoBorrador(borrador) {
+  return (borrador.archivos || []).length > 0
+    || Boolean(borrador.descripcion?.trim())
+    || Boolean(borrador.nuevaCategoria?.nombre?.trim())
+    || Boolean(borrador.nuevaCategoria?.descripcion?.trim());
+}
+
 function formatearTamano(bytes = 0) {
   if (!bytes) return '0 B';
   const unidades = ['B', 'KB', 'MB', 'GB'];
@@ -82,7 +89,9 @@ export default function Archivos({ token, usuario }) {
   const [confirmarSalidaSubida, setConfirmarSalidaSubida] = useState(false);
   const [guardandoBorrador, setGuardandoBorrador] = useState(false);
   const [borradorCargado, setBorradorCargado] = useState(false);
+  const [borradorDisponible, setBorradorDisponible] = useState(false);
   const [almacenamientoDisponible, setAlmacenamientoDisponible] = useState(true);
+  const borradorDisponibleRef = useRef(false);
   const draftCategoriaRef = useRef('');
   const inputActualizacionRef = useRef(null);
   const archivoActualizacionRef = useRef(null);
@@ -102,23 +111,20 @@ export default function Archivos({ token, usuario }) {
 
     let vigente = true;
     leerBorradorSubida(usuarioUid)
-      .then((borrador) => {
+      .then(async (borrador) => {
         if (!vigente || !borrador) return;
+        if (!tieneContenidoBorrador(borrador)) {
+          await eliminarBorradorSubida(usuarioUid);
+          return;
+        }
+        borradorDisponibleRef.current = true;
+        setBorradorDisponible(true);
         setArchivosSeleccionados(borrador.archivos || []);
         setDescripcion(borrador.descripcion || '');
         setCategoriaId(borrador.categoriaId || '');
         draftCategoriaRef.current = borrador.categoriaId || '';
         setCreandoCategoria(Boolean(borrador.creandoCategoria));
         setNuevaCategoria(borrador.nuevaCategoria || { nombre: '', descripcion: '' });
-        const tieneTrabajo = (borrador.archivos || []).length > 0
-          || Boolean(borrador.descripcion?.trim())
-          || Boolean(borrador.creandoCategoria)
-          || Boolean(borrador.nuevaCategoria?.nombre?.trim())
-          || Boolean(borrador.nuevaCategoria?.descripcion?.trim());
-        if (tieneTrabajo) {
-          setModalSubirAbierto(true);
-          notificarInfo('Recuperamos el borrador con los datos y archivos que habías seleccionado.', { titulo: 'Borrador recuperado' });
-        }
       })
       .catch((error) => {
         if (vigente) {
@@ -131,7 +137,7 @@ export default function Archivos({ token, usuario }) {
       });
 
     return () => { vigente = false; };
-  }, [usuarioUid, notificarError, notificarInfo]);
+  }, [usuarioUid, notificarError]);
 
   useEffect(() => {
     if (!borradorCargado || !almacenamientoDisponible || !usuarioUid) return;
@@ -143,18 +149,21 @@ export default function Archivos({ token, usuario }) {
       creandoCategoria,
       nuevaCategoria,
     };
-    const tieneTrabajo = archivosSeleccionados.length > 0
-      || Boolean(descripcion.trim())
-      || creandoCategoria
-      || Boolean(nuevaCategoria.nombre.trim())
-      || Boolean(nuevaCategoria.descripcion.trim());
-    const guardar = tieneTrabajo
-      ? guardarBorradorSubida(usuarioUid, borrador)
-      : eliminarBorradorSubida(usuarioUid);
-
-    guardar.catch((error) => {
-      notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
+    const tieneTrabajo = tieneContenidoBorrador({
+      archivos: archivosSeleccionados,
+      descripcion,
+      nuevaCategoria,
     });
+    if (!tieneTrabajo && !borradorDisponibleRef.current) return;
+
+    guardarBorradorSubida(usuarioUid, borrador)
+      .then(() => {
+        borradorDisponibleRef.current = true;
+        setBorradorDisponible(true);
+      })
+      .catch((error) => {
+        notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
+      });
   }, [almacenamientoDisponible, archivosSeleccionados, borradorCargado, categoriaId, creandoCategoria, descripcion, nuevaCategoria, notificarError, usuarioUid]);
 
   const categoriaElegida = useMemo(
@@ -203,17 +212,17 @@ export default function Archivos({ token, usuario }) {
 
   const solicitarCerrarSubida = useCallback(() => {
     if (cargando || guardandoCategoria) return;
-    const tieneTrabajo = archivosSeleccionados.length > 0
-      || Boolean(descripcion.trim())
-      || creandoCategoria
-      || Boolean(nuevaCategoria.nombre.trim())
-      || Boolean(nuevaCategoria.descripcion.trim());
+    const tieneTrabajo = tieneContenidoBorrador({
+      archivos: archivosSeleccionados,
+      descripcion,
+      nuevaCategoria,
+    });
     if (tieneTrabajo) {
       setConfirmarSalidaSubida(true);
     } else {
       setModalSubirAbierto(false);
     }
-  }, [archivosSeleccionados.length, cargando, creandoCategoria, descripcion, guardandoCategoria, nuevaCategoria]);
+  }, [archivosSeleccionados, cargando, descripcion, guardandoCategoria, nuevaCategoria]);
 
   const guardarBorradorYCerrar = async () => {
     setGuardandoBorrador(true);
@@ -234,7 +243,9 @@ export default function Archivos({ token, usuario }) {
     }
     setConfirmarSalidaSubida(false);
     setModalSubirAbierto(false);
-    notificarInfo('El borrador quedó guardado en este navegador. Puedes volver a Archivos para continuar.', { titulo: 'Borrador guardado' });
+    borradorDisponibleRef.current = true;
+    setBorradorDisponible(true);
+    notificarInfo('El borrador quedó guardado en este navegador. Toca la nube en Archivos para continuar.', { titulo: 'Borrador guardado' });
     setGuardandoBorrador(false);
   };
 
@@ -399,7 +410,11 @@ const respuesta = await apiFetch('/api/rag/categorias', {
         setNuevaCategoria({ nombre: '', descripcion: '' });
         setCreandoCategoria(false);
         setModalSubirAbierto(false);
-        if (usuarioUid) await eliminarBorradorSubida(usuarioUid);
+        if (usuarioUid) {
+          borradorDisponibleRef.current = false;
+          setBorradorDisponible(false);
+          await eliminarBorradorSubida(usuarioUid);
+        }
       }
       const inputSubida = document.getElementById('archivo-colaborativo');
       if (inputSubida) inputSubida.value = '';
@@ -720,7 +735,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
             ))}
           </div>
         )}
-        <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title={archivosSeleccionados.length ? 'Continuar borrador de subida' : 'Subir archivo'}>
+        <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title={borradorDisponible ? 'Continuar borrador de subida' : 'Subir archivo'} aria-label={borradorDisponible ? 'Continuar borrador de subida' : 'Subir archivo'}>
           <FiUploadCloud />
         </button>
         <button type="button" className={`library-select-toggle${modoSeleccion ? ' active' : ''}`} onClick={alternarModoSeleccion} title={modoSeleccion ? 'Cancelar selección' : 'Selección múltiple'}>

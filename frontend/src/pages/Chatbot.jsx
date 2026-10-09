@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FiDownload, FiTrash2 } from 'react-icons/fi';
+import { FiDownload, FiTrash2, FiVolume2, FiVolumeX } from 'react-icons/fi';
 import { API_URL } from '../services/api';
 
 // ============================================================================
@@ -99,6 +99,70 @@ export default function Chatbot({ token, uid }) {
   const [pregunta, setPregunta] = useState('');
   const [historial, setHistorial] = useState([]);
   const [cargando, setCargando] = useState(false);
+  const [sonidoRespuesta, setSonidoRespuesta] = useState(() => {
+    try {
+      return localStorage.getItem('chat_sonido_respuesta') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const sonidoRespuestaRef = useRef(sonidoRespuesta);
+  const contextoAudioRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('chat_sonido_respuesta', String(sonidoRespuesta));
+    } catch {
+      // El sonido sigue disponible durante esta sesión aunque no se pueda guardar la preferencia.
+    }
+  }, [sonidoRespuesta]);
+
+  useEffect(() => () => {
+    if (contextoAudioRef.current && contextoAudioRef.current.state !== 'closed') {
+      contextoAudioRef.current.close();
+    }
+  }, []);
+
+  const habilitarAudioParaRespuesta = () => {
+    if (!sonidoRespuestaRef.current || typeof window === 'undefined') return;
+    const AudioContexto = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContexto) return;
+
+    try {
+      contextoAudioRef.current ||= new AudioContexto();
+      contextoAudioRef.current.resume().catch((error) => {
+        logDebug('No se pudo habilitar el sonido de respuesta:', error);
+      });
+    } catch (error) {
+      logDebug('No se pudo preparar el sonido de respuesta:', error);
+    }
+  };
+
+  const reproducirSonidoRespuesta = () => {
+    const contexto = contextoAudioRef.current;
+    if (!sonidoRespuestaRef.current || !contexto || contexto.state === 'closed') return;
+
+    contexto.resume().then(() => {
+      if (!sonidoRespuestaRef.current) return;
+      const ahora = contexto.currentTime;
+      [784, 1046].forEach((frecuencia, indice) => {
+        const inicio = ahora + indice * 0.12;
+        const oscilador = contexto.createOscillator();
+        const volumen = contexto.createGain();
+        oscilador.type = 'sine';
+        oscilador.frequency.setValueAtTime(frecuencia, inicio);
+        volumen.gain.setValueAtTime(0.0001, inicio);
+        volumen.gain.exponentialRampToValueAtTime(0.09, inicio + 0.025);
+        volumen.gain.exponentialRampToValueAtTime(0.0001, inicio + 0.24);
+        oscilador.connect(volumen);
+        volumen.connect(contexto.destination);
+        oscilador.start(inicio);
+        oscilador.stop(inicio + 0.25);
+      });
+    }).catch((error) => {
+      logDebug('No se pudo reproducir el sonido de respuesta:', error);
+    });
+  };
 
   // Persistencia del historial por usuario
   const claveHistorial = `chat_historial_${uid || 'anonimo'}`;
@@ -201,6 +265,7 @@ export default function Chatbot({ token, uid }) {
 
     setPregunta('');
     setCargando(true);
+    habilitarAudioParaRespuesta();
 
     setHistorial((prev) => [
       ...prev,
@@ -279,6 +344,8 @@ export default function Chatbot({ token, uid }) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
+      let respuestaConError = false;
+      let sonidoReproducido = false;
 
       // Mutación del último mensaje del bot en el historial
       const actualizarUltimoBot = (callback) => {
@@ -358,6 +425,7 @@ export default function Chatbot({ token, uid }) {
 
           // --- ERROR (evento tipificado) ------------------------------------
           if (data.tipo === 'error') {
+            respuestaConError = true;
             console.error(
               '[CHATBOT] ERROR ENVIADO POR BACKEND:',
               data.error
@@ -374,6 +442,10 @@ export default function Chatbot({ token, uid }) {
           // --- FIN -----------------------------------------------------------
           if (data.tipo === 'fin') {
             logDebug('EVENTO FIN RECIBIDO');
+            if (!respuestaConError && !sonidoReproducido) {
+              sonidoReproducido = true;
+              reproducirSonidoRespuesta();
+            }
             setCargando(false);
           }
         }
@@ -511,6 +583,20 @@ export default function Chatbot({ token, uid }) {
     <div className="chatbot-shell">
       <div className="chatbot-toolbar">
         <div className="chatbot-toolbar__left">
+          <button
+            type="button"
+            className="chatbot-tool-button"
+            onClick={() => setSonidoRespuesta((actual) => {
+              const siguiente = !actual;
+              sonidoRespuestaRef.current = siguiente;
+              return siguiente;
+            })}
+            aria-pressed={sonidoRespuesta}
+            title={sonidoRespuesta ? 'Desactivar sonido al terminar la respuesta' : 'Activar sonido al terminar la respuesta'}
+          >
+            {sonidoRespuesta ? <FiVolume2 aria-hidden="true" /> : <FiVolumeX aria-hidden="true" />}
+            Sonido {sonidoRespuesta ? 'activado' : 'desactivado'}
+          </button>
           {historial.length > 0 && (
             <button
               type="button"
