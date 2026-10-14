@@ -123,7 +123,7 @@ export default function GestionFacturacion({ token }) {
       const data = await respuesta.json();
       if (!respuesta.ok) throw new Error(data.error || 'No se pudo sincronizar con MongoDB.');
       
-      notificarExito(data.mensaje, { titulo: 'Sincronización completada' });
+      notificarExito(data.mensaje);
     } catch (error) {
       notificarError(error.message, { titulo: 'Error al sincronizar' });
     }
@@ -182,7 +182,7 @@ export default function GestionFacturacion({ token }) {
             className="profile-secondary-button" 
             onClick={sincronizarConMongoDB}
           >
-            <FiRefreshCw /> Actualizar
+            <FiRefreshCw /> Actualizar a la IA
           </button>
         </div>
       </div>

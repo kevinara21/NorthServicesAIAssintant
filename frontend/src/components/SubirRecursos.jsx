@@ -334,13 +334,22 @@ export default function SubirRecursos({ token, alCompletar }) {
 
           <input
             className="resource-field"
-            type="number"
-            inputMode="decimal"
-            step="0.01"
-            min="0"
-            placeholder="Versión (ej. 1.0)"
+            type="text"
+            placeholder="Versión (ej. 1.0 o 1.1.1)"
             value={version}
-            onChange={(e) => setVersion(e.target.value)}
+            onChange={(e) => {
+              let valor = e.target.value.replace(/[^0-9.]/g, '');
+              valor = valor.replace(/\.{2,}/g, '.');
+              setVersion(valor);
+            }}
+            onBlur={(e) => {
+              let valor = e.target.value.trim().replace(/[^0-9.]/g, '');
+              valor = valor.replace(/\.{2,}/g, '.');
+              valor = valor.replace(/^\.+|\.+$/g, '');
+              setVersion(valor);
+            }}
+            pattern="^[0-9]+(\.[0-9]+)*$"
+            title="Usa formato numérico, ej. 1.0, 1.1, 1.1.1"
             required={!soloManual}
             disabled={cargando || soloManual}
             style={{

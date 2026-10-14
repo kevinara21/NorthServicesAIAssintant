@@ -6015,7 +6015,7 @@ app.post('/api/admin/starlink/sync-mongodb', verifyToken, requireAdmin, async (r
     
     res.json({ 
       ok: true, 
-      mensaje: `Sincronización completada: ${sincronizados} pozos sincronizados, ${errores} errores. Registros actualizados con nuevos campos.`,
+      mensaje: `Sincronización completada: ${sincronizados} enlaces Starlink actualizados para la IA, ${errores} errores.`,
       sincronizados,
       errores,
       total: pozos.length

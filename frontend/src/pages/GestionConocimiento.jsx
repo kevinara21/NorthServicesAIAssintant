@@ -514,7 +514,7 @@ const alternarActiva = async (categoria) => {
             const bloqueado = enCurso || otraSincronizacionEnCurso || iniciandoInventario !== null;
             const estadoTexto = {
               sincronizando: 'Sincronizando',
-              completado: 'Sincronización completada',
+              completado: 'Completada',
               error: 'Error en la última sincronización',
             }[estado.estado] || 'Aún no sincronizado';
             return (

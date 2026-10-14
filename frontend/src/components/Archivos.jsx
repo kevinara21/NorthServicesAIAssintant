@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FiCheck, FiCheckSquare, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiRefreshCw, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
+import { FiCheck, FiCheckSquare, FiChevronDown, FiDownload, FiFile, FiFilter, FiLayers, FiPaperclip, FiPlus, FiRefreshCw, FiSearch, FiSquare, FiTrash2, FiUploadCloud, FiX } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from './common/OilLoader';
@@ -74,7 +74,8 @@ export default function Archivos({ token, usuario }) {
   const [modoSeleccion, setModoSeleccion] = useState(false);
   const [descripcion, setDescripcion] = useState('');
   const [busqueda, setBusqueda] = useState('');
-  const [filtroCategoria, setFiltroCategoria] = useState('');
+  const [filtroCategorias, setFiltroCategorias] = useState([]);
+  const [filtroAbierto, setFiltroAbierto] = useState(false);
 
   // Categorías de conocimiento: las trae el backend, no están fijas en el
   // frontend, así que el Administrador puede agregar más sin desplegar.
@@ -95,6 +96,7 @@ export default function Archivos({ token, usuario }) {
   const draftCategoriaRef = useRef('');
   const inputActualizacionRef = useRef(null);
   const archivoActualizacionRef = useRef(null);
+  const filtroRef = useRef(null);
 
   // Crear una categoría nueva desde este mismo formulario, para no tener
   // que salir a Conocimiento y permisos por rol a medio trabajo.
@@ -165,6 +167,22 @@ export default function Archivos({ token, usuario }) {
         notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
       });
   }, [almacenamientoDisponible, archivosSeleccionados, borradorCargado, categoriaId, creandoCategoria, descripcion, nuevaCategoria, notificarError, usuarioUid]);
+
+  useEffect(() => {
+    if (!filtroAbierto) return undefined;
+    const alClicFuera = (event) => {
+      if (filtroRef.current && !filtroRef.current.contains(event.target)) setFiltroAbierto(false);
+    };
+    const alPresionarTecla = (event) => {
+      if (event.key === 'Escape') setFiltroAbierto(false);
+    };
+    document.addEventListener('mousedown', alClicFuera);
+    document.addEventListener('keydown', alPresionarTecla);
+    return () => {
+      document.removeEventListener('mousedown', alClicFuera);
+      document.removeEventListener('keydown', alPresionarTecla);
+    };
+  }, [filtroAbierto]);
 
   const categoriaElegida = useMemo(
     () => categorias.find((categoria) => categoria.id === categoriaId) || null,
@@ -307,15 +325,15 @@ const respuesta = await apiFetch('/api/rag/categorias', {
   // Primero se aplica el filtro de categoria elegida y despues la busqueda
   // por texto, para que ambas condiciones se puedan combinar.
   const archivosFiltrados = useMemo(() => {
-    const porCategoria = filtroCategoria
-      ? archivos.filter((item) => item.categoriaId === filtroCategoria)
+    const porCategoria = filtroCategorias.length
+      ? archivos.filter((item) => filtroCategorias.includes(item.categoriaId))
       : archivos;
 
     const termino = busqueda.trim().toLowerCase();
     if (!termino) return porCategoria;
     return porCategoria.filter((item) => [item.nombre, item.nombreArchivo, item.descripcion, item.propietarioNombre, item.propietarioEmail, item.categoriaNombre]
       .filter(Boolean).some((valor) => valor.toLowerCase().includes(termino)));
-  }, [archivos, busqueda, filtroCategoria]);
+  }, [archivos, busqueda, filtroCategorias]);
 
   const nombreCategoria = useMemo(() => {
     const mapa = new Map(categorias.map((categoria) => [categoria.id, categoria.nombre]));
@@ -333,6 +351,10 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       if (activo) setIdsSeleccionados([]);
       return !activo;
     });
+  };
+
+  const alternarFiltroCategoria = (id) => {
+    setFiltroCategorias((actual) => actual.includes(id) ? actual.filter((valor) => valor !== id) : [...actual, id]);
   };
 
   const alternarSeleccion = (id) => {
@@ -720,19 +742,37 @@ const respuesta = await apiFetch('/api/rag/categorias', {
       <div className="library-toolbar">
         <label className="library-search"><FiSearch aria-hidden="true" /><input value={busqueda} onChange={(event) => setBusqueda(event.target.value)} placeholder="Buscar por nombre, archivo o autor…" /></label>
         {categoriasSubida.length > 0 && (
-          <div className="library-filtros-categoria" role="group" aria-label="Filtrar por categoría">
-            <FiFilter aria-hidden="true" />
-            <button type="button" className={!filtroCategoria ? 'active' : ''} onClick={() => setFiltroCategoria('')}>Todas</button>
-            {categoriasSubida.map((categoria) => (
-              <button
-                key={categoria.id}
-                type="button"
-                className={filtroCategoria === categoria.id ? 'active' : ''}
-                onClick={() => setFiltroCategoria(filtroCategoria === categoria.id ? '' : categoria.id)}
-              >
-                {categoria.nombre}
-              </button>
-            ))}
+          <div className="library-filtro" ref={filtroRef}>
+            <button
+              type="button"
+              className={`library-filtro__toggle${filtroAbierto ? ' active' : ''}`}
+              onClick={() => setFiltroAbierto((v) => !v)}
+              aria-expanded={filtroAbierto}
+              aria-haspopup="true"
+            >
+              <FiFilter aria-hidden="true" />
+              {filtroCategorias.length === 0 ? 'Todas las categorías' : `Categorías (${filtroCategorias.length})`}
+              <FiChevronDown aria-hidden="true" />
+            </button>
+            {filtroAbierto && (
+              <div className="library-filtro__menu" role="group" aria-label="Filtrar por categoría">
+                <div className="library-filtro__cabecera">
+                  <span>Categorías</span>
+                  <button type="button" onClick={() => setFiltroCategorias([])} disabled={filtroCategorias.length === 0}>
+                    Limpiar
+                  </button>
+                </div>
+                {categoriasSubida.map((categoria) => {
+                  const activo = filtroCategorias.includes(categoria.id);
+                  return (
+                    <label key={categoria.id} className={`library-filtro__opcion${activo ? ' active' : ''}`}>
+                      <input type="checkbox" checked={activo} onChange={() => alternarFiltroCategoria(categoria.id)} />
+                      <span>{categoria.nombre}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
         <button type="button" className="library-icon-button" onClick={() => setModalSubirAbierto(true)} title={borradorDisponible ? 'Continuar borrador de subida' : 'Subir archivo'} aria-label={borradorDisponible ? 'Continuar borrador de subida' : 'Subir archivo'}>
