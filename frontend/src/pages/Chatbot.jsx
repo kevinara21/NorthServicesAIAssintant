@@ -222,7 +222,28 @@ export default function Chatbot({ token, uid }) {
     utteranceEnCursoRef.current = null;
   }, []);
 
+  // En móviles, el motor de voz (speechSynthesis) solo acepta speak() si hubo
+  // una activación del usuario reciente. Como la respuesta puede tardar varios
+  // segundos, el gesto caduca y la voz se ignora en silencio. Se "desbloquea"
+  // el motor disparando un speak() vacío dentro del gesto de enviar; luego se
+  // cancela para que no suene nada.
+  const desbloquearSintesisVoz = () => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    try {
+      const sintesis = window.speechSynthesis;
+      const desbloqueo = new SpeechSynthesisUtterance(' ');
+      desbloqueo.volume = 0;
+      desbloqueo.lang = 'es-ES';
+      sintesis.speak(desbloqueo);
+      sintesis.cancel();
+      sintesis.resume?.();
+    } catch (error) {
+      logDebug('No se pudo desbloquear la síntesis de voz:', error);
+    }
+  };
+
   const habilitarAudioParaRespuesta = () => {
+    desbloquearSintesisVoz();
     if (!sonidoRespuestaRef.current || typeof window === 'undefined') return;
     const AudioContexto = window.AudioContext || window.webkitAudioContext;
     if (!AudioContexto) return;
@@ -568,19 +589,27 @@ export default function Chatbot({ token, uid }) {
       && contexto
       && contexto.state !== 'closed';
 
-    // La lectura en voz NUNCA debe depender del AudioContext: si quedó
-    // suspendido (p. ej. tras una respuesta lenta), resume() puede no
-    // resolverse y la voz no sonaría. Se intenta leer primero y el timbre
-    // queda como adorno opcional.
-    reproducirVozRespuesta(textoParaLeer, indice);
+    // La voz se lanza SIEMPRE, con o sin timbre. Cuando el timbre suena, la
+    // lectura arranca un momento después para no solaparse con él; si el
+    // AudioContext no está disponible (p. ej. respuesta lenta que dejó el
+    // gesto caducado), se lee de inmediato.
+    const arrancarLectura = () => reproducirVozRespuesta(textoParaLeer, indice);
 
-    if (!puedeTimbrar) return;
+    if (!puedeTimbrar) {
+      arrancarLectura();
+      return;
+    }
 
     contexto.resume().then(() => {
-      if (!sonidoRespuestaRef.current) return;
+      if (!sonidoRespuestaRef.current) {
+        arrancarLectura();
+        return;
+      }
       const ahora = contexto.currentTime;
+      let duracionTimbre = 0;
       [784, 1046].forEach((frecuencia, indiceTono) => {
         const inicio = ahora + indiceTono * 0.12;
+        duracionTimbre = Math.max(duracionTimbre, (inicio - ahora) + 0.25);
         const oscilador = contexto.createOscillator();
         const volumen = contexto.createGain();
         oscilador.type = 'sine';
@@ -593,8 +622,12 @@ export default function Chatbot({ token, uid }) {
         oscilador.start(inicio);
         oscilador.stop(inicio + 0.25);
       });
+      // Se espera a que termine el timbre y un pequeño margen antes de leer,
+      // para que la voz no se mezcle con el sonido de "respuesta lista".
+      setTimeout(arrancarLectura, Math.max(duracionTimbre * 1000 + 60, 60));
     }).catch((error) => {
       logDebug('No se pudo reproducir el sonido de respuesta:', error);
+      arrancarLectura();
     });
   };
 

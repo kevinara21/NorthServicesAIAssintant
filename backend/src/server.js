@@ -4347,6 +4347,10 @@ app.post(
         );
 
       console.log(
+        `[RAG] Fuentes autorizadas en ${Date.now() - inicioMongo} ms`
+      );
+
+      console.log(
         `[RAG] Rol "${req.user.rol || 'sin rol'}" → fuentes: ${
           fuentesAutorizadas.length
             ? fuentesAutorizadas
@@ -4372,6 +4376,8 @@ app.post(
         // Las colecciones de papelera nunca participan en la búsqueda.
         if (ragCategorias.esColeccionPapelera(fuente.coleccion)) return [];
 
+        const inicioFuente = Date.now();
+
         if (!vectorConsulta) {
           const porTexto = await buscarPorTextoEnMemoria(
             mongoDb.collection(fuente.coleccion),
@@ -4395,7 +4401,7 @@ app.post(
             RAG_LIMIT
           );
           console.log(
-            `[CHAT] "${fuente.coleccion}": ${porSimilitud.length} coincidencias por búsqueda directa`
+            `[CHAT] "${fuente.coleccion}": ${porSimilitud.length} coincidencias por búsqueda directa (${Date.now() - inicioFuente} ms)`
           );
           return porSimilitud;
         }
@@ -4449,6 +4455,10 @@ app.post(
             ])
             .toArray();
 
+          console.log(
+            `[CHAT] "${fuente.coleccion}": ${filas.length} por vectorSearch (${Date.now() - inicioFuente} ms)`
+          );
+
           return filas.map((fila) => ({ ...fila, categoriaId: fuente.id, categoriaNombre: fuente.nombre }));
         } catch (error) {
           // El índice existía pero la consulta falló. Se recorre la colección
@@ -4485,13 +4495,18 @@ const resultadosPorFuente = esPreguntaDeReportes
 
 const resultadosInventario = esPreguntaDeReportes
   ? []
-  : await (vectorConsulta
-    ? inventorySync.buscarInventario(preguntaLimpia)
-    : inventorySync.buscarInventarioPorTexto(preguntaLimpia))
-    .catch((error) => {
-      console.error(`[CHAT] No se pudo consultar el inventario RAG: ${error.message}`);
-      return [];
-    });
+  : await (async () => {
+    const inicioInv = Date.now();
+    const filas = await (vectorConsulta
+      ? inventorySync.buscarInventario(preguntaLimpia)
+      : inventorySync.buscarInventarioPorTexto(preguntaLimpia))
+      .catch((error) => {
+        console.error(`[CHAT] No se pudo consultar el inventario RAG: ${error.message}`);
+        return [];
+      });
+    console.log(`[CHAT] Inventario RAG: ${filas.length} resultados (${Date.now() - inicioInv} ms)`);
+    return filas;
+  })();
 const filasInventario = resultadosInventario.map((fila) => ({
   nombreManual: fila.tipo === 'mwd' ? 'Registro de inventario MWD' : 'Registro de inventario Motores',
   titulo_seccion: fila.metadata_original?.codigo_visible || fila.codigo,
@@ -4514,9 +4529,12 @@ const filasInventario = resultadosInventario.map((fila) => ({
       const resultadosWeb = esPreguntaDeReportes
         ? []
         : vectorConsulta
-          ? await webEmpresa.buscarEnWebEmpresa(
-          vectorConsulta
-          )
+          ? await (async () => {
+            const inicioWeb = Date.now();
+            const filas = await webEmpresa.buscarEnWebEmpresa(vectorConsulta);
+            console.log(`[WEB] Búsqueda en web de la empresa: ${filas.length} resultados (${Date.now() - inicioWeb} ms)`);
+            return filas;
+          })()
           : [];
 
       if (!vectorConsulta) {

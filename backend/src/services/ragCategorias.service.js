@@ -949,14 +949,30 @@ async function obtenerMatrizPermisos() {
 
 // Devuelve, para cada colección que ya tiene índice vectorial en Atlas, el
 // nombre real de ese índice.
-async function descubrirIndicesVectoriales() {
+// La lista de índices cambia muy rara vez (solo cuando el Administrador crea
+// o borra una categoría). Consultarla en cada pregunta costaba segundos en M0,
+// porque listSearchIndexes() se llamaba colección por colección. Se cachea con
+// un TTL corto para que una categoría recién creada se detecte enseguida.
+let cacheIndices = { datos: null, expira: 0 };
+const TTL_CACHE_INDICES_MS = 60000;
+
+function invalidarCacheIndices() {
+  cacheIndices = { datos: null, expira: 0 };
+}
+
+async function descubrirIndicesVectoriales({ usarCache = true } = {}) {
+  const ahora = Date.now();
+  if (usarCache && cacheIndices.datos && ahora < cacheIndices.expira) {
+    return new Map(cacheIndices.datos);
+  }
+
   const mongoDb = getDB();
   const colecciones = await mongoDb.listCollections({}, { nameOnly: true }).toArray();
   const discovered = new Map();
   const errores = [];
   const tiposVistos = new Set();
 
-  for (const { name } of colecciones) {
+  await Promise.all(colecciones.map(async ({ name }) => {
     try {
       const indices = await mongoDb.collection(name).listSearchIndexes().toArray();
       for (const indice of indices) {
@@ -969,7 +985,7 @@ async function descubrirIndicesVectoriales() {
       // se registra el motivo real para no confundirlo con "no hay índice".
       errores.push({ name, error: error.message });
     }
-  }
+  }));
 
   console.log(
     `[RAG] Índices de Atlas Search: ${discovered.size} vectoriales sobre ${colecciones.length} colecciones ` +
@@ -982,7 +998,8 @@ async function descubrirIndicesVectoriales() {
     );
   }
 
-  return discovered;
+  cacheIndices = { datos: discovered, expira: ahora + TTL_CACHE_INDICES_MS };
+  return new Map(discovered);
 }
 
 // Colecciones de vectores que existen hoy, con su índice y su papelera
