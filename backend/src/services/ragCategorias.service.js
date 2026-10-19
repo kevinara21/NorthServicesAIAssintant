@@ -825,9 +825,10 @@ async function guardarPermisosRol(rol, { categorias = [], modulos = {} } = {}) {
 
 // Fuentes RAG habilitadas para un rol.
 //
-// - Las categorías COMPARTIDAS se agregan siempre, para todos los roles, sin
-//   mirar permisos: son contenido del sistema (hoy, software y manuales).
-//   Equivale a lo que ya hacía Google Drive.
+// - Las categorías COMPARTIDAS y las DEL SISTEMA (p. ej. software y manuales)
+//   se agregan siempre, para todos los roles, sin mirar permisos: son
+//   contenido disponible universalmente. Equivale a lo que ya hacía Google
+//   Drive.
 // - El Administrador recibe TODAS las categorías activas: si se crea una
 //   categoría nueva, tiene acceso automáticamente sin marcar nada.
 // - Los demás roles solo reciben las categorías marcadas por el
@@ -840,7 +841,9 @@ async function obtenerFuentesPermitidas(rol) {
     : (await obtenerPermisosRol(rol)).categorias;
 
   const permitidas = new Set(
-    categorias.filter((categoria) => categoria.compartida).map((categoria) => categoria.id)
+    categorias
+      .filter((categoria) => categoria.compartida || categoria.sistema)
+      .map((categoria) => categoria.id)
   );
   marcadas.forEach((id) => permitidas.add(typeof id === 'string' ? id : id?.id));
 
@@ -861,9 +864,16 @@ async function obtenerFuentesPermitidas(rol) {
 // Starlink y Software y Manuales NO son categorías de conocimiento:
 // son módulos independientes del sistema de ingestión de documentos.
 // Solo se controla si un rol puede entrar a ellos.
+//
+// Software y Manuales es de acceso universal: cualquier rol puede consultarlo
+// y descargarlo, sin que el Administrador tenga que habilitarlo. Starlink sí
+// se controla por rol.
 // ============================================================
 
+const MODULOS_UNIVERSALES = new Set(['software_y_manuales']);
+
 async function puedeAccederModulo(rol, modulo) {
+  if (MODULOS_UNIVERSALES.has(modulo)) return true;
   if (esAdministrador(rol)) return true;
   const permisos = await obtenerPermisosRol(rol);
   return permisos.modulos?.[modulo] === true;
@@ -943,15 +953,33 @@ async function descubrirIndicesVectoriales() {
   const mongoDb = getDB();
   const colecciones = await mongoDb.listCollections({}, { nameOnly: true }).toArray();
   const discovered = new Map();
+  const errores = [];
+  const tiposVistos = new Set();
 
   for (const { name } of colecciones) {
     try {
       const indices = await mongoDb.collection(name).listSearchIndexes().toArray();
+      for (const indice of indices) {
+        if (indice.type) tiposVistos.add(indice.type);
+      }
       const vectorial = indices.find((indice) => indice.type === 'vectorSearch');
       if (vectorial?.name) discovered.set(name, vectorial.name);
-    } catch {
-      // Sin permiso de Atlas Search o sin índice: se ignora la colección.
+    } catch (error) {
+      // Sin permiso de Atlas Search, sin índice o versión incompatible:
+      // se registra el motivo real para no confundirlo con "no hay índice".
+      errores.push({ name, error: error.message });
     }
+  }
+
+  console.log(
+    `[RAG] Índices de Atlas Search: ${discovered.size} vectoriales sobre ${colecciones.length} colecciones ` +
+    `(tipos vistos: ${[...tiposVistos].join(', ') || 'ninguno'})`
+  );
+  if (errores.length) {
+    console.warn(
+      `[RAG] listSearchIndexes falló en ${errores.length}/${colecciones.length} colecciones (p. ej. "${errores[0].name}": ${errores[0].error}). ` +
+      `Si aparece "no search index" o un error de permisos, la búsqueda vectorial de Atlas NO está activa en este cluster.`
+    );
   }
 
   return discovered;

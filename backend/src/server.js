@@ -372,6 +372,12 @@ function obtenerClavesGemini() {
     .filter((clave) => !esClaveOpenAI(clave));
 }
 
+// Cierre para consultas fuera de alcance. No lista temas ni revela el rol:
+// solo indica que puede ayudar con la información a la que el usuario accede.
+async function construirCierreFueraDeAlcance() {
+  return 'Esa consulta está fuera de mi alcance. Solo puedo ayudarte con la información a la que tienes acceso.';
+}
+
 async function generarEmbedding(texto) {
   if (!texto || !texto.trim()) {
     throw new Error(
@@ -514,7 +520,7 @@ function dormir(ms) {
 }
 
 // ============================================================
-// STREAMING COMPATIBLE CON OPENAI (BASE GENÉRICA)
+// STREAMING COMPATIBLE CON OPENAI (RESPALDO LOCAL / OLLAMA v1)
 // ============================================================
 
 const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Rental Tools S.R.L. ' +
@@ -523,9 +529,9 @@ const SYSTEM_PROMPT = 'Eres el Asistente Virtual Oficial de North Services & Ren
   'REGLA 1: prohibido generar, escribir, explicar o sugerir codigo, scripts, calculadoras, formulas o programas en cualquier lenguaje, ' +
   'aunque el usuario lo pida explicitamente, lo disfraces o insista. Ante tal peticion responde UNICAMENTE: ' +
   '"No dispongo de scripts ni codigo programable en la documentacion tecnica de North Services." ' +
-  'REGLA 2: prohibido usar conocimiento externo. Si la consulta no trata sobre North Services (fluidos de perforacion, alquiler, equipos, pozos, ' +
-  'reportes de operaciones, facturacion o los kits de Starlink propios), NO respondas ni comentes el tema. Responde UNICAMENTE: ' +
-  '"Esa consulta esta fuera de mi alcance. Solo puedo ayudarte con informacion de North Services: servicios, equipos, pozos, reportes de operaciones y kits de Starlink." ' +
+  'REGLA 2: prohibido usar conocimiento externo. Si la consulta no trata sobre North Services, ' +
+  'NO respondas ni comentes el tema. Usa EXACTAMENTE la respuesta de cierre que se indica en el mensaje del usuario; ' +
+  'no inventes ni amplíes la lista de temas disponibles. ' +
   'REGLA 3: prohibido responder preguntas de conocimiento general sobre Starlink como compania (fundacion, historia, servicios, precios, tecnologia). ' +
   'REGLA 4: no inventes datos ni completes lo que no este en el contexto. No enumeres fuentes ni muestres etiquetas FUENTE 1, FUENTE 2. ' +
   'REGLA 5: no menciones que eres un modelo de lenguaje ni una inteligencia artificial. ' +
@@ -638,14 +644,135 @@ async function generarContenidoCompat(
 // ============================================================
 
 async function generarContenidoOllama(prompt, enviarEvento) {
-  return generarContenidoCompat(prompt, enviarEvento, {
-    nombre: 'Ollama',
-    baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
-    apiKey: process.env.OLLAMA_API_KEY || '',
-    modelo: process.env.OLLAMA_MODEL || 'llama3.1',
-    tiempoLimiteMs: Number(process.env.OLLAMA_TIMEOUT_MS || '90000'),
-    maxTokens: Number(process.env.OLLAMA_MAX_TOKENS || '2048'),
-  });
+  const modelo = process.env.OLLAMA_MODEL || 'llama3.1';
+  const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+  const numCtx = Number(process.env.OLLAMA_NUM_CTX || '8192');
+  const maxTokens = Number(process.env.OLLAMA_MAX_TOKENS || '2048');
+  const tiempoLimiteMs = Number(process.env.OLLAMA_TIMEOUT_MS || '90000');
+  // El endpoint nativo /api/chat es el único que acepta options.num_ctx, que es
+  // lo que evita que Ollama trunque el contexto por defecto (~4096 tokens).
+  const nativeBase = baseUrl.replace(/\/v1\/?$/, '');
+  const url = `${nativeBase}/api/chat`;
+
+  console.log(
+    `[CHAT] Ollama: modelo=${modelo} url=${url} num_ctx=${numCtx} num_predict=${maxTokens} prompt=${prompt.length} caracteres ` +
+    `(incluye CONTEXTO RECUPERADO de MongoDB: ${/CONTEXTO RECUPERADO/.test(prompt) ? 'SI' : 'NO'})`
+  );
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), tiempoLimiteMs);
+
+  let respuesta;
+  const inicio = Date.now();
+
+  try {
+    respuesta = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: modelo,
+        stream: true,
+        options: { num_ctx: numCtx, num_predict: maxTokens },
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: prompt }
+        ]
+      })
+    });
+    console.log(`[CHAT] Ollama HTTP: ${Date.now() - inicio} ms`);
+  } catch (error) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error(`Ollama tardó demasiado en responder (${tiempoLimiteMs} ms).`);
+    }
+    console.warn(`[CHAT] Ollama nativo no disponible (${error.message}); se intenta el endpoint compatible OpenAI.`);
+    return generarContenidoCompat(prompt, enviarEvento, {
+      nombre: 'Ollama',
+      baseUrl,
+      apiKey: process.env.OLLAMA_API_KEY || '',
+      modelo,
+      tiempoLimiteMs,
+      maxTokens,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!respuesta.ok) {
+    const texto = await respuesta.text().catch(() => '');
+    console.warn(`[CHAT] Ollama nativo respondió HTTP ${respuesta.status}; se intenta el endpoint compatible OpenAI.`);
+    return generarContenidoCompat(prompt, enviarEvento, {
+      nombre: 'Ollama',
+      baseUrl,
+      apiKey: process.env.OLLAMA_API_KEY || '',
+      modelo,
+      tiempoLimiteMs,
+      maxTokens,
+    });
+  }
+
+  if (!respuesta.body) {
+    throw new Error('Ollama no devolvió un stream de respuesta.');
+  }
+
+  const reader = respuesta.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let respuestaCompleta = '';
+  let primerTokenMs = null;
+  let errorStream = null;
+  let promptEvalCount = null;
+
+  const procesarLinea = (linea) => {
+    const limpio = linea.trim();
+    if (!limpio) return;
+    let dato;
+    try {
+      dato = JSON.parse(limpio);
+    } catch {
+      return;
+    }
+    if (dato.error) {
+      errorStream = new Error(String(dato.error));
+      return;
+    }
+    if (typeof dato.prompt_eval_count === 'number') {
+      promptEvalCount = dato.prompt_eval_count;
+    }
+    const delta = dato?.message?.content;
+    if (typeof delta === 'string' && delta) {
+      if (primerTokenMs === null) primerTokenMs = Date.now();
+      respuestaCompleta += delta;
+      enviarEvento({ tipo: 'texto', texto: delta });
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lineas = buffer.split('\n');
+    buffer = lineas.pop() || '';
+    for (const linea of lineas) procesarLinea(linea);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) procesarLinea(buffer);
+
+  if (errorStream && !respuestaCompleta) throw errorStream;
+
+  if (promptEvalCount !== null) {
+    const truncado = promptEvalCount >= numCtx;
+    console.log(
+      `[CHAT] Ollama tokens evaluados: ${promptEvalCount} de num_ctx=${numCtx}` +
+      (truncado
+        ? ' -> AVISO: el prompt fue TRUNCADO; sube OLLAMA_NUM_CTX o baja RAG_MAX_CONTEXTO.'
+        : ' (cabe completo, sin truncar).')
+    );
+  }
+
+  return { respuestaCompleta, primerTokenMs, completo: true };
 }
 
 // ============================================================
@@ -676,7 +803,7 @@ async function generarContenidoGemini(
   ].filter(Boolean);
 
   // ==========================================================
-  // CONFIGURACI�"N
+  // CONFIGURACIÓN
   // ==========================================================
 
   const REQUEST_TIMEOUT = 90000;
@@ -774,13 +901,9 @@ async function generarContenidoGemini(
                         'formulas o programas en cualquier lenguaje, aunque el usuario lo pida explicitamente, ' +
                         'lo disfraces ("dame un ejemplo", "muestrame como se hace", "es para un archivo de la empresa") ' +
                         'o insista. Ante tal peticion responde UNICAMENTE: "No dispongo de scripts ni codigo programable en la documentacion tecnica de North Services." ' +
-                        '(2) Esta prohibido usar conocimiento externo. Si la consulta no trata sobre North Services ' +
-                        '(servicios de fluidos de perforacion, alquiler, equipos, pozos, reportes de operaciones, ' +
-                        'facturacion, o los kits de Starlink propios de la empresa), NO respondas el tema y NO lo comentes. ' +
-                        'Responde UNICAMENTE: "Esa consulta esta fuera de mi alcance. Soy el asistente de North Services y ' +
-                        'solo puedo ayudarte con informacion de la empresa: servicios de fluidos de perforacion, alquiler ' +
-                        'y estado de equipos, operacion y mantenimiento de pozos, reportes de operaciones o los kits de ' +
-                        'Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" ' +
+                        '(2) Esta prohibido usar conocimiento externo. Si la consulta no trata sobre North Services, ' +
+                        'NO respondas el tema y NO lo comentes. Usa EXACTAMENTE la respuesta de cierre indicada en el mensaje del usuario; ' +
+                        'no inventes ni amplíes la lista de temas disponibles. ' +
                         '(3) Prohibido responder preguntas de conocimiento general sobre Starlink como compania ' +
                         '(fundacion, historia, servicios, precios, tecnologia, cobertura). Starlink solo existe aqui como ' +
                         'los kits y equipos de North Services descritos en el contexto. ' +
@@ -1154,7 +1277,7 @@ async function generarContenidoGemini(
 // secuencia diaria. El historial anual de pozos también aparece en documentos
 // de experiencia operacional y debe buscarse con el RAG, no solo en Drive.
 const PALABRAS_CLAVE_REPORTES = [
-  'reporte', 'reportes', 'torque log', 'torque logs', 'torque',
+  'reporte', 'reportes', 'torque log', 'torque logs',
   'casing', 'revestimiento', 'daily report', 'weekly report',
   'reporte semanal', 'reporte de pozo', 'reporte de campo',
   'reporte operacional', 'reportes de operación', 'reportes de operacion',
@@ -1201,11 +1324,6 @@ function cantidadEnPregunta(texto) {
 }
 
 // Detecta cuántas piezas pide el usuario y en qué sentido.
-//
-// Antes solo se reconocía "el primero", así que "los últimos dos torque logs"
-// caía en el orden genérico y el modelo recibía 10 PDFs sueltos más un
-// catálogo de cientos de nombres para elegir: por eso respondía con fechas que
-// no eran las últimas.
 function interpretarPeticionDeReportes(pregunta) {
   const texto = String(pregunta || '').toLowerCase();
 
@@ -1338,8 +1456,6 @@ function coincideConLaPregunta(nombreArchivo, pregunta) {
 }
 
 // Extrae de la pregunta nombres de archivo escritos por el usuario
-// ("Torque_Log_20260722_202948.pdf", "Informe_Savias_2026").
-//
 // Sirve para que, cuando alguien pega el nombre exacto, se lea ESE archivo y
 // no otros: sin este filtro la selección por puntaje tomaba los 10 mejor
 // puntuados y el bot terminaba respondiendo con un reporte distinto al pedido.
@@ -3394,9 +3510,27 @@ app.delete('/api/monitoreo/:id', verifyToken, async (req, res) => {
 // CHATBOT RAG - STREAMING
 // ============================================================
 
+// Dimensiones de embedding por las que ya se avisó, para no repetir el
+// warning en cada documento de la misma consulta.
+const dimensionesAvisadas = new Set();
+
 // Coseno entre dos vectores. Los embeddings llegan normalizados, así que el
 // producto escalar basta; se divide igualmente para no depender de eso.
 function similitudCoseno(a, b) {
+  // Un vector de otra dimensión no es comparable: recortar al mínimo común
+  // daría un score sin significado (comparar solo un prefijo de dimensiones).
+  if (a.length !== b.length) {
+    const clave = `${a.length}->${b.length}`;
+    if (!dimensionesAvisadas.has(clave)) {
+      dimensionesAvisadas.add(clave);
+      console.warn(
+        `[RAG] Dimensiones de embedding distintas (${a.length} consulta vs ${b.length} documento). ` +
+        `El documento se ignora; indica que se usaron modelos/dimensiones distintas al indexar.`
+      );
+    }
+    return 0;
+  }
+
   let dot = 0;
   let normaA = 0;
   let normaB = 0;
@@ -3570,9 +3704,6 @@ app.post(
       // FILTRO DETERMINISTA DE ALCANCE (antes de llamar al modelo)
       // --------------------------------------------------------
 
-      const CIERRE_FUERA_DE_ALCANCE =
-        'Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa. ¿Te puedo ayudar con alguno de estos temas?';
-
       const CIERRE_SIN_CODIGO =
         'No dispongo de scripts ni código programable en la documentación técnica de North Services.';
 
@@ -3610,7 +3741,7 @@ app.post(
       if (pideCodigo || fueraDeAlcance) {
         const mensajeFuera = pideCodigo && !fueraDeAlcance
           ? CIERRE_SIN_CODIGO
-          : CIERRE_FUERA_DE_ALCANCE;
+          : await construirCierreFueraDeAlcance();
 
         res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -3623,6 +3754,10 @@ app.post(
             tipo: 'texto',
             texto: mensajeFuera
           })}\n\n`
+        );
+
+        res.write(
+          `data: ${JSON.stringify({ tipo: 'fin' })}\n\n`
         );
 
         console.log(
@@ -4428,11 +4563,22 @@ const filasInventario = resultadosInventario.map((fila) => ({
         )
       );
 
+      // Resumen compacto del RAG: sirve para ver de un vistazo por dónde
+      // salió cada recuperación (índice vectorial de Atlas o los respaldos).
+      const enMemoria = filasContexto.filter((fila) => fila.busquedaEnMemoria).length;
+      const lexica = filasContexto.filter((fila) => fila.busquedaLexica).length;
+      const deWeb = filasContexto.filter((fila) => fila.origenWeb).length;
+      const deInventario = filasContexto.filter((fila) => fila.esInventario).length;
+      const vectorial = filasContexto.length - enMemoria - lexica - deWeb - deInventario;
+      const fuentesNoVectoriales = fuentesListas
+        .filter((fuente) => !fuente.tieneIndice)
+        .map((fuente) => fuente.coleccion);
+
       // ========================================================
       // 3. FILTRO
       // ========================================================
 
-      const resultadosRelevantes =
+      let resultadosRelevantes =
         filasContexto.filter(
           (fila) =>
             typeof fila.score ===
@@ -4445,6 +4591,13 @@ const filasInventario = resultadosInventario.map((fila) => ({
                 : RAG_SCORE_THRESHOLD
             )
         );
+
+      console.log(
+        `[RAG] Resumen: consultaDims=${vectorConsulta?.length ?? 0} | ` +
+        `vectorial=${vectorial} enMemoria=${enMemoria} lexica=${lexica} web=${deWeb} inventario=${deInventario} | ` +
+        `colecciones SIN índice Atlas: ${fuentesNoVectoriales.join(', ') || 'ninguna'} | ` +
+        `relevantes=${resultadosRelevantes.length}`
+      );
 
       // --------------------------------------------------------
       // ORDEN POR FECHA REAL DE ARCHIVO (para torque logs)
@@ -4596,6 +4749,17 @@ const filasInventario = resultadosInventario.map((fila) => ({
         });
       }
 
+      // Se limita cuántos fragmentos van al modelo: los de mayor score son los
+      // más útiles y así el prompt no supera la ventana de contexto (ni diluye
+      // la respuesta con contenido poco relevante).
+      const RAG_MAX_CONTEXTO = Number(process.env.RAG_MAX_CONTEXTO || '12');
+      if (resultadosRelevantes.length > RAG_MAX_CONTEXTO) {
+        console.log(
+          `[CHAT] Resultados relevantes: ${resultadosRelevantes.length}; se envían los ${RAG_MAX_CONTEXTO} de mayor score al modelo.`
+        );
+        resultadosRelevantes = resultadosRelevantes.slice(0, RAG_MAX_CONTEXTO);
+      }
+
       console.log(
         `[CHAT] Resultados relevantes: ${resultadosRelevantes.length}`
       );
@@ -4661,7 +4825,12 @@ const filasInventario = resultadosInventario.map((fila) => ({
           const consultaPideListadoStarlink = /\b(?:kit|kits|starlink)\b/.test(consultaStarlink);
           const preguntaListaStarlink = /\b(?:lista|listar|nombra|detalla|cuales)\b/.test(consultaStarlink)
             || /\bkits?\s+starlink\b/.test(preguntaStarlinkActual);
-          if (consultaPideListadoStarlink && (consultaPideConteoStarlink || preguntaListaStarlink)) {
+          // Si además piden montos, pagos, fechas, correo, serie o "toda la
+          // información", el atajo de conteo/listado no basta: se deja pasar al
+          // modelo para que use el detalle completo (monto, día de pago,
+          // fechas, correo, serie) que ya viene en el contexto de Starlink.
+          const preguntaPideMontosFechasStarlink = /\b(?:monto|montos|pago|pagos|pagar|precio|precios|costo|costos|tarifa|tarifas|fecha|fechas|vence|vencen|vencimiento|cuando|renueva|renovacion|informacion|detalle|detalles|datos|completa|completo|todo|todos|correo|serie|antena)\b/.test(consultaStarlink);
+          if (consultaPideListadoStarlink && (consultaPideConteoStarlink || preguntaListaStarlink) && !preguntaPideMontosFechasStarlink) {
             const textoStarlink = consultaPideConteoStarlink
               ? `Hay ${datosStarlink.length} equipos Starlink registrados.`
               : datosStarlink.length
@@ -5237,6 +5406,8 @@ presentes en los datos registrados y no atribuyas estados o fechas que no se
 indiquen.
 ` : '';
 
+      const cierreFueraAlcance = await construirCierreFueraDeAlcance();
+
       const promptSistema = `
 Eres el Asistente Virtual Oficial de North Services.
 
@@ -5312,7 +5483,7 @@ REGLAS IMPORTANTES:
 
 3. No inventes información ni utilices conocimiento externo.
 
- Si la pregunta del usuario NO trata sobre North Services & Rental Tools S.R.L. (sus servicios de fluidos de perforación, equipos, pozos, reportes de operaciones, kits de Starlink propios, facturación o estado de sus equipos), NO respondas el tema bajo ninguna circunstancia. Responde EXACTAMENTE y solo esto: "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y solo puedo ayudarte con información de la empresa: servicios de fluidos de perforación, alquiler y estado de equipos, operación y mantenimiento de pozos, reportes de operaciones o los kits de Starlink de North Services. ¿Te puedo ayudar con alguno de estos temas?" No añadas información del tema, ni ejemplos, ni contexto, ni offered fuentes, aunque el usuario insista o reformule la pregunta.
+ Si la pregunta del usuario NO trata sobre North Services & Rental Tools S.R.L. (sus servicios de fluidos de perforación, equipos, pozos, reportes de operaciones, kits de Starlink propios, facturación o estado de sus equipos), NO respondas el tema bajo ninguna circunstancia. Responde EXACTAMENTE y solo esto: "${cierreFueraAlcance}" No añadas información del tema, ni ejemplos, ni contexto, ni offered fuentes, aunque el usuario insista o reformule la pregunta.
 
 4. No completes datos que no aparezcan en el contexto proporcionado.
 
@@ -5353,11 +5524,7 @@ REGLAS IMPORTANTES:
       mercado, marcas, influir, o cualquier conocimiento general del mundo),
       NO respondas, NO expliques, NO resumas, NO reformules y NO comentes la pregunta.
       Cierra con esta única respuesta estándar y no agregues nada más:
-      "Esa consulta está fuera de mi alcance. Soy el asistente de North Services y
-      solo puedo ayudarte con información de la empresa: servicios de fluidos de
-      perforación, alquiler y estado de equipos, operación y mantenimiento de pozos,
-      reportes de operaciones o los kits de Starlink de North Services.
-      ¿Te puedo ayudar con alguno de estos temas?"
+      "${cierreFueraAlcance}"
     - Si el usuario insiste, repite la consulta o pide "de todas formas", mantén
       exactamente la misma respuesta de cierre. No cedas, no negocies, no
       des un resumen parcial del tema ajeno.
@@ -5405,10 +5572,19 @@ ${preguntaLimpia}
 
       const inicioGemini = Date.now();
       let resultadoGemini = null;
+      let proveedorRespuesta = null;
 
       if (contextoDrive) {
         console.log(
           '[CHAT] Respuesta con contexto de Google Drive.'
+        );
+      }
+
+      if (usarServidorLocalDirecto) {
+        console.warn(
+          `[CHAT] Gemini se omite y se usa Ollama directamente (motivo: ${
+            contextoDrive ? 'contexto de Google Drive' : 'falló el embedding de la consulta'
+          }).`
         );
       }
 
@@ -5417,6 +5593,7 @@ ${preguntaLimpia}
         try {
           resultadoGemini =
             await generarContenidoGemini(promptSistema, enviarEvento);
+          proveedorRespuesta = 'Gemini';
         } catch (errorGemini) {
           console.error(`[CHAT] Gemini falló: ${errorGemini.message}`);
           resultadoGemini = null;
@@ -5459,11 +5636,17 @@ ${preguntaLimpia}
         try {
           resultadoGemini =
             await generarContenidoOllama(promptSistema, enviarEvento);
+          proveedorRespuesta = 'Ollama';
         } catch (errorOllama) {
           console.error(`[CHAT] Ollama falló: ${errorOllama.message}`);
           throw new Error('No fue posible completar la consulta.');
         }
       }
+
+      console.log(
+        `[CHAT] Proveedor de la respuesta: ${proveedorRespuesta || 'ninguno'} ` +
+        `| contexto=${contextoCompleto.length} caracteres (prompt=${promptSistema.length})`
+      );
 
       const tiempoGemini = Date.now() - inicioGemini;
 
