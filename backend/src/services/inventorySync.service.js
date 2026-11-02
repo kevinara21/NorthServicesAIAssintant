@@ -5,6 +5,7 @@ const { getDB, getDatabase } = require('../db/mongodb');
 
 const COLLECTION_LEGACY_VECTORS = 'inventario_vectores';
 const COLLECTION_STATUS = 'inventario_sync_status';
+const DATABASE_INVENTARIOS = 'inventarios';
 const EMBEDDING_MODEL = process.env.INVENTARIO_EMBEDDING_MODEL || 'gemini-embedding-001';
 const VECTOR_INDEXES = {
   mwd: process.env.INVENTARIO_MWD_VECTOR_INDEX || 'vector_index_inventario_mwd',
@@ -16,11 +17,14 @@ const EMBEDDING_MIN_INTERVAL_MS = Number(process.env.INVENTARIO_EMBEDDING_MIN_IN
 const EMBEDDING_MAX_RETRIES = Number(process.env.INVENTARIO_EMBEDDING_MAX_RETRIES || 3);
 const MAX_AUTOMATIC_RETRY_WAIT_MS = 2 * 60 * 1000;
 const SYNC_STALE_AFTER_MS = 2 * 60 * 1000;
+// Las limpiezas (deleteMany/dropCollection) quedan desactivadas por defecto.
+// Para habilitarlas hay que definir PERMITIR_LIMPIEZA=true de forma explícita.
+const PERMITIR_LIMPIEZA = process.env.PERMITIR_LIMPIEZA === 'true';
 const INVENTORIES = {
   mwd: {
     tipo: 'mwd',
     label: 'Inventario MWD',
-    database: 'mwd',
+    database: DATABASE_INVENTARIOS,
     collection: 'inventario_mwd',
     fields: [
       'codigo',
@@ -49,7 +53,7 @@ const INVENTORIES = {
   motores: {
     tipo: 'motor',
     label: 'Inventario Motores',
-    database: 'motores',
+    database: DATABASE_INVENTARIOS,
     collection: 'inventario_motores',
     fields: [
       'codigo',
@@ -134,8 +138,17 @@ async function migrarVectoresLegados() {
         if (cantidadDestino < cantidadOrigen) {
           throw new Error(`La migración antigua de ${key} quedó incompleta: ${cantidadDestino} de ${cantidadOrigen} registros copiados. Se conservó ${legacy.collection}.`);
         }
-        await origen.deleteMany(filtroOrigen);
-        console.log(`[INVENTARIO] Migrados ${cantidadOrigen} vectores de north_services_db.${legacy.collection} a ${inventario.database}.${inventario.collection}.`);
+        if (PERMITIR_LIMPIEZA) {
+          await origen.deleteMany(filtroOrigen);
+          console.log(`[INVENTARIO] Migrados ${cantidadOrigen} vectores de north_services_db.${legacy.collection} a ${inventario.database}.${inventario.collection}.`);
+        } else {
+          console.warn(`[INVENTARIO] Copia verificada de ${legacy.collection}; limpieza omitida (PERMITIR_LIMPIEZA != true).`);
+        }
+      }
+
+      if (!PERMITIR_LIMPIEZA) {
+        // La copia ya se verificó; la colección antigua se conserva intacta.
+        continue;
       }
 
       if (await origen.countDocuments() === 0) {
@@ -154,7 +167,7 @@ async function migrarVectoresLegados() {
 
 async function prepararColeccionesInventario() {
   await migrarVectoresLegados();
-  const statusDB = getDB();
+  const statusDB = getDatabase(DATABASE_INVENTARIOS);
   const statusCollections = await statusDB.listCollections({}, { nameOnly: true }).toArray();
   if (!statusCollections.some((collection) => collection.name === COLLECTION_STATUS)) {
     try {
@@ -347,7 +360,7 @@ async function generarEmbeddingInventario(texto) {
 }
 
 async function guardarEstado(tipo, actualizacion) {
-  await getDB().collection(COLLECTION_STATUS).updateOne(
+  await getDatabase(DATABASE_INVENTARIOS).collection(COLLECTION_STATUS).updateOne(
     { _id: tipo },
     { $set: { tipo, actualizadoEn: new Date(), ...actualizacion } },
     { upsert: true }
@@ -475,10 +488,14 @@ async function ejecutarSincronizacion(tipo, config, job) {
       });
     }
 
-    if (rows.length) {
-      await collection.deleteMany({ tipo: tipoDocumento, codigo: { $nin: codigosActuales } });
+    if (PERMITIR_LIMPIEZA) {
+      if (rows.length) {
+        await collection.deleteMany({ tipo: tipoDocumento, codigo: { $nin: codigosActuales } });
+      } else {
+        await collection.deleteMany({ tipo: tipoDocumento });
+      }
     } else {
-      await collection.deleteMany({ tipo: tipoDocumento });
+      console.warn(`[INVENTARIO] Limpieza de registros obsoletos omitida para ${tipoDocumento} (PERMITIR_LIMPIEZA != true).`);
     }
 
     job.estado = 'completado';
@@ -534,7 +551,7 @@ function iniciarSincronizacion(tipo) {
 }
 
 async function obtenerEstados() {
-  const mongoDb = getDB();
+  const mongoDb = getDatabase(DATABASE_INVENTARIOS);
   await prepararColeccionesInventario();
   const estados = await mongoDb.collection(COLLECTION_STATUS).find({}).toArray();
   const porTipo = new Map(estados.map((estado) => [estado.tipo, estado]));
@@ -862,7 +879,6 @@ async function buscarInventarioPorTexto(pregunta) {
 }
 
 async function buscarInventario(pregunta, consultaClasificada = null) {
-  const mongoDb = getDB();
   await prepararColeccionesInventario();
   const consultaEquipo = consultaClasificada || await clasificarConsultaEquipoMWD(pregunta);
   if (consultaEquipo?.solicitaListado || consultaEquipo?.solicitaDescripcion || consultaEquipo?.solicitaNotas) {

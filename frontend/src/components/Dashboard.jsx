@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   FiBookOpen,
   FiFolder,
@@ -18,17 +18,22 @@ import {
   FiShield,
 } from 'react-icons/fi';
 import { FaRobot } from 'react-icons/fa';
-import Chatbot from '../pages/Chatbot';
-import GestionUsuarios from '../pages/GestionUsuarios';
-import GestionFacturacion from '../pages/GestionFacturacion';
-import GestionConocimiento from '../pages/GestionConocimiento';
-import SubirRecursos from './SubirRecursos';
-import Perfil from './Perfil';
-import Recursos from './Recursos';
-import Archivos from './Archivos';
-import MonitoreoPozos from './MonitoreoPozos';
-import Papelera from '../pages/Papelera';
 import { apiFetch } from '../services/api';
+
+// Cada vista se descarga la primera vez que se abre: el panel inicial ya no
+// arrastra el peso del chat, los paneles de administración y la papelera.
+const Chatbot = lazy(() => import('../pages/Chatbot'));
+const GestionUsuarios = lazy(() => import('../pages/GestionUsuarios'));
+const GestionFacturacion = lazy(() => import('../pages/GestionFacturacion'));
+const GestionConocimiento = lazy(() => import('../pages/GestionConocimiento'));
+const SubirRecursos = lazy(() => import('./SubirRecursos'));
+const Perfil = lazy(() => import('./Perfil'));
+const Recursos = lazy(() => import('./Recursos'));
+const Archivos = lazy(() => import('./Archivos'));
+const MonitoreoPozos = lazy(() => import('./MonitoreoPozos'));
+const Papelera = lazy(() => import('../pages/Papelera'));
+
+const cargandoVista = <div className="dashboard-view-loading">Cargando…</div>;
 
 const normalizarRol = (rol = '') =>
   rol.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -39,8 +44,11 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
   // módulo independiente (no una categoría de documentos) y se habilita
   // por rol desde el panel de administración.
   const [puedeUsarStarlink, setPuedeUsarStarlink] = useState(false);
+  const [puedeUsarRecursos, setPuedeUsarRecursos] = useState(false);
+  const [puedeUsarArchivos, setPuedeUsarArchivos] = useState(false);
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [asistenteAbierto, setAsistenteAbierto] = useState(false);
+  const [asistenteCargado, setAsistenteCargado] = useState(false);
   const [monitoreoAbierto, setMonitoreoAbierto] = useState(false);
   const panelAsistenteRef = useRef(null);
   const botonAsistenteRef = useRef(null);
@@ -65,12 +73,33 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
       .then((data) => {
         if (!vigente || !data?.ok) return;
         setPuedeUsarStarlink(esAdministrador || data.usuario?.puedeUsarStarlink === true);
+        setPuedeUsarRecursos(esAdministrador || data.usuario?.puedeUsarRecursos === true);
+        setPuedeUsarArchivos(esAdministrador || data.usuario?.puedeUsarArchivos === true);
       })
       .catch(() => {
-        if (vigente) setPuedeUsarStarlink(esAdministrador);
+        if (!vigente) return;
+        setPuedeUsarStarlink(esAdministrador);
+        setPuedeUsarRecursos(esAdministrador);
+        setPuedeUsarArchivos(esAdministrador);
       });
     return () => { vigente = false; };
   }, [token, esAdministrador]);
+
+  // Si el Administrador retira el acceso mientras el usuario está en una vista
+  // que ya no puede usar, se vuelve al inicio.
+  useEffect(() => {
+    const sinAccesoRecursos = vistaActiva === 'recursos' && !puedeUsarRecursos && !esAdministrador;
+    const sinAccesoArchivos = (vistaActiva === 'archivos' || vistaActiva === 'papelera')
+      && !puedeUsarArchivos
+      && !esAdministrador;
+    if (sinAccesoRecursos || sinAccesoArchivos) setVistaActiva('inicio');
+  }, [vistaActiva, puedeUsarRecursos, puedeUsarArchivos, esAdministrador]);
+
+  const alternarAsistente = () => {
+    const abriendo = !asistenteAbierto;
+    setAsistenteAbierto(abriendo);
+    if (abriendo) setAsistenteCargado(true);
+  };
 
   useEffect(() => {
     if (!asistenteAbierto) return undefined;
@@ -85,9 +114,15 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
 
   const opcionesPrincipales = [
     { id: 'inicio', label: 'Inicio', icon: FiHome },
-    { id: 'recursos', label: 'Recursos', icon: FiBookOpen },
-    { id: 'archivos', label: 'Archivos', icon: FiFolder },
-    { id: 'papelera', label: 'Papelera', icon: FiTrash2 },
+    ...(esAdministrador || puedeUsarRecursos
+      ? [{ id: 'recursos', label: 'Recursos', icon: FiBookOpen }]
+      : []),
+    ...(esAdministrador || puedeUsarArchivos
+      ? [
+        { id: 'archivos', label: 'Archivos', icon: FiFolder },
+        { id: 'papelera', label: 'Papelera', icon: FiTrash2 },
+      ]
+      : []),
     { id: 'perfil', label: 'Perfil', icon: FiUser },
   ];
 
@@ -114,15 +149,21 @@ const [vistaActiva, setVistaActiva] = useState('inicio');
 
   const renderVista = () => {
     switch (vistaActiva) {
-      case 'recursos': return <Recursos token={token} esAdministrador={esAdministrador} />;
-case 'archivos': return <Archivos token={token} usuario={usuario} />;
+      case 'recursos': return (esAdministrador || puedeUsarRecursos)
+        ? <Recursos token={token} esAdministrador={esAdministrador} />
+        : <section><h1>Recursos</h1><p>Tu rol no tiene acceso al módulo de Software y Manuales. Comunícate con el administrador si necesitas habilitarlo.</p></section>;
+      case 'archivos': return (esAdministrador || puedeUsarArchivos)
+        ? <Archivos token={token} usuario={usuario} />
+        : <section><h1>Archivos</h1><p>Tu rol no tiene categorías de documentos asignadas. Comunícate con el administrador si necesitas acceso.</p></section>;
       case 'publicar-recursos': return <SubirRecursos token={token} />;
       case 'usuarios': return <GestionUsuarios token={token} />;
       case 'conocimiento': return <GestionConocimiento token={token} />;
       case 'facturacion': return (puedeUsarStarlink
         ? <GestionFacturacion token={token} />
         : <section><h1>Starlink</h1><p>Tu rol no tiene acceso a este módulo. Comunícate con el administrador si necesitas habilitarlo.</p></section>);
-      case 'papelera': return <Papelera token={token} usuario={usuario} />;
+      case 'papelera': return (esAdministrador || puedeUsarArchivos)
+        ? <Papelera token={token} usuario={usuario} />
+        : <section><h1>Papelera</h1><p>Tu rol no tiene categorías de documentos asignadas. Comunícate con el administrador si necesitas acceso.</p></section>;
       case 'perfil': return <Perfil usuario={usuario} token={token} onUsuarioActualizado={onUsuarioActualizado} />;
       default:
         return (
@@ -268,11 +309,15 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
             <span className="dashboard-avatar">{(usuario?.nombre || 'U').charAt(0).toUpperCase()}</span>
           </div>
         </header>
-        <div className="dashboard-view">{renderVista()}</div>
+        <div className="dashboard-view">
+          <Suspense fallback={cargandoVista}>{renderVista()}</Suspense>
+        </div>
       </main>
 
       {monitoreoAbierto && (
-        <MonitoreoPozos token={token} usuario={usuario} onCerrar={() => setMonitoreoAbierto(false)} />
+        <Suspense fallback={null}>
+          <MonitoreoPozos token={token} usuario={usuario} onCerrar={() => setMonitoreoAbierto(false)} />
+        </Suspense>
       )}
 
       <section className={`floating-ai-panel ${asistenteAbierto ? '' : 'closed'}`} aria-label="Asistente Virtual IA" aria-hidden={!asistenteAbierto} ref={panelAsistenteRef}>
@@ -282,7 +327,11 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
             </div>
           </header>
           <div className="floating-ai-content">
-              <Chatbot token={token} uid={usuario?.uid} />
+              {asistenteCargado && (
+                <Suspense fallback={<div className="dashboard-view-loading">Cargando asistente…</div>}>
+                  <Chatbot token={token} uid={usuario?.uid} />
+                </Suspense>
+              )}
           </div>
         </section>
 
@@ -291,7 +340,7 @@ case 'archivos': return <Archivos token={token} usuario={usuario} />;
         ref={botonAsistenteRef}
         className={`floating-ai-button ${asistenteAbierto ? 'active' : ''}`}
         aria-label={asistenteAbierto ? 'Cerrar asistente virtual' : 'Abrir asistente virtual'}
-        onClick={() => setAsistenteAbierto((abierto) => !abierto)}
+        onClick={alternarAsistente}
       >
         {asistenteAbierto ? <FiX aria-hidden="true" /> : <FaRobot aria-hidden="true" />}
         <span>{asistenteAbierto ? 'Cerrar' : 'IA'}</span>

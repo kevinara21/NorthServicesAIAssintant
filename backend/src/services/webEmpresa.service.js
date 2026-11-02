@@ -9,23 +9,23 @@
  * configuración de permisos. Si algún día se quisiera cerrarla, se decide
  * aquí y no en cada punto del chat.
  *
- * El contenido vive en la colección `conocimientos_vectores` con
- * `origen: 'web_empresa'`. Es la misma colección que usaba el script suelto
- * `scripts/actualizarWebEmpresa.js`, que ahora llama a este servicio: así el
- * botón "Actualizar información de la página" y la línea de comandos
- * indexan exactamente lo mismo.
+ * Los fragmentos viven en la única colección vectorial del sistema,
+ * `rag_documents`, con `tipoFuente: 'web_empresa'`. El estado de la última
+ * actualización se guarda en Firestore, junto al resto de datos de la
+ * aplicación.
  */
 
+const crypto = require('node:crypto');
+const log = require('../utils/logger');
 const { getDB } = require('../db/mongodb');
+const { db: firestore } = require('../firebaseAdmin');
+const rag = require('./rag.service');
 
 const ORIGEN = 'web_empresa';
-// La información de la página vive en su propia colección, separada de los
-// vectores de las categorías de conocimiento. Antes se guardaba en
-// 'conocimientos_vectores'; esa colección se limpia al actualizar para no
-// dejar copias antiguas.
-const COLECCION_VECTORES = 'conocimientos_pagina';
-const COLECCION_LEGACY = 'conocimientos_vectores';
-const COLECCION_ESTADO = 'web_empresa_estado';
+const CATEGORIA_ID = 'web_empresa';
+const CATEGORIA_NOMBRE = 'Web de la Empresa';
+// Estado de la última actualización en Firestore.
+const COLECCION_ESTADO = 'estado_web_empresa';
 const ID_ESTADO = 'web_empresa';
 
 const BASE_URL = (process.env.WEB_EMPRESA_URL || 'https://northservices.com.pe/').replace(/\/$/, '/');
@@ -41,6 +41,10 @@ const TAMANO_BLOQUE = 800;
 const UMBRAL_RELEVANCIA = Number(process.env.WEB_EMPRESA_UMBRAL || '0.48');
 const LIMITE_RESULTADOS = 5;
 const MAX_DOCUMENTOS_REVISADOS = 4000;
+
+// Las escrituras del rastreo son aditivas. Los borrados de vectores antiguos
+// quedan desactivados salvo que se pida explícitamente con PERMITIR_LIMPIEZA.
+const PERMITIR_LIMPIEZA = process.env.PERMITIR_LIMPIEZA === 'true';
 
 // Evita que dos clics seguidos en "Actualizar" lancen dos rastreos: el segundo
 // se rechaza y el frontend recibe el reporte del que ya estaba corriendo.
@@ -231,11 +235,9 @@ async function actualizarInformacionWeb({ generarEmbedding, onProgress = () => {
     throw new Error('No se recibió la función de embeddings.');
   }
 
-  const db = getDB();
-  const coleccion = db.collection(COLECCION_VECTORES);
   // Marca del inicio del trabajo. Todo vector con fecha anterior a esta marca
-  // es de una indexación previa y se borra al final. Usar la hora de inicio y
-  // no una ventana fija evita borrar por error los vectores recién creados si
+  // es de una indexación previa y se desactiva al final. Usar la hora de inicio
+  // y no una ventana fija evita tocar por error los vectores recién creados si
   // la indexación tarda más de un minuto.
   const inicioIndexacion = new Date();
 
@@ -273,12 +275,22 @@ async function actualizarInformacionWeb({ generarEmbedding, onProgress = () => {
       const fragmento = aIndexar[indice++];
       try {
         const embedding = await generarEmbedding(fragmento.contenido_texto);
+        const hashPagina = crypto
+          .createHash('sha256')
+          .update(fragmento.urlPagina)
+          .digest('hex')
+          .slice(0, 16);
         vectores.push({
+          documentoId: `web:${hashPagina}:${fragmento.parte}`,
+          tipoFuente: ORIGEN,
           origen: ORIGEN,
+          categoriaId: CATEGORIA_ID,
+          categoriaNombre: CATEGORIA_NOMBRE,
           urlPagina: fragmento.urlPagina,
           tituloPagina: fragmento.tituloPagina,
           nombreManual: `Web de la Empresa: ${fragmento.tituloPagina}`,
           titulo_seccion: `${fragmento.tituloPagina} (Parte ${fragmento.parte})`,
+          parte: fragmento.parte,
           contenido_texto: fragmento.contenido_texto,
           embedding,
           fechaIndexacion: new Date(),
@@ -292,43 +304,37 @@ async function actualizarInformacionWeb({ generarEmbedding, onProgress = () => {
 
   await Promise.all(Array.from({ length: Math.max(1, CONCURRENCIA) }, () => trabajador()));
 
-  // Los vectores nuevos se escriben primero y los antiguos se borran después:
-  // si el rastreo falla a medio camino, el asistente sigue teniendo la
-  // información anterior en vez de quedarse sin nada.
+  // Los vectores nuevos se escriben primero y los antiguos se desactivan
+  // después: si el rastreo falla a medio camino, el asistente sigue teniendo
+  // la información anterior en vez de quedarse sin nada.
   if (!vectores.length) {
     throw new Error('La web se leyó correctamente, pero ningún fragmento pudo convertirse en vector. Revisa la configuración de embeddings.');
   }
 
-  const insercion = await coleccion.insertMany(vectores, { ordered: false });
-  const eliminados = await coleccion.deleteMany({ origen: ORIGEN, fechaIndexacion: { $lt: inicioIndexacion } });
-
-  // Migración: borra las copias que quedaron en la colección antigua. Si la
-  // colección no existe, Mongo no responde con error, así que no hace falta
-  // comprobar nada.
-  let legacyEliminados = 0;
-  try {
-    const legado = await db.collection(COLECCION_LEGACY).deleteMany({ origen: ORIGEN });
-    legacyEliminados = legado.deletedCount || 0;
-  } catch (errorLegacy) {
-    console.warn(`[WEB] No se pudo limpiar la colección antigua ${COLECCION_LEGACY}: ${errorLegacy.message}`);
+  const insercion = await rag.indexarVectores(vectores);
+  const desactivados = await rag.desactivarPorOrigen(ORIGEN, { anterioresA: inicioIndexacion });
+  let eliminados = { eliminados: 0 };
+  if (PERMITIR_LIMPIEZA) {
+    eliminados = await rag.eliminarPorOrigen(ORIGEN, { anterioresA: inicioIndexacion });
+  } else {
+    console.warn('[WEB] Vectores anteriores conservados como inactivos (PERMITIR_LIMPIEZA != true).');
   }
 
   const resumen = {
     ok: true,
     paginas: paginas.length,
-    fragmentos: insercion.insertedCount || vectores.length,
+    fragmentos: insercion.escritos || vectores.length,
     fragmentosConError: errores,
-    vectoresAnterioresEliminados: eliminados.deletedCount || 0,
-    vectoresLegacyEliminados: legacyEliminados,
-    coleccion: COLECCION_VECTORES,
+    vectoresAnterioresDesactivados: desactivados.modificados || 0,
+    vectoresAnterioresEliminados: eliminados.eliminados || 0,
+    coleccion: rag.COLECCION,
     fechaActualizacion: new Date().toISOString(),
-    mensaje: `Información de la web actualizada: ${paginas.length} página(s) y ${insercion.insertedCount || vectores.length} fragmento(s) indexados.`,
+    mensaje: `Información de la web actualizada: ${paginas.length} página(s) y ${insercion.escritos || vectores.length} fragmento(s) indexados.`,
   };
 
-  await db.collection(COLECCION_ESTADO).updateOne(
-    { _id: ID_ESTADO },
-    { $set: { ...resumen, actualizadoPor: 'web_empresa' } },
-    { upsert: true }
+  await firestore.collection(COLECCION_ESTADO).doc(ID_ESTADO).set(
+    { ...resumen, actualizadoPor: 'web_empresa' },
+    { merge: true }
   );
 
   onProgress(resumen.mensaje);
@@ -339,7 +345,7 @@ async function actualizarInformacionWeb({ generarEmbedding, onProgress = () => {
 // espera a esa y se devuelve su resultado en lugar de rastrear dos veces.
 async function actualizarInformacionWebEnSerio(opciones = {}) {
   if (actualizacionEnCurso) {
-    console.log('[WEB] Ya hay una actualización en curso; se espera a que termine.');
+    log.info('[WEB] Ya hay una actualización en curso; se espera a que termine.');
     return actualizacionEnCurso;
   }
 
@@ -374,12 +380,13 @@ function similitudCoseno(a, b) {
   return dot / (Math.sqrt(normaA) * Math.sqrt(normaB));
 }
 
-// Respaldo para cuando Atlas no tiene (todavía) el índice vectorial en esta
-// colección: se recorren los documentos y se compara en memoria. La colección
-// es pequeña —una sola web— así que aguanta bien.
-async function buscarEnMemoria(coleccion, vectorConsulta, limite) {
-  const documentos = await coleccion
-    .find({ origen: ORIGEN, embedding: { $exists: true } })
+// Respaldo para cuando Atlas no tiene (todavía) el índice vectorial: se
+// recorren solo los fragmentos de la web y se compara en memoria. Es una
+// fuente pequeña, así que esta salida no deja al asistente sin ella.
+async function buscarEnMemoria(vectorConsulta, limite) {
+  const documentos = await getDB()
+    .collection(rag.COLECCION)
+    .find({ tipoFuente: ORIGEN, activo: { $ne: false }, embedding: { $exists: true } })
     .project({
       embedding: 1,
       contenido_texto: 1,
@@ -400,7 +407,7 @@ async function buscarEnMemoria(coleccion, vectorConsulta, limite) {
     .sort((a, b) => b.score - a.score)
     .slice(0, limite)
     .map(({ documento, score }) => {
-      const { embedding, origen, ...resto } = documento;
+      const { embedding, ...resto } = documento;
       return {
         ...resto,
         score,
@@ -408,29 +415,6 @@ async function buscarEnMemoria(coleccion, vectorConsulta, limite) {
         fuenteWeb: BASE_URL,
       };
     });
-}
-
-let indiceVectorialWeb = null;
-let indiceVectorialWebCargadoEn = 0;
-const VIGENCIA_CACHE_INDICE_MS = 5 * 60 * 1000;
-
-async function resolverIndiceVectorial(coleccion) {
-  const ahora = Date.now();
-  if (indiceVectorialWeb && ahora - indiceVectorialWebCargadoEn < VIGENCIA_CACHE_INDICE_MS) {
-    return indiceVectorialWeb;
-  }
-
-  try {
-    const indices = await coleccion.listSearchIndexes().toArray();
-    const encontrado = indices.find((indice) => indice.type === 'vectorSearch');
-    indiceVectorialWeb = encontrado?.name || null;
-  } catch {
-    // Sin permiso de Atlas Search o sin índice: se usa la búsqueda en memoria.
-    indiceVectorialWeb = null;
-  }
-
-  indiceVectorialWebCargadoEn = ahora;
-  return indiceVectorialWeb;
 }
 
 /**
@@ -443,12 +427,12 @@ async function buscarEnWebEmpresa(vectorConsulta, limite = LIMITE_RESULTADOS) {
   if (!Array.isArray(vectorConsulta) || !vectorConsulta.length) return [];
 
   try {
-    const coleccion = getDB().collection(COLECCION_VECTORES);
-    const indice = await resolverIndiceVectorial(coleccion);
+    const coleccion = getDB().collection(rag.COLECCION);
+    const indice = await rag.indiceDisponible();
 
     if (!indice) {
-      const resultados = await buscarEnMemoria(coleccion, vectorConsulta, limite);
-      console.log(`[WEB] Búsqueda directa en la web de la empresa: ${resultados.length} resultados`);
+      const resultados = await buscarEnMemoria(vectorConsulta, limite);
+      log.debug(`Búsqueda directa en la web de la empresa: ${resultados.length} resultados`);
       return resultados;
     }
 
@@ -456,15 +440,15 @@ async function buscarEnWebEmpresa(vectorConsulta, limite = LIMITE_RESULTADOS) {
       .aggregate([
         {
           $vectorSearch: {
-            index: indice,
+            index: rag.INDICE,
             path: 'embedding',
             queryVector: vectorConsulta,
             numCandidates: Math.max(20, limite * 4),
-            limit,
-            // El filtro exige que 'origen' esté declarado como campo de filtro
-            // en el índice de Atlas. Si no lo está, la consulta falla y el
-            // catch de abajo resuelve con la búsqueda en memoria.
-            filter: { origen: { $eq: ORIGEN } },
+            limit: limite,
+            filter: {
+              tipoFuente: { $eq: ORIGEN },
+              activo: { $eq: true },
+            },
           },
         },
         {
@@ -476,23 +460,19 @@ async function buscarEnWebEmpresa(vectorConsulta, limite = LIMITE_RESULTADOS) {
             tituloPagina: 1,
             urlPagina: 1,
             fechaIndexacion: 1,
-            origen: 1,
             score: { $meta: 'vectorSearchScore' },
           },
         },
       ])
       .toArray();
 
-    const soloWeb = filas.filter((fila) => fila.origen === ORIGEN);
-    console.log(`[WEB] Búsqueda vectorial en la web de la empresa: ${soloWeb.length} resultados`);
-    return soloWeb.map(({ origen, ...fila }) => ({ ...fila, origenWeb: true, fuenteWeb: BASE_URL }));
+    log.debug(`Búsqueda vectorial en la web de la empresa: ${filas.length} resultados`);
+    return filas.map((fila) => ({ ...fila, origenWeb: true, fuenteWeb: BASE_URL }));
   } catch (error) {
-    // El índice no existe, no tiene 'origen' como campo de filtro o la consulta
-    // falló. La web es una colección pequeña: recorrerla en memoria es una
-    // salida digna y no deja al asistente sin esta fuente.
+    // El índice no existe, no tiene los campos de filtro o la consulta falló.
     console.warn(`[WEB] Búsqueda vectorial no disponible (${error.message}); usando búsqueda directa.`);
     try {
-      return await buscarEnMemoria(getDB().collection(COLECCION_VECTORES), vectorConsulta, limite);
+      return await buscarEnMemoria(vectorConsulta, limite);
     } catch (errorMemoria) {
       console.warn(`[WEB] Tampoco se pudo buscar en la web de la empresa: ${errorMemoria.message}`);
       return [];
@@ -502,21 +482,23 @@ async function buscarEnWebEmpresa(vectorConsulta, limite = LIMITE_RESULTADOS) {
 
 // Estado que se muestra junto al botón de actualizar.
 async function obtenerEstado() {
-  const db = getDB();
-
   try {
     const [fragmentos, registro] = await Promise.all([
-      db.collection(COLECCION_VECTORES).countDocuments({ origen: ORIGEN }),
-      db.collection(COLECCION_ESTADO).findOne({ _id: ID_ESTADO }),
+      getDB().collection(rag.COLECCION).countDocuments({
+        tipoFuente: ORIGEN,
+        activo: { $ne: false },
+      }),
+      firestore.collection(COLECCION_ESTADO).doc(ID_ESTADO).get(),
     ]);
+    const datos = registro.exists ? registro.data() : null;
 
     return {
       url: BASE_URL,
       fragmentos,
       indexada: fragmentos > 0,
       actualizando: estaActualizando(),
-      ultimaActualizacion: registro?.fechaActualizacion || null,
-      ultimaPaginas: registro?.paginas ?? null,
+      ultimaActualizacion: datos?.fechaActualizacion || null,
+      ultimaPaginas: datos?.paginas ?? null,
     };
   } catch (error) {
     return {

@@ -313,7 +313,7 @@ const eliminarDefinitivo = async (lista) => {
                           onClick={() => restaurar([item])}
                           title="Restaurar"
                         >
-                          <FiRefreshCw /> Restaurar
+                          <FiRefreshCw />
                         </button>
                       )}
                       <button
@@ -323,7 +323,7 @@ const eliminarDefinitivo = async (lista) => {
                         onClick={() => setPorEliminar([item])}
                         title="Eliminar permanentemente"
                       >
-                        <FiTrash2 /> Eliminar
+                        <FiTrash2 />
                       </button>
                     </div>
                   </td>

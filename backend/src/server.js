@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const express = require('express');
 const cors = require('cors');
@@ -7,14 +7,17 @@ const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
 
+const log = require('./utils/logger');
 const { db, authAdmin, FieldValue } = require('./firebaseAdmin');
-const { connectDB, getDB, getDatabase } = require('./db/mongodb');
+const { connectDB, getDB, getDatabase, cerrarConexionMongo } = require('./db/mongodb');
 const verifyToken = require('./middleware/verifyToken');
+const { invalidarCacheUsuario } = require('./middleware/verifyToken');
 const { enviarOtpCorporativo } = require('./services/corporateEmail.service');
 const { crearServicioRecordatorios } = require('./services/starlinkReminders.service');
 const inventorySync = require('./services/inventorySync.service');
 const driveOperaciones = require('./services/googleDrive');
 const ragCategorias = require('./services/ragCategorias.service');
+const rag = require('./services/rag.service');
 const webEmpresa = require('./services/webEmpresa.service');
 const {
   prepararContenidoIndexable,
@@ -29,8 +32,77 @@ const {
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// ------------------------------------------------------------
+// SEGURIDAD Y LÍMITES DE ENTRADA
+// ------------------------------------------------------------
+// Lista blanca opcional: si FRONTEND_ORIGINS no está definida se mantiene el
+// comportamiento histórico (cualquier origen) para no romper despliegues.
+const ORIGENES_PERMITIDOS = String(process.env.FRONTEND_ORIGINS || '')
+  .split(',')
+  .map((origen) => origen.trim())
+  .filter(Boolean);
+
+function crearLimitador({ ventanaMs, maximo, mensaje }) {
+  const registros = new Map();
+  return (req, res, next) => {
+    const clave = req.user?.uid || req.ip || req.socket?.remoteAddress || 'anonimo';
+    const ahora = Date.now();
+    const registro = registros.get(clave);
+    if (!registro || ahora > registro.reset) {
+      registros.set(clave, { cuenta: 1, reset: ahora + ventanaMs });
+      return next();
+    }
+    registro.cuenta += 1;
+    if (registro.cuenta > maximo) {
+      const reintentarEn = Math.max(1, Math.ceil((registro.reset - ahora) / 1000));
+      res.setHeader('Retry-After', String(reintentarEn));
+      return res.status(429).json({ ok: false, error: mensaje, reintentarEn });
+    }
+    if (registros.size > 5000) {
+      for (const [k, v] of registros) if (ahora > v.reset) registros.delete(k);
+    }
+    return next();
+  };
+}
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  next();
+});
+
+app.use(cors({
+  origin(origen, callback) {
+    if (!origen || !ORIGENES_PERMITIDOS.length || ORIGENES_PERMITIDOS.includes(origen)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origen no permitido por CORS.'));
+  },
+}));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
+
+app.use('/api/otp', crearLimitador({
+  ventanaMs: 15 * 60 * 1000,
+  maximo: Number(process.env.RATE_LIMIT_OTP || 20),
+  mensaje: 'Demasiadas solicitudes de código. Espera unos minutos.',
+}));
+app.use('/api/password', crearLimitador({
+  ventanaMs: 15 * 60 * 1000,
+  maximo: Number(process.env.RATE_LIMIT_PASSWORD || 20),
+  mensaje: 'Demasiados intentos de recuperación. Espera unos minutos.',
+}));
+app.use('/api/chat', crearLimitador({
+  ventanaMs: 60 * 1000,
+  maximo: Number(process.env.RATE_LIMIT_CHAT || 30),
+  mensaje: 'Demasiadas consultas seguidas. Espera un momento.',
+}));
+app.use('/api', crearLimitador({
+  ventanaMs: 60 * 1000,
+  maximo: Number(process.env.RATE_LIMIT_API || 300),
+  mensaje: 'Demasiadas solicitudes. Espera un momento.',
+}));
 
 // ============================================================
 // CONFIGURACIÓN RAG
@@ -57,6 +129,10 @@ const EMBEDDING_CONCURRENCY = Number(
 
 const OTP_EXPIRATION_MINUTES = 10;
 const OTP_MAX_ATTEMPTS = 5;
+const OTP_RESEND_SECONDS = Number(process.env.OTP_RESEND_SECONDS || 120);
+const OTP_DAILY_LIMIT = Number(process.env.OTP_DAILY_LIMIT || 5);
+const OTP_BLOCK_MS = Number(process.env.OTP_BLOCK_HOURS || 24) * 60 * 60 * 1000;
+const COLECCION_OTP_COOLDOWNS = 'otpCooldowns';
 const OTP_DESTINATION = normalizarTelefono(process.env.OTP_DESTINATION || '+51981384927');
 const INFOBIP_BASE_URL = (process.env.INFOBIP_BASE_URL || '').replace(/\/$/, '');
 const INFOBIP_SMS_SENDER = process.env.INFOBIP_SMS_SENDER || '447491163443';
@@ -158,7 +234,7 @@ async function crearOTP({ uid = null, telefono, email = null, proposito, canal =
     if (canal === 'correo') {
       const envio = await enviarOtpCorporativo({ para: email, otp: codigo, minutosExpiracion: OTP_EXPIRATION_MINUTES });
       if (!envio.ok) {
-        await referencia.delete();
+        await referencia.update({ usado: true, fallido: true, errorEnvio: envio.error || 'No se pudo enviar el código.' });
         throw new Error(envio.error || 'No se pudo enviar el código por correo corporativo.');
       }
       await referencia.update({ canal: 'correo', correoMessageId: envio.messageId });
@@ -174,18 +250,162 @@ async function crearOTP({ uid = null, telefono, email = null, proposito, canal =
     });
     return envio;
   } catch (error) {
-    await referencia.delete();
+    // No se borra el intento: queda como registro fallido y el código no sirve.
+    await referencia.update({
+      usado: true,
+      fallido: true,
+      errorEnvio: String(error.message || error).slice(0, 500),
+    }).catch(() => {});
     throw error;
   }
 }
 
-async function validarOTP({ codigo, telefono, uid = null, proposito }) {
-  const snapshot = await db.collection('otpCodes')
-    .where('telefono', '==', telefono).get();
+// Marca los códigos pendientes como reemplazados. No se elimina ningún
+// documento: solo se invalida el código anterior cuando se emite uno nuevo.
+async function invalidarOtpsAnteriores({ uid = null, telefono = null, proposito }) {
+  let consulta = db.collection('otpCodes');
+  if (uid) consulta = consulta.where('uid', '==', uid);
+  else if (telefono) consulta = consulta.where('telefono', '==', telefono);
+  else return;
+
+  const snapshot = await consulta.get();
+  const pendientes = snapshot.docs.filter((documento) => {
+    const data = documento.data();
+    return data.proposito === proposito && data.usado === false && data.reemplazado !== true;
+  });
+  if (!pendientes.length) return;
+
+  const lote = db.batch();
+  pendientes.forEach((documento) => {
+    lote.update(documento.ref, {
+      usado: true,
+      reemplazado: true,
+      reemplazadoEn: FieldValue.serverTimestamp(),
+    });
+  });
+  await lote.commit();
+}
+
+// Reserva atómica del envío: controla el cooldown de 120 s y el límite de
+// 5 códigos por usuario cada 24 h. Se hace en una transacción para que dos
+// peticiones simultáneas no salten el límite.
+async function reservarEnvioOtp({ uid, proposito, canal }) {
+  const referencia = db.collection(COLECCION_OTP_COOLDOWNS).doc(`${uid}_${proposito}`);
+  const ahora = Date.now();
+
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(referencia);
+    const datos = snap.exists ? snap.data() : {};
+
+    const bloqueadoHasta = Number(datos.bloqueadoHastaMs || 0);
+    if (bloqueadoHasta > ahora) {
+      return {
+        permitido: false,
+        motivo: 'bloqueado',
+        reintentarEn: Math.max(1, Math.ceil((bloqueadoHasta - ahora) / 1000)),
+        restanteHoy: 0,
+      };
+    }
+
+    const ultimo = Number(datos.ultimoEnvioMs || 0);
+    const restanteCooldown = Math.ceil((ultimo + OTP_RESEND_SECONDS * 1000 - ahora) / 1000);
+    if (restanteCooldown > 0) {
+      return {
+        permitido: false,
+        motivo: 'cooldown',
+        reintentarEn: restanteCooldown,
+        restanteHoy: Math.max(0, OTP_DAILY_LIMIT - Number(datos.enviosEnVentana || 0)),
+      };
+    }
+
+    let inicioVentana = Number(datos.ventanaInicioMs || 0);
+    let envios = Number(datos.enviosEnVentana || 0);
+
+    if (!inicioVentana || ahora - inicioVentana >= OTP_BLOCK_MS) {
+      inicioVentana = ahora;
+      envios = 0;
+    }
+
+    if (envios >= OTP_DAILY_LIMIT) {
+      const hasta = inicioVentana + OTP_BLOCK_MS;
+      tx.set(referencia, {
+        uid,
+        proposito,
+        bloqueadoHastaMs: hasta,
+        actualizadoEn: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      return {
+        permitido: false,
+        motivo: 'limite',
+        reintentarEn: Math.max(1, Math.ceil((hasta - ahora) / 1000)),
+        restanteHoy: 0,
+      };
+    }
+
+    const enviosNuevos = envios + 1;
+    tx.set(referencia, {
+      uid,
+      proposito,
+      canal,
+      ultimoEnvioMs: ahora,
+      ventanaInicioMs: inicioVentana,
+      enviosEnVentana: enviosNuevos,
+      actualizadoEn: FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    return {
+      permitido: true,
+      motivo: null,
+      reintentarEn: OTP_RESEND_SECONDS,
+      restanteHoy: Math.max(0, OTP_DAILY_LIMIT - enviosNuevos),
+      reserva: {
+        ahora,
+        anterior: {
+          ultimoEnvioMs: ultimo || null,
+          ventanaInicioMs: Number(datos.ventanaInicioMs || 0) || null,
+          enviosEnVentana: Number(datos.enviosEnVentana || 0),
+          bloqueadoHastaMs: bloqueadoHasta || null,
+        },
+      },
+    };
+  });
+}
+
+// Si el proveedor rechaza el envío, se devuelve la reserva para que el
+// usuario no quede bloqueado por un código que nunca recibió.
+async function liberarReservaOtp({ uid, proposito, reserva }) {
+  if (!reserva?.ahora) return;
+  const referencia = db.collection(COLECCION_OTP_COOLDOWNS).doc(`${uid}_${proposito}`);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(referencia);
+    if (!snap.exists) return;
+    const datos = snap.data();
+    if (Number(datos.ultimoEnvioMs || 0) !== Number(reserva.ahora)) return;
+
+    const anterior = reserva.anterior || {};
+    tx.set(referencia, {
+      ultimoEnvioMs: anterior.ultimoEnvioMs || 0,
+      ventanaInicioMs: anterior.ventanaInicioMs || 0,
+      enviosEnVentana: Number(anterior.enviosEnVentana || 0),
+      bloqueadoHastaMs: anterior.bloqueadoHastaMs || 0,
+      actualizadoEn: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+}
+
+async function validarOTP({ codigo, telefono = null, uid = null, proposito }) {  let consulta = db.collection('otpCodes');
+  if (uid) consulta = consulta.where('uid', '==', uid);
+  else if (telefono) consulta = consulta.where('telefono', '==', telefono);
+  else throw new Error('Código inválido o expirado.');
+
+  const snapshot = await consulta.get();
   const documentos = snapshot.docs
     .filter((documento) => {
       const data = documento.data();
-      return data.proposito === proposito && data.usado === false;
+      return data.proposito === proposito
+        && data.usado === false
+        && data.reemplazado !== true;
     })
     .sort((a, b) => (b.data().creadoEn?.toMillis?.() || 0) - (a.data().creadoEn?.toMillis?.() || 0));
   if (!documentos.length) throw new Error('Código inválido o expirado.');
@@ -193,11 +413,20 @@ async function validarOTP({ codigo, telefono, uid = null, proposito }) {
   const otp = referencia.data();
   const expiraEn = otp.expiraEn?.toDate ? otp.expiraEn.toDate() : new Date(otp.expiraEn);
   if ((uid && otp.uid !== uid) || otp.intentos >= OTP_MAX_ATTEMPTS || expiraEn < new Date()) throw new Error('Código inválido o expirado.');
-    if (hashOTP(codigo) !== otp.codigoHash) {
+  if (hashOTP(codigo) !== otp.codigoHash) {
     await referencia.ref.update({ intentos: FieldValue.increment(1) });
     throw new Error('Código inválido o expirado.');
   }
   await referencia.ref.update({ usado: true, verificadoEn: FieldValue.serverTimestamp() });
+}
+
+function mensajeEsperaOtp(reserva) {
+  const segundos = Math.max(1, Number(reserva.reintentarEn || 0));
+  if (reserva.motivo === 'limite' || reserva.motivo === 'bloqueado') {
+    const horas = Math.ceil(segundos / 3600);
+    return `Alcanzaste el límite de ${OTP_DAILY_LIMIT} códigos en 24 horas. Podrás solicitar otro en ${horas} hora${horas === 1 ? '' : 's'}.`;
+  }
+  return `Espera ${segundos} segundo${segundos === 1 ? '' : 's'} antes de reenviar el código.`;
 }
 
 // ============================================================
@@ -378,12 +607,32 @@ async function construirCierreFueraDeAlcance() {
   return 'Esa consulta está fuera de mi alcance. Solo puedo ayudarte con la información a la que tienes acceso.';
 }
 
+// Caché de embeddings de consulta: en un chat real se repiten preguntas y
+// reformulaciones. Evita una llamada a Gemini por cada mensaje idéntico.
+const cacheEmbeddings = new Map();
+const EMBEDDING_CACHE_TTL_MS = Number(process.env.EMBEDDING_CACHE_TTL_MS || 10 * 60 * 1000);
+const EMBEDDING_CACHE_MAX = Number(process.env.EMBEDDING_CACHE_MAX || 500);
+
+function limpiarCacheEmbeddings(ahora) {
+  for (const [clave, entrada] of cacheEmbeddings) {
+    if (ahora > entrada.expira) cacheEmbeddings.delete(clave);
+  }
+  while (cacheEmbeddings.size > EMBEDDING_CACHE_MAX) {
+    cacheEmbeddings.delete(cacheEmbeddings.keys().next().value);
+  }
+}
+
 async function generarEmbedding(texto) {
   if (!texto || !texto.trim()) {
     throw new Error(
       'No se puede generar un embedding de un texto vacío.'
     );
   }
+
+  const claveCache = texto.trim();
+  const ahora = Date.now();
+  const cacheado = cacheEmbeddings.get(claveCache);
+  if (cacheado && ahora < cacheado.expira) return cacheado.embedding;
 
   const claves = obtenerClavesGemini();
   if (!claves.length) throw new Error('GEMINI_API_KEY no está configurada.');
@@ -393,7 +642,7 @@ async function generarEmbedding(texto) {
   for (const clave of claves) {
     const url =
       `https://generativelanguage.googleapis.com/v1/models/` +
-      `gemini-embedding-001:embedContent?key=${clave}`;
+      `gemini-embedding-001:embedContent`;
 
     try {
       const response = await fetch(url, {
@@ -401,6 +650,7 @@ async function generarEmbedding(texto) {
 
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': clave,
         },
 
         body: JSON.stringify({
@@ -429,6 +679,8 @@ async function generarEmbedding(texto) {
         throw new Error('Gemini no devolvió un vector de embedding válido.');
       }
 
+      cacheEmbeddings.set(claveCache, { embedding, expira: Date.now() + EMBEDDING_CACHE_TTL_MS });
+      limpiarCacheEmbeddings(Date.now());
       return embedding;
     } catch (error) {
       if (error.message === 'Gemini no devolvió un vector de embedding válido.') throw error;
@@ -582,7 +834,7 @@ async function generarContenidoCompat(
       }
     );
 
-    console.log(`[CHAT] ${nombre} HTTP: ${Date.now() - inicio} ms`);
+    log.debug(`${nombre} HTTP: ${Date.now() - inicio} ms`);
   } catch (error) {
     if (error.name === 'AbortError') {
       throw new Error(`${nombre} tardó demasiado en responder (${tiempoLimiteMs} ms).`);
@@ -654,8 +906,8 @@ async function generarContenidoOllama(prompt, enviarEvento) {
   const nativeBase = baseUrl.replace(/\/v1\/?$/, '');
   const url = `${nativeBase}/api/chat`;
 
-  console.log(
-    `[CHAT] Ollama: modelo=${modelo} url=${url} num_ctx=${numCtx} num_predict=${maxTokens} prompt=${prompt.length} caracteres ` +
+  log.debug(
+    `Ollama: modelo=${modelo} url=${url} num_ctx=${numCtx} num_predict=${maxTokens} prompt=${prompt.length} caracteres ` +
     `(incluye CONTEXTO RECUPERADO de MongoDB: ${/CONTEXTO RECUPERADO/.test(prompt) ? 'SI' : 'NO'})`
   );
 
@@ -680,7 +932,7 @@ async function generarContenidoOllama(prompt, enviarEvento) {
         ]
       })
     });
-    console.log(`[CHAT] Ollama HTTP: ${Date.now() - inicio} ms`);
+    log.debug(`Ollama HTTP: ${Date.now() - inicio} ms`);
   } catch (error) {
     clearTimeout(timeout);
     if (error.name === 'AbortError') {
@@ -764,8 +1016,8 @@ async function generarContenidoOllama(prompt, enviarEvento) {
 
   if (promptEvalCount !== null) {
     const truncado = promptEvalCount >= numCtx;
-    console.log(
-      `[CHAT] Ollama tokens evaluados: ${promptEvalCount} de num_ctx=${numCtx}` +
+    log.debug(
+      `Ollama tokens evaluados: ${promptEvalCount} de num_ctx=${numCtx}` +
       (truncado
         ? ' -> AVISO: el prompt fue TRUNCADO; sube OLLAMA_NUM_CTX o baja RAG_MAX_CONTEXTO.'
         : ' (cabe completo, sin truncar).')
@@ -831,8 +1083,8 @@ async function generarContenidoGemini(
     // PETICIÓN A GEMINI (con respaldo de clave)
     // ========================================================
 
-    console.log(
-      `[CHAT] Gemini: enviando petición...`
+    log.debug(
+      `Gemini: enviando petición...`
     );
 
     let indiceClave = -1;
@@ -860,13 +1112,13 @@ async function generarContenidoGemini(
       const apiKey =
         clavesGemini[indiceClave];
 
-      console.log(
-        `[CHAT] Gemini: modelo=${modelo} clave#${indiceClave + 1}/${clavesGemini.length}`
+      log.debug(
+        `Gemini: modelo=${modelo} clave#${indiceClave + 1}/${clavesGemini.length}`
       );
 
       const url =
         `https://generativelanguage.googleapis.com/v1beta/models/` +
-        `${modelo}:streamGenerateContent?alt=sse&key=${apiKey}`;
+        `${modelo}:streamGenerateContent?alt=sse`;
 
       const inicioFetchGemini =
         Date.now();
@@ -881,6 +1133,9 @@ async function generarContenidoGemini(
               headers: {
                 'Content-Type':
                   'application/json',
+
+                'x-goog-api-key':
+                  apiKey,
 
                 Accept:
                   'text/event-stream'
@@ -959,8 +1214,8 @@ async function generarContenidoGemini(
         Date.now() -
         inicioFetchGemini;
 
-      console.log(
-        `[CHAT] Gemini HTTP: ${tiempoHttpGemini} ms`
+      log.debug(
+        `Gemini HTTP: ${tiempoHttpGemini} ms`
       );
 
       // ======================================================
@@ -1155,8 +1410,8 @@ async function generarContenidoGemini(
               primerTokenMs =
                 Date.now();
 
-              console.log(
-                `[CHAT] Primer token recibido en ` +
+              log.debug(
+                `Primer token recibido en ` +
                 `${primerTokenMs - inicioLectura} ms`
               );
             }
@@ -1474,8 +1729,8 @@ async function obtenerContextoReportesOperaciones(pregunta, enviarEvento) {
     const peticion = interpretarPeticionDeReportes(pregunta);
     const { orden, cantidad } = peticion;
 
-    console.log(
-      `[CHAT] Drive: orden="${orden}"` +
+    log.debug(
+      `Drive: orden="${orden}"` +
       (cantidad ? ` cantidad=${cantidad}` : '') +
       (peticion.pideAntiguos ? ' (más antiguos)' : '')
     );
@@ -1814,42 +2069,43 @@ ${contenido}
 }
 
 // ============================================================
-// PERFIL
-// ============================================================
-
-app.get(
-  '/api/perfil',
-  verifyToken,
-  (req, res) => {
-    if (req.user.estado !== 'activo') {
-      return res.status(403).json({
-        ok: false,
-        error: req.user.estado === 'pendiente'
-          ? 'El administrador aún no ha habilitado su cuenta para el sistema.'
-          : 'Su cuenta no se encuentra activa en el sistema. Contacte al administrador.',
-        estado: req.user.estado
-      });
-    }
-
-    res.json({
-      ok: true,
-      usuario: req.user
-    });
-  }
-);
-
-// ============================================================
 // OTP, PERFIL Y RECUPERACIÓN DE CONTRASEÑA
 // ============================================================
 
 app.post('/api/otp/solicitar', verifyToken, async (req, res) => {
+  const proposito = 'verificar-whatsapp';
+  let reserva = null;
+  let enviado = false;
   try {
     const telefono = OTP_DESTINATION;
     const canal = req.body.canal === 'whatsapp' ? 'whatsapp' : 'sms';
     if (!/^\+\d{8,15}$/.test(telefono)) return res.status(400).json({ ok: false, error: 'Ingresa un número con código de país, por ejemplo +51987654321.' });
-    await crearOTP({ uid: req.user.uid, telefono, canal, proposito: 'verificar-whatsapp' });
-    res.json({ ok: true, mensaje: `Código enviado por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.` });
+
+    reserva = await reservarEnvioOtp({ uid: req.user.uid, proposito, canal });
+    if (!reserva.permitido) {
+      return res.status(429).json({
+        ok: false,
+        error: mensajeEsperaOtp(reserva),
+        reintentarEn: reserva.reintentarEn,
+        restanteHoy: reserva.restanteHoy,
+      });
+    }
+
+    await invalidarOtpsAnteriores({ uid: req.user.uid, proposito });
+    await crearOTP({ uid: req.user.uid, telefono, canal, proposito });
+    enviado = true;
+
+    res.json({
+      ok: true,
+      mensaje: `Código enviado por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`,
+      reintentarEn: OTP_RESEND_SECONDS,
+      restanteHoy: reserva.restanteHoy,
+      expiraEn: OTP_EXPIRATION_MINUTES * 60,
+    });
   } catch (error) {
+    if (reserva?.permitido && !enviado) {
+      await liberarReservaOtp({ uid: req.user.uid, proposito, reserva: reserva.reserva }).catch(() => {});
+    }
     res.status(400).json({ ok: false, error: error.message });
   }
 });
@@ -1860,6 +2116,7 @@ app.post('/api/otp/verificar', verifyToken, async (req, res) => {
     if (!/^\+\d{8,15}$/.test(telefonoUsuario)) return res.status(400).json({ ok: false, error: 'Ingresa un número válido con código de país.' });
     await validarOTP({ uid: req.user.uid, telefono: OTP_DESTINATION, codigo: String(req.body.codigo || ''), proposito: 'verificar-whatsapp' });
     await db.collection('users').doc(req.user.uid).update({ whatsapp: telefonoUsuario, whatsappVerificado: true, whatsappVerificadoEn: FieldValue.serverTimestamp() });
+    invalidarCacheUsuario(req.user.uid);
     res.json({ ok: true, mensaje: 'Número verificado para SMS.' });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
@@ -1868,8 +2125,27 @@ app.post('/api/otp/verificar', verifyToken, async (req, res) => {
 
 app.get('/api/perfil', verifyToken, async (req, res) => {
   try {
+    if (req.user.estado !== 'activo') {
+      return res.status(403).json({
+        ok: false,
+        error: req.user.estado === 'pendiente'
+          ? 'El administrador aún no ha habilitado su cuenta para el sistema.'
+          : 'Su cuenta no se encuentra activa en el sistema. Contacte al administrador.',
+        estado: req.user.estado,
+      });
+    }
+
     const permisos = await ragCategorias.obtenerPermisosRol(req.user.rol);
     const fuentes = await ragCategorias.obtenerFuentesPermitidas(req.user.rol);
+    const [puedeUsarStarlink, puedeUsarRecursos] = await Promise.all([
+      ragCategorias.puedeAccederModulo(req.user.rol, 'starlink'),
+      ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales'),
+    ]);
+    // "Archivos" solo tiene sentido si el rol puede ver al menos una categoría
+    // de documentos. La categoría del sistema "Software y Manuales" no cuenta:
+    // sus recursos se publican en Recursos, no en Archivos.
+    const puedeUsarArchivos = ragCategorias.esAdministrador(req.user.rol)
+      || fuentes.some((fuente) => fuente.sistema !== true);
     res.json({
       ok: true,
       usuario: {
@@ -1878,7 +2154,9 @@ app.get('/api/perfil', verifyToken, async (req, res) => {
         // para que la interfaz muestre exactamente el rol solicitado.
         rol: req.user.rolOriginal || req.user.rol,
         fuentesRag: fuentes.map((fuente) => ({ id: fuente.id, nombre: fuente.nombre })),
-        puedeUsarStarlink: await ragCategorias.puedeAccederModulo(req.user.rol, 'starlink'),
+        puedeUsarStarlink,
+        puedeUsarRecursos,
+        puedeUsarArchivos,
         permisosConfigurados: permisos.configurado,
       },
     });
@@ -1895,6 +2173,7 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
     const email = `${nombre.toLowerCase()}.${apellido.toLowerCase()}@northservices.com.pe`;
     await authAdmin.updateUser(req.user.uid, { displayName: `${nombre} ${apellido}`, email });
     await db.collection('users').doc(req.user.uid).update({ nombre, apellido, email });
+    invalidarCacheUsuario(req.user.uid);
     // El rol NO se toca aquí: solo el Administrador puede asignarlo.
     res.json({ ok: true, usuario: { ...req.user, nombre, apellido, email, rol: req.user.rolOriginal || req.user.rol } });
   } catch (error) {
@@ -1903,14 +2182,48 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
 });
 
 app.post('/api/password/solicitar', async (req, res) => {
+  const proposito = 'restablecer-password';
+  let reserva = null;
+  let enviado = false;
+  let uidReserva = null;
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
-    const canal = String(req.body.canal || 'sms').trim().toLowerCase();
+    const canalSolicitado = String(req.body.canal || 'sms').trim().toLowerCase();
+    const canal = ['correo', 'sms', 'whatsapp'].includes(canalSolicitado) ? canalSolicitado : 'sms';
     const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
-    if (snapshot.empty) return res.status(400).json({ ok: false, error: 'No existe una cuenta con ese correo.' });
-    await crearOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, email, proposito: 'restablecer-password', canal });
-    res.json({ ok: true, mensaje: canal === 'correo' ? 'Código enviado a tu correo corporativo.' : 'Código enviado por SMS.' });
+
+    // Respuesta genérica para no revelar si el correo está registrado.
+    if (snapshot.empty) {
+      return res.json({ ok: true, mensaje: 'Si el correo está registrado, enviaremos un código de verificación.' });
+    }
+
+    const uid = snapshot.docs[0].id;
+    uidReserva = uid;
+    reserva = await reservarEnvioOtp({ uid, proposito, canal });
+    if (!reserva.permitido) {
+      return res.status(429).json({
+        ok: false,
+        error: mensajeEsperaOtp(reserva),
+        reintentarEn: reserva.reintentarEn,
+        restanteHoy: reserva.restanteHoy,
+      });
+    }
+
+    await invalidarOtpsAnteriores({ uid, proposito });
+    await crearOTP({ uid, telefono: OTP_DESTINATION, email, proposito, canal });
+    enviado = true;
+
+    res.json({
+      ok: true,
+      mensaje: canal === 'correo' ? 'Código enviado a tu correo corporativo.' : 'Código enviado por SMS.',
+      reintentarEn: OTP_RESEND_SECONDS,
+      restanteHoy: reserva.restanteHoy,
+      expiraEn: OTP_EXPIRATION_MINUTES * 60,
+    });
   } catch (error) {
+    if (reserva?.permitido && !enviado && reserva.reserva && uidReserva) {
+      await liberarReservaOtp({ uid: uidReserva, proposito, reserva: reserva.reserva }).catch(() => {});
+    }
     res.status(400).json({ ok: false, error: error.message });
   }
 });
@@ -1919,12 +2232,12 @@ app.post('/api/password/restablecer', async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
     const snapshot = await db.collection('users').where('email', '==', email).limit(1).get();
-    if (snapshot.empty) throw new Error('Cuenta no encontrada.');
+    if (snapshot.empty) return res.status(400).json({ ok: false, error: 'Código inválido o expirado.' });
     const nuevaPassword = String(req.body.nuevaPassword || '');
     if (nuevaPassword.length < 6) return res.status(400).json({ ok: false, error: 'La contraseña debe tener al menos 6 caracteres.' });
-    const usuario = snapshot.docs[0].data();
-    await validarOTP({ uid: snapshot.docs[0].id, telefono: OTP_DESTINATION, codigo: String(req.body.codigo || ''), proposito: 'restablecer-password' });
-    await authAdmin.updateUser(snapshot.docs[0].id, { password: nuevaPassword });
+    const uid = snapshot.docs[0].id;
+    await validarOTP({ uid, codigo: String(req.body.codigo || ''), proposito: 'restablecer-password' });
+    await authAdmin.updateUser(uid, { password: nuevaPassword });
     res.json({ ok: true, mensaje: 'Contraseña actualizada correctamente.' });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message });
@@ -2095,7 +2408,7 @@ app.post(
         // EXTRAER PDF
         // ------------------------------------------------------
 
-        console.log(
+        log.info(
           `[RAG] Extrayendo PDF: ${filePdf.filename}`
         );
 
@@ -2127,7 +2440,7 @@ app.post(
 
         const bloques = prepararFragmentos(preparadoManual);
 
-        console.log(
+        log.info(
           `[RAG] Bloques encontrados: ${bloques.length} (parser: ${preparadoManual.fuenteParser}${preparadoManual.modeloParser ? `, ${preparadoManual.modeloParser}` : ''})`
         );
 
@@ -2183,8 +2496,8 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
               fragmento,
               indice
             ) => {
-              console.log(
-                `[RAG] Embedding ${indice + 1}/${bloques.length}`
+              log.debug(
+                `Embedding ${indice + 1}/${bloques.length}`
               );
 
               const vector =
@@ -2243,13 +2556,15 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
               resultado.error
           );
 
-        console.log(
+        log.info(
           `[RAG] Embeddings correctos: ${documentosValidos.length}`
         );
 
-        console.log(
-          `[RAG] Embeddings con error: ${errores.length}`
-        );
+        if (errores.length) {
+          log.warn(
+            `[RAG] Embeddings con error: ${errores.length}`
+          );
+        }
 
         // ------------------------------------------------------
         // INSERTAR TODOS LOS VECTORES
@@ -2259,19 +2574,26 @@ const coleccionVectores = mongoDb.collection(categoriaIngesta.coleccion);
           documentosValidos.length >
           0
         ) {
-          await coleccionVectores.insertMany(
-            documentosValidos,
-            {
-              ordered: false
-            }
-          );
+          if (rag.backendUnificadoActivo()) {
+            await rag.indexarVectores(documentosValidos, { categoria: categoriaIngesta });
+          } else {
+            await coleccionVectores.insertMany(
+              documentosValidos,
+              {
+                ordered: false
+              }
+            );
+            // Dual-write al RAG unificado: reutiliza los embeddings ya generados.
+            rag.indexarVectores(documentosValidos, { categoria: categoriaIngesta })
+              .catch((error) => console.error(`[RAG] No se pudo copiar a rag_documents: ${error.message}`));
+          }
         }
 
         const tiempoIndexacion =
           Date.now() -
           inicioIndexacion;
 
-        console.log(
+        log.info(
           `[RAG] Indexación completada en ${tiempoIndexacion} ms`
         );
 
@@ -2380,7 +2702,9 @@ app.delete('/api/admin/recursos/:id', verifyToken, requireAdmin, async (req, res
     const coleccionRecurso = categoriaRecurso
       ? categoriaRecurso.coleccion
       : (await ragCategorias.obtenerCategoria('software_y_manuales'))?.coleccion;
-    if (coleccionRecurso) {
+    if (rag.backendUnificadoActivo()) {
+      await rag.eliminarPorRecurso(req.params.id);
+    } else if (coleccionRecurso) {
       await getDB().collection(coleccionRecurso).deleteMany({ recursoId: req.params.id });
     }
     const raiz = path.resolve(__dirname, '../storage');
@@ -2414,6 +2738,10 @@ app.get(
           error:
             'El administrador aún no ha habilitado su cuenta para el sistema.'
         });
+      }
+
+      if (!(await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales'))) {
+        return res.json({ ok: true, catalogo: [] });
       }
 
       const snapshot =
@@ -2493,6 +2821,10 @@ app.get(
         });
       }
 
+      if (!(await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales'))) {
+        return res.status(403).json({ ok: false, error: 'No tienes permiso para descargar software y manuales.' });
+      }
+
       const doc =
         await db
           .collection(
@@ -2565,6 +2897,10 @@ app.get(
           error:
             'El administrador aún no ha habilitado su cuenta para el sistema.'
         });
+      }
+
+      if (!(await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales'))) {
+        return res.json({ ok: true, catalogo: [] });
       }
 
       const snapshot =
@@ -2641,6 +2977,10 @@ app.get(
         });
       }
 
+      if (!(await ragCategorias.puedeAccederModulo(req.user.rol, 'software_y_manuales'))) {
+        return res.status(403).json({ ok: false, error: 'No tienes permiso para descargar software y manuales.' });
+      }
+
       const doc =
         await db
           .collection(
@@ -2713,8 +3053,12 @@ async function eliminarRecursoAdministrativo(coleccion, id, { eliminarVectores =
   const coleccionVectoresRecurso =
     item?.categoriaColeccion ||
     (await ragCategorias.obtenerCategoria(item?.categoriaId || ragCategorias.CATEGORIA_POR_DEFECTO))?.coleccion;
-  if (eliminarVectores && coleccionVectoresRecurso) {
-    await getDB().collection(coleccionVectoresRecurso).deleteMany({ manualId: id });
+  if (eliminarVectores) {
+    if (rag.backendUnificadoActivo()) {
+      await rag.eliminarPorManual(id);
+    } else if (coleccionVectoresRecurso) {
+      await getDB().collection(coleccionVectoresRecurso).deleteMany({ manualId: id });
+    }
   }
   const raiz = path.resolve(__dirname, '../storage');
   const rutaArchivo = path.resolve(__dirname, '..', item.rutaLocal || '');
@@ -2771,7 +3115,6 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
     const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
     referencia = await db.collection('archivos').add({
       nombre: String(req.body.nombre || path.parse(req.file.originalname).name).trim(),
-      descripcion: String(req.body.descripcion || '').trim(),
       nombreArchivo: req.file.originalname,
       rutaLocal,
       tipoMime: req.file.mimetype || 'application/octet-stream',
@@ -2827,7 +3170,13 @@ app.post('/api/archivos', verifyToken, (req, res, next) => {
     const vectores = resultados.filter((resultado) => resultado && !resultado.error && Array.isArray(resultado.embedding));
     if (!vectores.length) throw new Error('No se pudo generar embeddings para el contenido del archivo.');
     // Los embeddings van a la colección vectorial de la categoría elegida.
-    await getDB().collection(categoria.coleccion).insertMany(vectores, { ordered: false });
+    if (rag.backendUnificadoActivo()) {
+      await rag.indexarVectores(vectores, { categoria });
+    } else {
+      await getDB().collection(categoria.coleccion).insertMany(vectores, { ordered: false });
+      rag.indexarVectores(vectores, { categoria })
+        .catch((error) => console.error(`[RAG] No se pudo copiar a rag_documents: ${error.message}`));
+    }
     await referencia.update({ estadoIndexacion: 'completada', fragmentosIndexados: vectores.length, actualizadoEn: new Date() });
     res.status(201).json({
       ok: true,
@@ -2877,6 +3226,7 @@ app.post(
     let vectoresAnteriores = [];
     let coleccionVectores = null;
     let archivoAnterior = null;
+    const usaRagUnificado = rag.backendUnificadoActivo();
     const versionNueva = crypto.randomUUID();
 
     const limpiarArchivoNuevo = async () => {
@@ -2945,7 +3295,9 @@ app.post(
       if (errorCategoria || !categoria?.activa) {
         throw new Error(errorCategoria || 'La categoría del archivo está inactiva.');
       }
-      coleccionVectores = getDB().collection(activa);
+      if (!usaRagUnificado) {
+        coleccionVectores = getDB().collection(activa);
+      }
 
       const nombreArchivo = req.file.originalname;
       const nombre = String(archivoAnterior.nombre || path.parse(nombreArchivo).name).trim();
@@ -2984,15 +3336,29 @@ app.post(
         throw new Error('No se pudo generar embeddings para el nuevo documento.');
       }
 
-      vectoresAnteriores = await coleccionVectores.find({ archivoId: req.params.id }).toArray();
-      if (vectoresNuevos.length) {
-        vectoresNuevosInsertados = true;
-        await coleccionVectores.insertMany(vectoresNuevos, { ordered: false });
+      if (usaRagUnificado) {
+        vectoresAnteriores = await rag.obtenerPorArchivo(req.params.id);
+        if (vectoresNuevos.length) {
+          vectoresNuevosInsertados = true;
+          await rag.indexarVectores(vectoresNuevos, { categoria });
+          await rag.desactivarObsoletosPorArchivo(req.params.id, versionNueva);
+        } else {
+          await rag.desactivarPorArchivo(req.params.id);
+        }
+      } else {
+        vectoresAnteriores = await coleccionVectores.find({ archivoId: req.params.id }).toArray();
+        if (vectoresNuevos.length) {
+          vectoresNuevosInsertados = true;
+          await rag.desactivarPorArchivo(req.params.id).catch(() => {});
+          await coleccionVectores.insertMany(vectoresNuevos, { ordered: false });
+          rag.indexarVectores(vectoresNuevos, { categoria })
+            .catch((error) => console.error(`[RAG] No se pudo actualizar rag_documents: ${error.message}`));
+        }
+        await coleccionVectores.deleteMany({
+          archivoId: req.params.id,
+          versionArchivo: { $ne: versionNueva },
+        });
       }
-      await coleccionVectores.deleteMany({
-        archivoId: req.params.id,
-        versionArchivo: { $ne: versionNueva },
-      });
 
       const rutaLocal = path.relative(path.join(__dirname, '..'), req.file.path);
       await referencia.update({
@@ -3235,28 +3601,33 @@ async function moverArchivoAPapelera(id, user) {
   if (actualizacionVigente) return { id, ok: false, error: 'El archivo se está actualizando. Inténtalo de nuevo en unos minutos.' };
   if (!puedeGestionarArchivo(user, item)) return { id, ok: false, error: 'Solo puedes eliminar archivos que tú subiste.' };
 
-  // Migrar los vectores de RAG a la papelera DE SU CATEGORÍA, para no
-  // mezclar documentos eliminados de fuentes distintas.
-  const { activa, papelera, error } = await coleccionesDeCategoria(item);
-  if (error) return { id, ok: false, error };
-
+  // En el RAG unificado hay una sola colección: la papelera es lógica
+  // (`activo: false`). En el modo heredado los vectores se mueven al par de
+  // colecciones de su categoría para no mezclar fuentes distintas.
   try {
-    const mongoDb = getDB();
-    const vectores = await mongoDb.collection(activa).find({ archivoId: id }).toArray();
+    if (rag.backendUnificadoActivo()) {
+      await rag.moverArchivoAPapelera(id);
+    } else {
+      const { activa, papelera, error } = await coleccionesDeCategoria(item);
+      if (error) return { id, ok: false, error };
 
-    if (vectores.length > 0) {
-      // Insertar en la papelera de esa categoría
-      await mongoDb.collection(papelera).insertMany(vectores, { ordered: false });
-      // Eliminar de la colección activa
-      await mongoDb.collection(activa).deleteMany({ archivoId: id });
-      console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} de "${activa}" a "${papelera}"`);
+      const mongoDb = getDB();
+      const vectores = await mongoDb.collection(activa).find({ archivoId: id }).toArray();
+
+      if (vectores.length > 0) {
+        // Insertar en la papelera de esa categoría
+        await mongoDb.collection(papelera).insertMany(vectores, { ordered: false });
+        // Eliminar de la colección activa
+        await mongoDb.collection(activa).deleteMany({ archivoId: id });
+        console.log(`[PAPELERA] Migrados ${vectores.length} vectores del archivo ${id} de "${activa}" a "${papelera}"`);
+      }
+      await ragCategorias.eliminarPapeleraVacia(papelera);
     }
-    await ragCategorias.eliminarPapeleraVacia(papelera);
   } catch (falloMigracion) {
-    // Si los vectores no salen de la colección activa, el contenido seguiría
+    // Si los vectores no salen del buscador, el contenido seguiría
     // respondiendo en el chat. No se marca el archivo como eliminado para no
-    // romper la promesa de que la papelera saca el conocimiento de circulation.
-    console.error(`[PAPELERA] Error al migrar vectores del archivo ${id}:`, falloMigracion.message);
+    // romper la promesa de que la papelera saca el conocimiento de circulación.
+    console.error(`[PAPELERA] Error al retirar vectores del archivo ${id}:`, falloMigracion.message);
     return {
       id,
       ok: false,
@@ -3295,21 +3666,25 @@ async function restaurarArchivoDePapelera(id) {
     };
   }
 
-  const { activa, papelera, error } = await coleccionesDeCategoria(item);
-  if (error) return { id, ok: false, error };
-
   try {
-    const mongoDb = getDB();
-    const vectoresPapelera = await mongoDb.collection(papelera).find({ archivoId: id }).toArray();
+    if (rag.backendUnificadoActivo()) {
+      await rag.restaurarArchivoDesdePapelera(id);
+    } else {
+      const { activa, papelera, error } = await coleccionesDeCategoria(item);
+      if (error) return { id, ok: false, error };
 
-    if (vectoresPapelera.length > 0) {
-      // Insertar de vuelta en la colección activa de su categoría
-      await mongoDb.collection(activa).insertMany(vectoresPapelera, { ordered: false });
-      // Eliminar de la papelera de esa categoría
-      await mongoDb.collection(papelera).deleteMany({ archivoId: id });
-      console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} de "${papelera}" a "${activa}"`);
+      const mongoDb = getDB();
+      const vectoresPapelera = await mongoDb.collection(papelera).find({ archivoId: id }).toArray();
+
+      if (vectoresPapelera.length > 0) {
+        // Insertar de vuelta en la colección activa de su categoría
+        await mongoDb.collection(activa).insertMany(vectoresPapelera, { ordered: false });
+        // Eliminar de la papelera de esa categoría
+        await mongoDb.collection(papelera).deleteMany({ archivoId: id });
+        console.log(`[PAPELERA] Restaurados ${vectoresPapelera.length} vectores del archivo ${id} de "${papelera}" a "${activa}"`);
+      }
+      await ragCategorias.eliminarPapeleraVacia(papelera);
     }
-    await ragCategorias.eliminarPapeleraVacia(papelera);
   } catch (falloRestauracion) {
     console.error(`[PAPELERA] Error al restaurar vectores del archivo ${id}:`, falloRestauracion.message);
     return {
@@ -3330,25 +3705,39 @@ async function restaurarArchivoDePapelera(id) {
 }
 
 async function eliminarArchivoPermanentemente(id, data) {
-  // Se purga en la colección activa y en la de papelera de la categoría,
-  // porque el documento pudo estar en cualquiera de las dos.
-  const { activa, papelera, error } = await coleccionesDeCategoria(data);
-  if (error) return { id, ok: false, error };
-  const mongoDb = getDB();
-  for (const coleccion of new Set([activa, papelera])) {
-    try {
-      await mongoDb.collection(coleccion).deleteMany({ archivoId: id });
-    } catch (error) {
-      console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id} en ${coleccion}:`, error.message);
+  try {
+    if (rag.backendUnificadoActivo()) {
+      await rag.eliminarArchivoPermanente(id);
+    } else {
+      // Se purga en la colección activa y en la de papelera de la categoría,
+      // porque el documento pudo estar en cualquiera de las dos.
+      const { activa, papelera, error } = await coleccionesDeCategoria(data);
+      if (error) return { id, ok: false, error };
+      const mongoDb = getDB();
+      for (const coleccion of new Set([activa, papelera])) {
+        try {
+          await mongoDb.collection(coleccion).deleteMany({ archivoId: id });
+        } catch (error) {
+          console.error(`[PAPELERA] No se pudieron eliminar vectores de ${id} en ${coleccion}:`, error.message);
+        }
+      }
+      await ragCategorias.eliminarPapeleraVacia(papelera);
     }
+  } catch (error) {
+    console.error(`[PAPELERA] No se pudieron eliminar los vectores de ${id}:`, error.message);
+    return {
+      id,
+      ok: false,
+      error: 'No se pudo eliminar el contenido del buscador. Inténtalo de nuevo.',
+    };
   }
-  await ragCategorias.eliminarPapeleraVacia(papelera);
   if (data?.rutaLocal) {
     const raizArchivos = path.resolve(__dirname, '../storage/archivos');
     const rutaArchivo = path.resolve(__dirname, '..', data.rutaLocal);
     await eliminarArchivoYCarpetasVacias(rutaArchivo, raizArchivos);
   }
   await db.collection('archivos').doc(id).delete();
+  return { id, ok: true };
 }
 
 async function purgarPapeleraExpirada() {
@@ -3379,7 +3768,7 @@ app.delete('/api/archivos/:id', verifyToken, async (req, res) => {
     if (!usuarioActivo(req, res)) return;
     const resultado = await moverArchivoAPapelera(req.params.id, req.user);
     if (!resultado.ok) return res.status(resultado.error === 'Archivo no encontrado.' ? 404 : 403).json({ ok: false, error: resultado.error });
-    res.json({ ok: true, mensaje: 'Archivo movido a la papelera. El contenido se mantiene disponible para la IA durante 30 días.' });
+    res.json({ ok: true, mensaje: 'Archivo movido a la papelera. El contenido ya no está disponible para la IA.' });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -3548,7 +3937,7 @@ function similitudCoseno(a, b) {
 // documentos de la colección y devuelve los más parecidos al vector de la
 // consulta. Solo es adecuado mientras la colección sea pequeña, por eso la
 // consola avisa para crear el índice en Atlas cuando el volumen crezca.
-const MAX_DOCUMENTOS_REVISADOS = 4000;
+const MAX_DOCUMENTOS_REVISADOS = Number(process.env.RAG_MEMORY_FALLBACK_LIMIT || 1200);
 
 async function buscarPorSimilitudEnMemoria(coleccion, vectorConsulta, fuente, limite) {
   const documentos = await coleccion
@@ -3569,6 +3958,7 @@ async function buscarPorSimilitudEnMemoria(coleccion, vectorConsulta, fuente, li
       }
     )
     .limit(MAX_DOCUMENTOS_REVISADOS)
+    .maxTimeMS(Number(process.env.RAG_MEMORY_FALLBACK_MAX_TIME_MS || 3000))
     .toArray();
 
   if (!documentos.length) return [];
@@ -3633,6 +4023,7 @@ async function buscarPorTextoEnMemoria(coleccion, pregunta, fuente, limite) {
         }
       )
       .limit(MAX_DOCUMENTOS_REVISADOS)
+      .maxTimeMS(Number(process.env.RAG_MEMORY_FALLBACK_MAX_TIME_MS || 3000))
       .toArray();
 
     return documentos
@@ -3657,6 +4048,29 @@ async function buscarPorTextoEnMemoria(coleccion, pregunta, fuente, limite) {
         categoriaNombre: fuente.nombre,
         busquedaLexica: true,
       }));
+}
+
+// La colección de Starlink se lee en cada pregunta. Cambia poco y es pequeña,
+// así que se cachea un minuto y se invalida al crear/editar/eliminar un kit.
+let cacheStarlinkBot = { datos: null, expira: 0 };
+const TTL_CACHE_STARLINK_MS = Number(process.env.STARLINK_CACHE_TTL_MS || 60000);
+
+async function obtenerDatosStarlink({ usarCache = true } = {}) {
+  const ahora = Date.now();
+  if (usarCache && cacheStarlinkBot.datos && ahora < cacheStarlinkBot.expira) {
+    return cacheStarlinkBot.datos;
+  }
+  const datos = await getDB()
+    .collection('starlink_bot')
+    .find({}, { projection: { embedding: 0 } })
+    .maxTimeMS(Number(process.env.STARLINK_MAX_TIME_MS || 4000))
+    .toArray();
+  cacheStarlinkBot = { datos, expira: ahora + TTL_CACHE_STARLINK_MS };
+  return datos;
+}
+
+function invalidarCacheStarlink() {
+  cacheStarlinkBot = { datos: null, expira: 0 };
 }
 
 app.post(
@@ -3760,7 +4174,7 @@ app.post(
           `data: ${JSON.stringify({ tipo: 'fin' })}\n\n`
         );
 
-        console.log(
+        log.info(
           `[CHAT] Consulta fuera de alcance bloqueada: "${preguntaLimpia}"`
         );
 
@@ -3842,14 +4256,14 @@ app.post(
           : '¡Hola! ¿En qué puedo ayudarte con North Services?';
         enviarEvento({ tipo: 'texto', texto: respuestaSocial });
         enviarEvento({ tipo: 'fin' });
-        console.log('[CHAT] Saludo o cortesía resuelto sin RAG ni Gemini.');
+        log.debug('Saludo o cortesía resuelto sin RAG ni Gemini.');
         return res.end();
       }
 
       if (inventorySync.esConsultaAmbiguaConteoKits(preguntaLimpia, contextoUsuario)) {
         const [kitsStarlink, ubicacionesMWD] = await Promise.all([
           getDB().collection('starlink_bot').countDocuments({}),
-          getDatabase('mwd')
+          getDatabase('inventarios')
             .collection('inventario_mwd')
             .distinct('metadata_original.ubicacion', { tipo: 'mwd' }),
         ]);
@@ -3882,7 +4296,7 @@ app.post(
           ],
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Conteo explícito de kits: ${kitsStarlink} Starlink, ${kitsNumeradosMWD.length} MWD.`);
+        log.debug(`Conteo explícito de kits: ${kitsStarlink} Starlink, ${kitsNumeradosMWD.length} MWD.`);
         return res.end();
       }
 
@@ -3920,7 +4334,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Conteo de herramientas: ${kitsSolicitados.length ? detalleKits : registrosHerramientas.length}.`);
+        log.debug(`Conteo de herramientas: ${kitsSolicitados.length ? detalleKits : registrosHerramientas.length}.`);
         return res.end();
       }
 
@@ -3960,7 +4374,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Última fecha de inspección registrada: ${ultimasInspecciones[0]?.fechaTexto || 'sin fecha disponible'}.`);
+        log.debug(`Última fecha de inspección registrada: ${ultimasInspecciones[0]?.fechaTexto || 'sin fecha disponible'}.`);
         return res.end();
       }
 
@@ -3997,7 +4411,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Consulta de inspección de Motores: ${registrosInspeccion.length} registros.`);
+        log.debug(`Consulta de inspección de Motores: ${registrosInspeccion.length} registros.`);
         return res.end();
       }
 
@@ -4030,7 +4444,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Consulta de fecha de registro de Motores: ${registrosFecha?.length ?? 0} coincidencias.`);
+        log.debug(`Consulta de fecha de registro de Motores: ${registrosFecha?.length ?? 0} coincidencias.`);
         return res.end();
       }
 
@@ -4082,7 +4496,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Consulta exacta de múltiples tipos MWD resuelta: ${resultadosPorEquipo.map(({ clasificacion, registros }) => `${clasificacion.equipo.nombre}=${registros.length}`).join(', ')}.`);
+        log.debug(`Consulta exacta de múltiples tipos MWD resuelta: ${resultadosPorEquipo.map(({ clasificacion, registros }) => `${clasificacion.equipo.nombre}=${registros.length}`).join(', ')}.`);
         return res.end();
       }
       if (clasificacionInventario?.solicitaListado
@@ -4150,7 +4564,7 @@ app.post(
             })),
           });
           enviarEvento({ tipo: 'fin' });
-          console.log(`[CHAT] Consulta de ubicaciones MWD (${clasificacionInventario.equipo.nombre}): ${registros.length} registros.`);
+          log.debug(`Consulta de ubicaciones MWD (${clasificacionInventario.equipo.nombre}): ${registros.length} registros.`);
           return res.end();
         }
         if (clasificacionInventario.solicitaDescripcion || clasificacionInventario.solicitaNotas) {
@@ -4187,7 +4601,7 @@ app.post(
             })),
           });
           enviarEvento({ tipo: 'fin' });
-          console.log(`[CHAT] Consulta exacta MWD resuelta con ${registros.length} registros.`);
+          log.debug(`Consulta exacta MWD resuelta con ${registros.length} registros.`);
           return res.end();
         }
 
@@ -4224,7 +4638,7 @@ app.post(
               })),
             });
             enviarEvento({ tipo: 'fin' });
-            console.log(`[CHAT] Conteo de equipos operativos (${nombreEquipo}): ${registros.length} registros.`);
+            log.debug(`Conteo de equipos operativos (${nombreEquipo}): ${registros.length} registros.`);
             return res.end();
           }
 
@@ -4259,7 +4673,7 @@ app.post(
             })),
           });
           enviarEvento({ tipo: 'fin' });
-          console.log(`[CHAT] Consulta de equipos operativos (${nombreEquipo}) resuelta con ${registros.length} registros.`);
+          log.debug(`Consulta de equipos operativos (${nombreEquipo}) resuelta con ${registros.length} registros.`);
           return res.end();
         }
 
@@ -4282,7 +4696,7 @@ app.post(
           })),
         });
         enviarEvento({ tipo: 'fin' });
-        console.log(`[CHAT] Consulta exacta de inventario MWD resuelta con ${registros.length} registros.`);
+        log.debug(`Consulta exacta de inventario MWD resuelta con ${registros.length} registros.`);
         return res.end();
       }
 
@@ -4310,8 +4724,8 @@ app.post(
         Date.now() -
         inicioEmbedding;
 
-      console.log(
-        `[CHAT] Embedding: ${tiempoEmbedding} ms`
+      log.debug(
+        `Embedding: ${tiempoEmbedding} ms`
       );
 
       enviarEvento({
@@ -4346,12 +4760,12 @@ app.post(
           req.user.rol
         );
 
-      console.log(
-        `[RAG] Fuentes autorizadas en ${Date.now() - inicioMongo} ms`
+      log.debug(
+        `Fuentes autorizadas en ${Date.now() - inicioMongo} ms`
       );
 
-      console.log(
-        `[RAG] Rol "${req.user.rol || 'sin rol'}" → fuentes: ${
+      log.debug(
+        `Rol "${req.user.rol || 'sin rol'}" → fuentes: ${
           fuentesAutorizadas.length
             ? fuentesAutorizadas
                 .map((fuente) => fuente.coleccion)
@@ -4385,7 +4799,7 @@ app.post(
             fuente,
             RAG_LIMIT
           );
-          console.log(`[CHAT] "${fuente.coleccion}": ${porTexto.length} coincidencias por texto (respaldo sin embedding)`);
+          log.debug(`"${fuente.coleccion}": ${porTexto.length} coincidencias por texto (respaldo sin embedding)`);
           return porTexto;
         }
 
@@ -4400,8 +4814,8 @@ app.post(
             fuente,
             RAG_LIMIT
           );
-          console.log(
-            `[CHAT] "${fuente.coleccion}": ${porSimilitud.length} coincidencias por búsqueda directa (${Date.now() - inicioFuente} ms)`
+          log.debug(
+            `"${fuente.coleccion}": ${porSimilitud.length} coincidencias por búsqueda directa (${Date.now() - inicioFuente} ms)`
           );
           return porSimilitud;
         }
@@ -4455,8 +4869,8 @@ app.post(
             ])
             .toArray();
 
-          console.log(
-            `[CHAT] "${fuente.coleccion}": ${filas.length} por vectorSearch (${Date.now() - inicioFuente} ms)`
+          log.debug(
+            `"${fuente.coleccion}": ${filas.length} por vectorSearch (${Date.now() - inicioFuente} ms)`
           );
 
           return filas.map((fila) => ({ ...fila, categoriaId: fuente.id, categoriaNombre: fuente.nombre }));
@@ -4489,9 +4903,25 @@ const esPreguntaDeReportes = esPreguntaReportesOperaciones(preguntaLimpia);
 
 const resultadosPorFuente = esPreguntaDeReportes
         ? []
-        : await Promise.all(
-          fuentesListas.map(buscarEnFuente)
-        );
+        : rag.backendUnificadoActivo()
+          ? await (async () => {
+            const inicioUnificado = Date.now();
+            const filas = await rag.buscarUnificado({
+              vectorConsulta,
+              pregunta: preguntaLimpia,
+              categoriaIds: fuentesAutorizadas.map((fuente) => fuente.id),
+              limite: RAG_LIMIT,
+              umbral: RAG_SCORE_THRESHOLD,
+            }).catch((error) => {
+              console.error(`[RAG] Búsqueda unificada falló: ${error.message}`);
+              return [];
+            });
+            log.debug(`Búsqueda unificada: ${filas.length} resultados (${Date.now() - inicioUnificado} ms)`);
+            return [filas];
+          })()
+          : await Promise.all(
+            fuentesListas.map(buscarEnFuente)
+          );
 
 const resultadosInventario = esPreguntaDeReportes
   ? []
@@ -4504,7 +4934,7 @@ const resultadosInventario = esPreguntaDeReportes
         console.error(`[CHAT] No se pudo consultar el inventario RAG: ${error.message}`);
         return [];
       });
-    console.log(`[CHAT] Inventario RAG: ${filas.length} resultados (${Date.now() - inicioInv} ms)`);
+    log.debug(`Inventario RAG: ${filas.length} resultados (${Date.now() - inicioInv} ms)`);
     return filas;
   })();
 const filasInventario = resultadosInventario.map((fila) => ({
@@ -4532,7 +4962,7 @@ const filasInventario = resultadosInventario.map((fila) => ({
           ? await (async () => {
             const inicioWeb = Date.now();
             const filas = await webEmpresa.buscarEnWebEmpresa(vectorConsulta);
-            console.log(`[WEB] Búsqueda en web de la empresa: ${filas.length} resultados (${Date.now() - inicioWeb} ms)`);
+            log.debug(`Búsqueda en web de la empresa: ${filas.length} resultados (${Date.now() - inicioWeb} ms)`);
             return filas;
           })()
           : [];
@@ -4541,8 +4971,8 @@ const filasInventario = resultadosInventario.map((fila) => ({
         console.warn('[CHAT] Se omite la búsqueda semántica en la web porque no hay embedding de consulta.');
       }
 
-      console.log(
-        `[WEB] Fragmentos de la web de la empresa recuperados: ${resultadosWeb.length}`
+      log.debug(
+        `Fragmentos de la web de la empresa recuperados: ${resultadosWeb.length}`
       );
 
       const filasContexto = [
@@ -4563,16 +4993,16 @@ const filasInventario = resultadosInventario.map((fila) => ({
         Date.now() -
         inicioMongo;
 
-      console.log(
-        `[CHAT] MongoDB: ${tiempoMongo} ms`
+      log.debug(
+        `MongoDB: ${tiempoMongo} ms`
       );
 
-      console.log(
-        `[CHAT] Resultados encontrados: ${filasContexto.length}`
+      log.debug(
+        `Resultados encontrados: ${filasContexto.length}`
       );
 
-      console.log(
-        '[CHAT] Scores:',
+      log.debug(
+        'Scores:',
         filasContexto.map(
           (fila) =>
             Number(
@@ -4610,8 +5040,8 @@ const filasInventario = resultadosInventario.map((fila) => ({
             )
         );
 
-      console.log(
-        `[RAG] Resumen: consultaDims=${vectorConsulta?.length ?? 0} | ` +
+      log.debug(
+        `Resumen: consultaDims=${vectorConsulta?.length ?? 0} | ` +
         `vectorial=${vectorial} enMemoria=${enMemoria} lexica=${lexica} web=${deWeb} inventario=${deInventario} | ` +
         `colecciones SIN índice Atlas: ${fuentesNoVectoriales.join(', ') || 'ninguna'} | ` +
         `relevantes=${resultadosRelevantes.length}`
@@ -4683,8 +5113,8 @@ const filasInventario = resultadosInventario.map((fila) => ({
             torqueDocs[0].nombre
           ) {
             nombreMasAntiguoSubido = torqueDocs[0].nombre;
-            console.log(
-              `[CHAT] Primer torque log SUBIDO (por creadoEn): ${nombreMasAntiguoSubido}`
+            log.debug(
+              `Primer torque log SUBIDO (por creadoEn): ${nombreMasAntiguoSubido}`
             );
           }
         } catch (errorSubida) {
@@ -4728,8 +5158,8 @@ const filasInventario = resultadosInventario.map((fila) => ({
           const tienePrimeraFecha = esTorqueLog(nombrePrimero);
 
           if (tienePrimeraFecha) {
-            console.log(
-              `[CHAT] "Primer torque log" resuelto por fecha: ${nombrePrimero} (${conFecha[0].fecha})`
+            log.debug(
+              `"Primer torque log" resuelto por fecha: ${nombrePrimero} (${conFecha[0].fecha})`
             );
 
             resultadosRelevantes.sort((a, b) => {
@@ -4772,14 +5202,14 @@ const filasInventario = resultadosInventario.map((fila) => ({
       // la respuesta con contenido poco relevante).
       const RAG_MAX_CONTEXTO = Number(process.env.RAG_MAX_CONTEXTO || '12');
       if (resultadosRelevantes.length > RAG_MAX_CONTEXTO) {
-        console.log(
-          `[CHAT] Resultados relevantes: ${resultadosRelevantes.length}; se envían los ${RAG_MAX_CONTEXTO} de mayor score al modelo.`
+        log.debug(
+          `Resultados relevantes: ${resultadosRelevantes.length}; se envían los ${RAG_MAX_CONTEXTO} de mayor score al modelo.`
         );
         resultadosRelevantes = resultadosRelevantes.slice(0, RAG_MAX_CONTEXTO);
       }
 
-      console.log(
-        `[CHAT] Resultados relevantes: ${resultadosRelevantes.length}`
+      log.debug(
+        `Resultados relevantes: ${resultadosRelevantes.length}`
       );
 
       // ========================================================
@@ -4788,6 +5218,7 @@ const filasInventario = resultadosInventario.map((fila) => ({
 
       const inicioStarlink = Date.now();
       let contextoStarlink = '';
+      let registrosStarlinkConsultados = 0;
 
       // Detectar consultas explícitas de Starlink. Las palabras genéricas
       // como "pozo", "lote" o "fluidos" no bastan: pueden desviar consultas
@@ -4813,8 +5244,8 @@ const filasInventario = resultadosInventario.map((fila) => ({
           || (/^(?:y|tambien|ademas|en ese caso)\b/i.test(normalizarConsultaStarlink(preguntaLimpia))
             && contextoUsuario.slice(-2).some(contieneReferenciaStarlink)));
 
-      console.log(`[CHAT] Pregunta: "${preguntaLimpia}"`);
-      console.log(`[CHAT] ¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
+      log.debug(`Pregunta: "${preguntaLimpia}"`);
+      log.debug(`¿Es pregunta Starlink?: ${esPreguntaStarlink}`);
 
       if (esPreguntaStarlink) {
         // Starlink no es una categoría de conocimiento: es un módulo
@@ -4825,17 +5256,42 @@ const filasInventario = resultadosInventario.map((fila) => ({
           await ragCategorias.puedeAccederModulo(req.user.rol, 'starlink');
 
         if (!puedeUsarStarlink) {
-          console.log(`[CHAT] Acceso a Starlink denegado para el rol "${req.user.rol || 'sin rol'}"`);
+          log.info(`[CHAT] Acceso a Starlink denegado para el rol "${req.user.rol || 'sin rol'}"`);
+          // Sin permiso no se consulta el RAG general: antes la pregunta caía
+          // en manuales no relacionados y la respuesta decía "no hay
+          // información" mostrando descargas que no tenían nada que ver.
           enviarEvento({
-            tipo: 'estado',
-            mensaje: 'Verificando disponibilidad de información...'
+            tipo: 'texto',
+            texto:
+              'No tengo acceso al módulo de Starlink para tu rol. ' +
+              'Si necesitas consultar los kits, montos o pagos, pide al Administrador ' +
+              'que active el módulo Starlink en los permisos de tu rol.'
           });
-        } else {
+          enviarEvento({ tipo: 'fin' });
+          return res.end();
+        }
+
         try {
-          console.log('[CHAT] Consultando colección starlink_bot...');
+          log.debug('Consultando colección starlink_bot...');
           const mongoDb = getDB();
-          const datosStarlink = await mongoDb.collection('starlink_bot').find({}).toArray();
-          console.log(`[CHAT] Se encontraron ${datosStarlink.length} registros de Starlink`);
+          const datosStarlink = await obtenerDatosStarlink();
+          registrosStarlinkConsultados = datosStarlink.length;
+          log.debug(`Se encontraron ${datosStarlink.length} registros de Starlink`);
+
+          if (!datosStarlink.length) {
+            enviarEvento({ tipo: 'texto', texto: 'No hay equipos Starlink registrados.' });
+            enviarEvento({
+              tipo: 'fuentes',
+              fuentes: [{
+                documento: 'Registro de equipos Starlink',
+                seccion: '0 registros',
+                relevancia: 1,
+                descargas: [],
+              }],
+            });
+            enviarEvento({ tipo: 'fin' });
+            return res.end();
+          }
 
           const consultaStarlink = preguntaMinuscula;
           const preguntaStarlinkActual = normalizarConsultaStarlink(preguntaLimpia);
@@ -4847,7 +5303,7 @@ const filasInventario = resultadosInventario.map((fila) => ({
           // información", el atajo de conteo/listado no basta: se deja pasar al
           // modelo para que use el detalle completo (monto, día de pago,
           // fechas, correo, serie) que ya viene en el contexto de Starlink.
-          const preguntaPideMontosFechasStarlink = /\b(?:monto|montos|pago|pagos|pagar|precio|precios|costo|costos|tarifa|tarifas|fecha|fechas|vence|vencen|vencimiento|cuando|renueva|renovacion|informacion|detalle|detalles|datos|completa|completo|todo|todos|correo|serie|antena)\b/.test(consultaStarlink);
+          const preguntaPideMontosFechasStarlink = /\b(?:monto|montos|pago|pagos|pagar|precio|precios|costo|costos|tarifa|tarifas|debe|debemos|deben|deuda|deudas|adeuda|adeudamos|adeudan|adeudado|adeudada|saldo|saldos|pendiente|pendientes|impago|impagos|fecha|fechas|vence|vencen|vencimiento|cuando|renueva|renovacion|informacion|detalle|detalles|datos|completa|completo|todo|todos|correo|serie|antena)\b/.test(consultaStarlink);
           if (consultaPideListadoStarlink && (consultaPideConteoStarlink || preguntaListaStarlink) && !preguntaPideMontosFechasStarlink) {
             const textoStarlink = consultaPideConteoStarlink
               ? `Hay ${datosStarlink.length} equipos Starlink registrados.`
@@ -4867,7 +5323,7 @@ const filasInventario = resultadosInventario.map((fila) => ({
               }],
             });
             enviarEvento({ tipo: 'fin' });
-            console.log(`[CHAT] Consulta exacta de Starlink resuelta con ${datosStarlink.length} registros de MongoDB.`);
+            log.debug(`Consulta exacta de Starlink resuelta con ${datosStarlink.length} registros de MongoDB.`);
             return res.end();
           }
           
@@ -4900,6 +5356,13 @@ const filasInventario = resultadosInventario.map((fila) => ({
             };
 
             const equiposRelevantes = datosStarlink.filter(coincideEquipo);
+            const equiposConPagoPendiente = datosStarlink.filter(
+              (equipo) => equipo.estadoPago !== 'pagado'
+            );
+            const totalAdeudado = equiposConPagoPendiente.reduce(
+              (total, equipo) => total + (Number(equipo.monto) || 0),
+              0
+            );
 
             // Calcular pozos que vencen pronto (próximos 7 días)
             const pozosPorVencer = datosStarlink.filter(pozo => {
@@ -4961,10 +5424,22 @@ CÓMO RESPONDER A PREGUNTAS DE ESTA SECCIÓN:
   muestras debajo. Si detallas 1 kit pagado y 2 pendientes, di "3 kits en
   total: 1 pagado y 2 pendientes"; no digas "3 kits operativos y 2 en
   reserva", porque eso sumaría 5.
+- Si preguntan CUÁNTO SE DEBE, la DEUDA, el SALDO o los PAGOS PENDIENTES,
+  responde con el total y el desglose de "RESUMEN DE MONTOS ADEUDADOS".
+  Suma solo los montos de equipos cuyo Estado Pago no sea "pagado".
+  No inventes moras, intereses, penalidades ni cargos que no aparezcan
+  en las fichas.
 
 ESTADO DE PAGOS GENERAL:
 - Equipos pagados: ${datosStarlink.filter(p => p.estadoPago === 'pagado').length}
 - Equipos no pagados: ${datosStarlink.filter(p => p.estadoPago === 'no_pagado').length}
+
+RESUMEN DE MONTOS ADEUDADOS (para preguntas de deuda o saldo):
+- Total adeudado registrado: S/ ${totalAdeudado}
+- Equipos con pago pendiente: ${equiposConPagoPendiente.length}
+${equiposConPagoPendiente.length
+  ? equiposConPagoPendiente.map(p => `- ${p.ubicacion} (KIT: ${p.codigoKit}): S/ ${p.monto} — día de pago ${p.diaPago} — Estado Pago: ${estadoTxt(p)}`).join('\n')
+  : '- Sin pagos pendientes registrados.'}
 
 ESTADO DE SERVICIO:
 - Equipos activos: ${datosStarlink.filter(p => p.estadoActivo).length}
@@ -4999,17 +5474,29 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
         } catch (error) {
           console.error('[CHAT] Error al consultar Starlink:', error.message);
           console.error('[CHAT] Stack:', error.stack);
-        }
+          // Si falla el registro de Starlink no se responde con manuales: el
+          // usuario preguntó por equipos y montos, no por documentación.
+          enviarEvento({
+            tipo: 'texto',
+            texto: 'No pude consultar el registro de equipos Starlink en este momento. Inténtalo de nuevo en unos segundos.'
+          });
+          enviarEvento({ tipo: 'fin' });
+          return res.end();
         }
       } else {
-        console.log('[CHAT] No se detectó pregunta de Starlink, usando solo RAG de manuales');
+        log.debug('No se detectó pregunta de Starlink, usando solo RAG de manuales');
       }
 
+      // Cuando la consulta es de Starlink, la respuesta se arma solo con ese
+      // registro. Los fragmentos del RAG general (manuales, brochures, web)
+      // no aportan y además arrastraban descargas de otros temas.
+      const respuestaSoloStarlink = esPreguntaStarlink && Boolean(contextoStarlink);
+
       const tiempoStarlink = Date.now() - inicioStarlink;
-      console.log(`[CHAT] Starlink: ${tiempoStarlink} ms`);
-      console.log(`[CHAT] Contexto Starlink generado: ${contextoStarlink ? 'SÍ' : 'NO'}`);
+      log.debug(`Starlink: ${tiempoStarlink} ms`);
+      log.debug(`Contexto Starlink generado: ${contextoStarlink ? 'SÍ' : 'NO'}`);
       if (contextoStarlink) {
-        console.log(`[CHAT] Longitud contexto Starlink: ${contextoStarlink.length} caracteres`);
+        log.debug(`Longitud contexto Starlink: ${contextoStarlink.length} caracteres`);
       }
 
       // ========================================================
@@ -5018,12 +5505,12 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
 
       const inicioDrive = Date.now();
       let contextoDrive = '';
-      console.log(`[CHAT] ¿Es pregunta de reportes?: ${esPreguntaDeReportes}`);
+      log.debug(`¿Es pregunta de reportes?: ${esPreguntaDeReportes}`);
 
       if (esPreguntaDeReportes) {
         contextoDrive = await obtenerContextoReportesOperaciones(preguntaLimpia, enviarEvento);
-        console.log(`[CHAT] Drive: ${Date.now() - inicioDrive} ms`);
-        console.log(`[CHAT] Contexto Drive generado: ${contextoDrive ? 'SÍ' : 'NO'}`);
+        log.debug(`Drive: ${Date.now() - inicioDrive} ms`);
+        log.debug(`Contexto Drive generado: ${contextoDrive ? 'SÍ' : 'NO'}`);
       }
 
       if (contextoDrive && typeof contextoDrive === 'object') {
@@ -5129,11 +5616,13 @@ ${datosStarlink.map(renderFichaEquipo).join('\n')}
       const filasConDocumento = resultadosRelevantes.filter((fila) =>
         fila.recursoId || fila.archivoId || fila.manualId
       );
-      const filasAResolver = solicitaDescarga
-        ? filasConDocumento
-        : consultaInventario
-          ? []
-          : filasConDocumento.slice(0, 1);
+      const filasAResolver = respuestaSoloStarlink
+        ? []
+        : solicitaDescarga
+          ? filasConDocumento
+          : consultaInventario
+            ? []
+            : filasConDocumento.slice(0, 1);
       const obtenerDescargasFuente = (f) =>
         f.recursoId
           ? (descargasPorFuente.get(`recurso:${f.recursoId}`)?.adjuntos || [])
@@ -5324,7 +5813,7 @@ ${
       const contextoCompleto = [
         contextoStarlink,
         contextoDrive,
-        contextoDrive ? '' : contextoRecuperado
+        (contextoDrive || respuestaSoloStarlink) ? '' : contextoRecuperado
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -5389,7 +5878,7 @@ Tu respuesta debe salir ÚNICAMENTE de esa sección.
       // presentación institucional. Se le pide al modelo que la use para lo
       // que es y que no confunda el texto comercial con un manual técnico ni
       // con un reporte.
-      const hayContextoWeb = resultadosRelevantes.some((fila) => fila.origenWeb);
+      const hayContextoWeb = !respuestaSoloStarlink && resultadosRelevantes.some((fila) => fila.origenWeb);
       const instruccionWeb = hayContextoWeb ? `
 INSTRUCCIÓN ESPECÍFICA PARA ESTA CONSULTA (WEB DE LA EMPRESA):
 
@@ -5409,7 +5898,7 @@ empresa y sus servicios.
    web describen justamente lo que se pregunta.
 ` : '';
 
-      const hayContextoInventario = resultadosRelevantes.some((fila) => fila.esInventario);
+      const hayContextoInventario = !respuestaSoloStarlink && resultadosRelevantes.some((fila) => fila.esInventario);
       const instruccionInventario = hayContextoInventario ? `
 INSTRUCCIÓN ESPECÍFICA PARA INVENTARIOS:
 
@@ -5593,8 +6082,8 @@ ${preguntaLimpia}
       let proveedorRespuesta = null;
 
       if (contextoDrive) {
-        console.log(
-          '[CHAT] Respuesta con contexto de Google Drive.'
+        log.debug(
+          'Respuesta con contexto de Google Drive.'
         );
       }
 
@@ -5661,8 +6150,8 @@ ${preguntaLimpia}
         }
       }
 
-      console.log(
-        `[CHAT] Proveedor de la respuesta: ${proveedorRespuesta || 'ninguno'} ` +
+      log.debug(
+        `Proveedor de la respuesta: ${proveedorRespuesta || 'ninguno'} ` +
         `| contexto=${contextoCompleto.length} caracteres (prompt=${promptSistema.length})`
       );
 
@@ -5680,12 +6169,19 @@ ${preguntaLimpia}
       // calcularon en la sección 4C (antes del contexto) para que el modelo
       // conozca los materiales ligados. Aquí solo se emiten al frontend.
 
-      const fuentes = resultadosRelevantes.map((f) => ({
-        documento: f.nombreManual || 'Manual',
-        seccion: f.titulo_seccion || 'Sin sección',
-        relevancia: Number(f.score || 0),
-        descargas: obtenerDescargasFuente(f),
-      }));
+      const fuentes = respuestaSoloStarlink
+        ? [{
+          documento: 'Registro de equipos Starlink',
+          seccion: `${registrosStarlinkConsultados} registro${registrosStarlinkConsultados === 1 ? '' : 's'}`,
+          relevancia: 1,
+          descargas: [],
+        }]
+        : resultadosRelevantes.map((f) => ({
+          documento: f.nombreManual || 'Manual',
+          seccion: f.titulo_seccion || 'Sin sección',
+          relevancia: Number(f.score || 0),
+          descargas: obtenerDescargasFuente(f),
+        }));
 
       enviarEvento({
         tipo:
@@ -5731,47 +6227,11 @@ ${preguntaLimpia}
           'fin'
       });
 
-      // ========================================================
-      // LOGS
-      // ========================================================
-
-      console.log(
-        '===================================='
-      );
-
-      console.log(
-        '[CHAT] CONSULTA FINALIZADA'
-      );
-
-      console.log(
-        `[CHAT] Embedding: ${tiempoEmbedding} ms`
-      );
-
-      console.log(
-        `[CHAT] MongoDB: ${tiempoMongo} ms`
-      );
-
-      console.log(
-        `[CHAT] Contexto: ${tiempoContexto} ms`
-      );
-
-      console.log(
-        `[CHAT] Gemini: ${tiempoGemini} ms`
-      );
-
-      console.log(
-        `[CHAT] Primer token: ${
-          firstTokenMs ??
-          'N/A'
-        } ms`
-      );
-
-      console.log(
-        `[CHAT] TOTAL: ${tiempoTotal} ms`
-      );
-
-      console.log(
-        '===================================='
+      // Una sola línea por consulta: lo demás (tiempos, scores y fuentes)
+      // queda en LOG_LEVEL=debug para no llenar la terminal.
+      log.info(
+        `[CHAT] ${(tiempoTotal / 1000).toFixed(1)} s · ` +
+        `${respuestaSoloStarlink ? registrosStarlinkConsultados : resultadosRelevantes.length} fuentes · ${proveedorRespuesta || 'sin proveedor'}`
       );
 
       res.end();
@@ -5907,6 +6367,9 @@ app.put('/api/admin/rag/categorias/:id', verifyToken, requireAdmin, async (req, 
   try {
     // El usuario se pasa al servicio para que la papelera atribuya el cambio a
     // una persona y no a un texto técnico sobre la categoría.
+    // El servicio ya mueve los vectores y los archivos al cambiar `activa`,
+    // así que aquí no se repite: reactivar de más devolvería a la búsqueda
+    // versiones obsoletas que deben quedarse inactivas.
     const usuario = { uid: req.user.uid, nombre: nombreUsuarioActual(req.user) };
     const categoria = await ragCategorias.actualizarCategoria(req.params.id, req.body || {}, usuario);
     const avisos = categoria.avisos || [];
@@ -6099,6 +6562,7 @@ app.post('/api/admin/starlink', verifyToken, requireAdmin, async (req, res) => {
     
     // Sincronizar con MongoDB para el bot
     await sincronizarStarlinkConMongoDB({ ...datosConPago, id: datos.codigoKit }, 'crear');
+    invalidarCacheStarlink();
     
     res.status(201).json({ ok: true, pozo: { id: datos.codigoKit, ...datosConPago } });
   } catch (error) {
@@ -6140,6 +6604,7 @@ app.put('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res) =
     
     // Sincronizar con MongoDB para el bot
     await sincronizarStarlinkConMongoDB({ ...datos, id: req.params.id, fechaUltimoPago }, 'actualizar');
+    invalidarCacheStarlink();
     
     res.json({ ok: true, pozo: { id: req.params.id, ...datos, fechaUltimoPago } });
   } catch (error) {
@@ -6158,6 +6623,7 @@ app.delete('/api/admin/starlink/:id', verifyToken, requireAdmin, async (req, res
     
     // Sincronizar eliminación con MongoDB
     await sincronizarStarlinkConMongoDB({ ...datos, id: req.params.id }, 'eliminar');
+    invalidarCacheStarlink();
     
     await referencia.delete();
     res.json({ ok: true, mensaje: 'Pozo eliminado correctamente.' });
@@ -6221,6 +6687,7 @@ app.post('/api/admin/starlink/sync-mongodb', verifyToken, requireAdmin, async (r
       errores,
       total: pozos.length
     });
+    invalidarCacheStarlink();
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
@@ -6454,6 +6921,8 @@ app.put(
           datosActualizar
         );
 
+      invalidarCacheUsuario(uid);
+
       res.json({
         ok: true,
 
@@ -6668,7 +7137,7 @@ app.post('/api/admin/web-empresa/actualizar', verifyToken, requireAdmin, async (
     webEmpresa
       .actualizarInformacionWebEnSerio({
         generarEmbedding,
-        onProgress: (mensaje) => console.log(`[WEB] ${mensaje}`),
+        onProgress: (mensaje) => log.info(`[WEB] ${mensaje}`),
       })
       .catch((error) =>
         console.error(`[WEB] Error al actualizar la web de la empresa: ${error.message}`)
@@ -6686,12 +7155,44 @@ app.post('/api/admin/web-empresa/actualizar', verifyToken, requireAdmin, async (
   }
 });
 
+// Estado del RAG unificado (solo lectura). Sirve para comparar cobertura antes
+// de cambiar RAG_BACKEND=unified.
+app.get('/api/admin/rag/unificado/estado', verifyToken, requireAdmin, async (req, res) => {
+  try {
+    const stats = await rag.estadisticas();
+    res.json({
+      ok: true,
+      backend: rag.backendUnificadoActivo() ? 'unified' : 'legacy',
+      indice: rag.INDICE,
+      ...stats,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ============================================================
 // INICIAR SERVIDOR
 // ============================================================
 
 const PORT = process.env.PORT || 8000;
 const HOST = process.env.HOST || "0.0.0.0";
+
+let servidorHttp = null;
+
+async function cerrarServidor(senal) {
+  console.log(`[SERVER] Cerrando por ${senal}...`);
+  if (servidorHttp) {
+    await new Promise((resolve) => servidorHttp.close(resolve));
+  }
+  await cerrarConexionMongo().catch((error) =>
+    console.error('[MONGO] Error al cerrar la conexión:', error.message)
+  );
+  process.exit(0);
+}
+
+process.on('SIGINT', () => cerrarServidor('SIGINT'));
+process.on('SIGTERM', () => cerrarServidor('SIGTERM'));
 
 connectDB()
   .then(async () => {
@@ -6701,12 +7202,14 @@ connectDB()
       console.error('[RAG] No se pudo inicializar el RAG:', error.message)
     );
 
-    app.listen(PORT, HOST, () => {
+    servidorHttp = app.listen(PORT, HOST, () => {
       console.log(`Servidor corriendo en http://${HOST}:${PORT}`);
-      console.log(`[CONFIG] RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD}`);
-      console.log(`[CONFIG] RAG_LIMIT=${RAG_LIMIT}`);
-      console.log(`[CONFIG] RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`);
-      console.log(`[CONFIG] EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`);
+      log.debug(`RAG_BACKEND=${rag.backendUnificadoActivo() ? 'unified' : 'legacy'}`);
+      log.debug(`RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD}`);
+      log.debug(`RAG_LIMIT=${RAG_LIMIT}`);
+      log.debug(`RAG_NUM_CANDIDATES=${RAG_NUM_CANDIDATES}`);
+      log.debug(`EMBEDDING_CONCURRENCY=${EMBEDDING_CONCURRENCY}`);
+      log.debug(`OTP_RESEND_SECONDS=${OTP_RESEND_SECONDS} OTP_DAILY_LIMIT=${OTP_DAILY_LIMIT}`);
     });
     servicioRecordatoriosStarlink.iniciar();
     purgarPapeleraExpirada().catch((error) => console.error('[PAPELERA] Error al purgar al iniciar:', error.message));

@@ -19,6 +19,7 @@
 
 const { getDB } = require('../db/mongodb');
 const { db: firestore } = require('../firebaseAdmin');
+const rag = require('./rag.service');
 
 const COLECCION_CATEGORIAS = 'categorias_conocimiento';
 const COLECCION_PERMISOS = 'permisos_rag_roles';
@@ -47,6 +48,27 @@ const NOMBRE_CATEGORIA_POR_DEFECTO = 'Conocimiento General';
 // decide cómo se llama una colección o un índice; el resto del sistema solo
 // lee el valor ya guardado en MongoDB.
 const PREFIJO_INDICE = 'vector_index';
+
+// Las categorías y los permisos cambian poco: se leen en cada pregunta del
+// chat, así que se cachean unos segundos. Cualquier escritura del panel
+// invalida la caché para que el cambio se vea de inmediato.
+const TTL_CACHE_CATEGORIAS_MS = Number(process.env.CATEGORIAS_CACHE_TTL_MS || 60000);
+const cacheCategorias = new Map();
+const cachePermisos = new Map();
+
+function invalidarCacheCategorias() {
+  cacheCategorias.clear();
+  cachePermisos.clear();
+  invalidarCacheIndices();
+}
+
+function invalidarCachePermisos(rol = null) {
+  if (rol) {
+    cachePermisos.delete(normalizarClave(rol));
+    return;
+  }
+  cachePermisos.clear();
+}
 
 // ============================================================
 // NORMALIZACIÓN
@@ -115,6 +137,13 @@ async function eliminarPapeleraVacia(nombre) {
 // el panel para dejar de usarla; una categoría desactivada no aparece en el
 // RAG ni se puede marcar para ningún rol.
 async function listarCategorias({ incluirInactivas = false } = {}) {
+  const clave = incluirInactivas ? 'todas' : 'activas';
+  const ahora = Date.now();
+  const cacheado = cacheCategorias.get(clave);
+  if (cacheado && ahora < cacheado.expira) {
+    return cacheado.datos.map((categoria) => ({ ...categoria }));
+  }
+
   const filtro = incluirInactivas ? {} : { activa: { $ne: false } };
   const documentos = await getDB()
     .collection(COLECCION_CATEGORIAS)
@@ -122,7 +151,9 @@ async function listarCategorias({ incluirInactivas = false } = {}) {
     .sort({ nombre: 1 })
     .toArray();
 
-  return documentos.map(normalizarCategoria);
+  const datos = documentos.map(normalizarCategoria);
+  cacheCategorias.set(clave, { datos, expira: ahora + TTL_CACHE_CATEGORIAS_MS });
+  return datos.map((categoria) => ({ ...categoria }));
 }
 
 function normalizarCategoria(categoria = {}) {
@@ -150,19 +181,16 @@ function normalizarCategoria(categoria = {}) {
 
 async function obtenerCategoria(id) {
   if (!id) return null;
-  const documento = await getDB()
-    .collection(COLECCION_CATEGORIAS)
-    .findOne({ id: String(id) });
-  return documento ? normalizarCategoria(documento) : null;
+  const documentos = await listarCategorias({ incluirInactivas: true });
+  return documentos.find((categoria) => categoria.id === String(id)) || null;
 }
 
 // Categoría de software y manuales técnicos que se publican desde Recursos.
 //
-// A diferencia de las categorías que crea cada usuario, esta es del sistema:
-// la usan todos los roles sin que el Administrador tenga que marcar nada. El
-// Software autorizado y sus manuales técnicos. Esta categoría es del sistema:
-// siempre está activa, no se puede editar ni eliminar. Se gestiona como un módulo
-// independiente (similar a Starlink) en el panel de permisos por rol.
+// Es una categoría del sistema: siempre está activa y no se puede editar ni
+// eliminar. Se gestiona como un módulo independiente (similar a Starlink) en
+// el panel de permisos por rol: solo los roles habilitados pueden ver sus
+// recursos y recibir sus documentos en el chat.
 const CATEGORIA_RECURSOS = 'software_y_manuales';
 const NOMBRE_CATEGORIA_RECURSOS = 'Software y Manuales';
 
@@ -247,6 +275,7 @@ async function otorgarCategoriaARol(rol, categoriaId) {
       { upsert: true }
     );
 
+  invalidarCachePermisos(id);
   return true;
 }
 
@@ -302,6 +331,7 @@ async function crearCategoria({ nombre, descripcion = '', creadoPor = null, rolC
   };
 
   await mongoDb.collection(COLECCION_CATEGORIAS).insertOne(categoria);
+  invalidarCacheCategorias();
 
   // Una categoría compartida no necesita permiso de nadie: se agrega sola al
   // consultar las fuentes de cualquier rol.
@@ -610,18 +640,21 @@ async function actualizarCategoria(id, cambios = {}, usuario = null) {
 
   if (coleccionSolicitada && coleccionSolicitada !== actual.coleccion) {
     const papeleraDestino = `${coleccionSolicitada}${SUFIJO_PAPELERA}`;
-    const resultado = await renombrarColeccionEnAtlas(actual.coleccion, coleccionSolicitada);
 
-    // La papelera sigue a la colección para no dejar el par descuadrado.
-    const papeleraActual = actual.coleccionPapelera;
-    advertencias.push(...resultado.advertencias);
+    if (!rag.backendUnificadoActivo()) {
+      const resultado = await renombrarColeccionEnAtlas(actual.coleccion, coleccionSolicitada);
+      advertencias.push(...resultado.advertencias);
 
-    try {
-      await renombrarColeccionEnAtlas(papeleraActual, papeleraDestino);
-    } catch (falloPapelera) {
-      advertencias.push(
-        `La papelera "${papeleraActual}" no se pudo renombrar a "${papeleraDestino}": ${falloPapelera.message}`
-      );
+      // La papelera sigue a la colección para no dejar el par descuadrado.
+      const papeleraActual = actual.coleccionPapelera;
+
+      try {
+        await renombrarColeccionEnAtlas(papeleraActual, papeleraDestino);
+      } catch (falloPapelera) {
+        advertencias.push(
+          `La papelera "${papeleraActual}" no se pudo renombrar a "${papeleraDestino}": ${falloPapelera.message}`
+        );
+      }
     }
 
     actualizacion.coleccion = coleccionSolicitada;
@@ -642,9 +675,16 @@ async function actualizarCategoria(id, cambios = {}, usuario = null) {
     const coleccionActual = actualizacion.coleccion || actual.coleccion;
     const papeleraActual = actualizacion.coleccionPapelera || actual.coleccionPapelera;
 
-    const movimiento = activaSolicitada
-      ? await moverDocumentosAColeccion(papeleraActual, coleccionActual)
-      : await moverDocumentosAColeccion(coleccionActual, papeleraActual);
+    let movimiento;
+    if (rag.backendUnificadoActivo()) {
+      movimiento = activaSolicitada
+        ? { movidos: (await rag.restaurarCategoriaDesdePapelera(actual.id)).restaurados }
+        : await rag.moverCategoriaAPapelera(actual.id);
+    } else {
+      movimiento = activaSolicitada
+        ? await moverDocumentosAColeccion(papeleraActual, coleccionActual)
+        : await moverDocumentosAColeccion(coleccionActual, papeleraActual);
+    }
 
     const archivos = await moverArchivosDeCategoria(
       { ...actual, ...actualizacion },
@@ -675,6 +715,7 @@ async function actualizarCategoria(id, cambios = {}, usuario = null) {
   await getDB()
     .collection(COLECCION_CATEGORIAS)
     .updateOne({ id: actual.id }, { $set: actualizacion });
+  invalidarCacheCategorias();
 
   // Los avisos viajan en la respuesta, no dentro del documento: son
   // resultado de esta operación concreta, no parte de la categoría.
@@ -718,8 +759,12 @@ async function eliminarCategoria(id, { eliminarDocumentos = true } = {}) {
   const enPapelera = [];
 
   if (eliminarDocumentos) {
-    await eliminarColeccion(categoria.coleccion);
-    await eliminarColeccion(categoria.coleccionPapelera);
+    if (rag.backendUnificadoActivo()) {
+      await rag.eliminarPorCategoria(categoria.id);
+    } else {
+      await eliminarColeccion(categoria.coleccion);
+      await eliminarColeccion(categoria.coleccionPapelera);
+    }
 
     const snapshot = await firestore
       .collection(COLECCION_ARCHIVOS)
@@ -733,6 +778,9 @@ async function eliminarCategoria(id, { eliminarDocumentos = true } = {}) {
       }
       await lote.commit();
     }
+  } else if (rag.backendUnificadoActivo()) {
+    const movimiento = await rag.moverCategoriaAPapelera(categoria.id);
+    enPapelera.push(movimiento.movidos);
   } else {
     const movimiento = await moverDocumentosAColeccion(categoria.coleccion, categoria.coleccionPapelera);
     enPapelera.push(movimiento.movidos);
@@ -743,6 +791,7 @@ async function eliminarCategoria(id, { eliminarDocumentos = true } = {}) {
     .updateMany({ categorias: categoria.id }, { $pull: { categorias: categoria.id } });
 
   await mongoDb.collection(COLECCION_CATEGORIAS).deleteOne({ id: categoria.id });
+  invalidarCacheCategorias();
 
   return {
     id: categoria.id,
@@ -762,23 +811,40 @@ async function obtenerPermisosRol(rol) {
   const id = normalizarClave(rol);
   if (!id) return { rol: '', categorias: [], modulos: { starlink: false, software_y_manuales: false }, configurado: false };
 
+  const ahora = Date.now();
+  const cacheado = cachePermisos.get(id);
+  if (cacheado && ahora < cacheado.expira) {
+    return {
+      ...cacheado.datos,
+      categorias: [...cacheado.datos.categorias],
+      modulos: { ...cacheado.datos.modulos },
+    };
+  }
+
   const documento = await getDB()
     .collection(COLECCION_PERMISOS)
     .findOne({ _id: id });
 
+  let resultado;
   if (!documento) {
-    // software_y_manuales está activado por defecto para todos los roles nuevos
-    return { rol: id, categorias: [], modulos: { starlink: false, software_y_manuales: true }, configurado: false };
+    resultado = { rol: id, categorias: [], modulos: { starlink: false, software_y_manuales: false }, configurado: false };
+  } else {
+    resultado = {
+      rol: id,
+      categorias: Array.isArray(documento.categorias) ? documento.categorias : [],
+      modulos: {
+        starlink: documento?.modulos?.starlink === true,
+        software_y_manuales: documento?.modulos?.software_y_manuales === true,
+      },
+      configurado: true,
+    };
   }
 
+  cachePermisos.set(id, { datos: resultado, expira: ahora + TTL_CACHE_CATEGORIAS_MS });
   return {
-    rol: id,
-    categorias: Array.isArray(documento.categorias) ? documento.categorias : [],
-    modulos: {
-      starlink: documento?.modulos?.starlink === true,
-      software_y_manuales: documento?.modulos?.software_y_manuales === true,
-    },
-    configurado: true,
+    ...resultado,
+    categorias: [...resultado.categorias],
+    modulos: { ...resultado.modulos },
   };
 }
 
@@ -813,6 +879,7 @@ async function guardarPermisosRol(rol, { categorias = [], modulos = {} } = {}) {
       { upsert: true }
     );
 
+  invalidarCachePermisos(id);
   return {
     rol: id,
     categorias: categoriasLimpias,
@@ -825,10 +892,11 @@ async function guardarPermisosRol(rol, { categorias = [], modulos = {} } = {}) {
 
 // Fuentes RAG habilitadas para un rol.
 //
-// - Las categorías COMPARTIDAS y las DEL SISTEMA (p. ej. software y manuales)
-//   se agregan siempre, para todos los roles, sin mirar permisos: son
-//   contenido disponible universalmente. Equivale a lo que ya hacía Google
-//   Drive.
+// - Las categorías COMPARTIDAS se agregan siempre, para todos los roles, sin
+//   mirar permisos: son contenido disponible universalmente. Equivale a lo que
+//   ya hacía Google Drive.
+// - "Software y Manuales" es una categoría DEL SISTEMA, pero su acceso ya no es
+//   universal: depende del módulo `software_y_manuales` configurado por rol.
 // - El Administrador recibe TODAS las categorías activas: si se crea una
 //   categoría nueva, tiene acceso automáticamente sin marcar nada.
 // - Los demás roles solo reciben las categorías marcadas por el
@@ -836,13 +904,19 @@ async function guardarPermisosRol(rol, { categorias = [], modulos = {} } = {}) {
 // - Las categorías desactivadas y las colecciones "_papelera" se descartan.
 async function obtenerFuentesPermitidas(rol) {
   const categorias = await listarCategorias({ incluirInactivas: true });
-  const marcadas = esAdministrador(rol)
-    ? categorias
-    : (await obtenerPermisosRol(rol)).categorias;
+  const admin = esAdministrador(rol);
+  const configuracion = admin ? null : await obtenerPermisosRol(rol);
+  const marcadas = admin ? categorias : configuracion.categorias;
+  const puedeRecursos = admin || configuracion?.modulos?.software_y_manuales === true;
 
   const permitidas = new Set(
     categorias
-      .filter((categoria) => categoria.compartida || categoria.sistema)
+      .filter(
+        (categoria) =>
+          categoria.compartida ||
+          (categoria.sistema && categoria.id !== CATEGORIA_RECURSOS) ||
+          (categoria.id === CATEGORIA_RECURSOS && puedeRecursos)
+      )
       .map((categoria) => categoria.id)
   );
   marcadas.forEach((id) => permitidas.add(typeof id === 'string' ? id : id?.id));
@@ -861,19 +935,16 @@ async function obtenerFuentesPermitidas(rol) {
 // ACCESO A MÓDULOS (STARLINK Y SOFTWARE_Y_MANUALES)
 // ============================================================
 //
-// Starlink y Software y Manuales NO son categorías de conocimiento:
-// son módulos independientes del sistema de ingestión de documentos.
-// Solo se controla si un rol puede entrar a ellos.
+// Starlink y Software y Manuales NO son categorías de conocimiento: son
+// módulos independientes del sistema de ingestión de documentos.
 //
-// Software y Manuales es de acceso universal: cualquier rol puede consultarlo
-// y descargarlo, sin que el Administrador tenga que habilitarlo. Starlink sí
-// se controla por rol.
+// Los dos se controlan por rol desde el panel de permisos. El Administrador
+// siempre tiene acceso. No hay módulos "universales": si el Administrador
+// desmarca el acceso a Software y Manuales, ese rol deja de ver la sección
+// Recursos y de recibir sus documentos en el chat.
 // ============================================================
 
-const MODULOS_UNIVERSALES = new Set(['software_y_manuales']);
-
 async function puedeAccederModulo(rol, modulo) {
-  if (MODULOS_UNIVERSALES.has(modulo)) return true;
   if (esAdministrador(rol)) return true;
   const permisos = await obtenerPermisosRol(rol);
   return permisos.modulos?.[modulo] === true;
@@ -899,6 +970,9 @@ async function obtenerMatrizPermisos() {
     listarRolesExistentes(),
     descubrirIndicesVectoriales(),
   ]);
+  const indiceUnificado = rag.backendUnificadoActivo()
+    ? await rag.indiceDisponible()
+    : null;
 
   // El panel muestra qué categorías están realmente consultables: una
   // categoría sin índice en Atlas guarda documentos, pero el chat la omite.
@@ -914,7 +988,9 @@ async function obtenerMatrizPermisos() {
       .filter((categoria) => categoria.sistema !== true)
       .map(async (categoria) => ({
         ...categoria,
-        tieneIndice: indices.has(categoria.coleccion),
+        tieneIndice: rag.backendUnificadoActivo()
+          ? indiceUnificado
+          : indices.has(categoria.coleccion),
         documentos: await contarDocumentosCategoria(categoria),
       }))
   );
@@ -961,6 +1037,14 @@ function invalidarCacheIndices() {
 }
 
 async function descubrirIndicesVectoriales({ usarCache = true } = {}) {
+  // En modo unificado solo existe un índice: el de `rag_documents`. Recorrer
+  // todas las colecciones de la base sería trabajo inútil en cada arranque y
+  // en cada consulta del panel.
+  if (rag.backendUnificadoActivo()) {
+    const disponible = await rag.indiceDisponible({ usarCache });
+    return new Map(disponible ? [[rag.COLECCION, rag.INDICE]] : []);
+  }
+
   const ahora = Date.now();
   if (usarCache && cacheIndices.datos && ahora < cacheIndices.expira) {
     return new Map(cacheIndices.datos);
@@ -1006,6 +1090,27 @@ async function descubrirIndicesVectoriales({ usarCache = true } = {}) {
 // asociada. Sirve para mostrar el estado real en el panel del Administrador
 // y para saber qué fuentes hay ya publicadas.
 async function listarColeccionesVectoriales() {
+  if (rag.backendUnificadoActivo()) {
+    const [disponible, stats, total] = await Promise.all([
+      rag.indiceDisponible(),
+      rag.estadisticas(),
+      getDB().collection(rag.COLECCION).countDocuments({}),
+    ]);
+
+    return [{
+      coleccion: rag.COLECCION,
+      indiceVectorial: disponible ? rag.INDICE : null,
+      coleccionPapelera: null,
+      esPapelera: false,
+      declaradaPorCategoria: true,
+      unificada: true,
+      documentos: total,
+      activos: stats.total,
+      enPapelera: stats.enPapelera,
+      porCategoria: stats.porCategoria,
+    }];
+  }
+
   const indices = await descubrirIndicesVectoriales();
   const declarada = new Set(
     (await listarCategorias({ incluirInactivas: true })).map((categoria) => categoria.coleccion)
@@ -1043,63 +1148,28 @@ async function inicializarRag() {
   }
 console.log(`[RAG] Colecciones con índice vectorial en Atlas: ${indices.size}`);
 
-  // Migración: Actualizar software_y_manuales para funcionar como módulo (como Starlink)
-  // - sistema: true (no se puede editar/eliminar)
-  // - compartida: false (no es automático para todos)
-  // - Activado por defecto para todos los roles (a diferencia de Starlink)
-  // - Migrar permisos de categoría a módulo por rol
+  // Ajuste de metadatos de la categoría del sistema "Software y Manuales".
+  // NO se toca el acceso por rol: el Administrador lo controla desde el panel
+  // y una migración no debe volver a habilitar un módulo que él desactivó.
   try {
     const categoriaRecursos = await obtenerCategoria(CATEGORIA_RECURSOS);
     if (categoriaRecursos) {
       const necesitaActualizacion = categoriaRecursos.compartida === true || categoriaRecursos.sistema !== true;
 
       if (necesitaActualizacion) {
-        // Obtener todos los roles existentes para migrar sus permisos
-        const rolesExistentes = await listarRolesExistentes();
-
         await getDB().collection(COLECCION_CATEGORIAS).updateOne(
           { id: CATEGORIA_RECURSOS },
           {
             $set: {
               compartida: false,
               sistema: true,
-              descripcion: 'Software autorizado y sus manuales técnicos. Categoría del sistema: siempre activa, no se puede editar ni eliminar. Se gestiona como módulo independiente en el panel de permisos por rol. Activado por defecto para todos los roles.',
+              descripcion: 'Software autorizado y sus manuales técnicos. Categoría del sistema: siempre activa, no se puede editar ni eliminar. Se gestiona como módulo independiente en el panel de permisos por rol.',
               actualizadoEn: new Date()
             }
           }
         );
 
-        // Migrar permisos: quitar de categorías y agregar a módulos
-        // A diferencia de Starlink, software_y_manuales se activa por defecto para todos
-        for (const rol of rolesExistentes) {
-          if (!esAdministrador(rol)) {
-            try {
-              const permisos = await obtenerPermisosRol(rol);
-              const tieneAccesoComoCategoria = permisos.categorias?.includes(CATEGORIA_RECURSOS);
-
-              // Quitar de categorías si estaba allí
-              if (tieneAccesoComoCategoria) {
-                await getDB().collection(COLECCION_PERMISOS).updateOne(
-                  { rol: normalizarClave(rol) },
-                  { $pull: { categorias: CATEGORIA_RECURSOS } }
-                );
-              }
-
-              // Activar módulo por defecto para todos los roles
-              await getDB().collection(COLECCION_PERMISOS).updateOne(
-                { rol: normalizarClave(rol) },
-                { $set: { 'modulos.software_y_manuales': true } },
-                { upsert: true }
-              );
-
-              console.log(`[RAG] Migración: Módulo "${CATEGORIA_RECURSOS}" activado por defecto para rol "${rol}"`);
-            } catch (error) {
-              console.error(`[RAG] Error migrando permisos para rol "${rol}":`, error.message);
-            }
-          }
-        }
-
-        console.log(`[RAG] Migración: Categoría "${CATEGORIA_RECURSOS}" actualizada como módulo activado por defecto.`);
+        console.log(`[RAG] Migración: Categoría "${CATEGORIA_RECURSOS}" actualizada como módulo independiente.`);
       }
     }
   } catch (error) {

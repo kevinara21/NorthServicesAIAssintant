@@ -5,7 +5,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../services/firebaseConfig';
 import { useNotification } from '../context/NotificationContext';
 
-export default function Register({ alVolverAlLogin }) {
+export default function Register({ alVolverAlLogin, dentroDeAuthCard = false }) {
   const [nombre, setNombre] = useState('');
   const [apellido, setApellido] = useState('');
   const [password, setPassword] = useState('');
@@ -22,7 +22,6 @@ export default function Register({ alVolverAlLogin }) {
   const [otroRol, setOtroRol] = useState('');
 
   const [cargando, setCargando] = useState(false);
-  const [mensaje, setMensaje] = useState(null);
 
   const { notificarExito, notificarError, notificarAdvertencia } = useNotification();
 
@@ -57,14 +56,12 @@ export default function Register({ alVolverAlLogin }) {
   const manejarRegistro = async (e) => {
     e.preventDefault();
     setCargando(true);
-    setMensaje(null);
 
     const areaFinal = areaSeleccionada === 'Crear nueva área...' ? otraArea.trim() : areaSeleccionada;
     const rolFinal = rolSeleccionado === 'Crear nuevo rol...' ? otroRol.trim() : rolSeleccionado;
 
     if (!areaFinal) {
       const msg = 'Por favor seleccione o cree un Área.';
-      setMensaje({ tipo: 'error', texto: msg });
       notificarAdvertencia(msg, { titulo: 'Campos requeridos' });
       setCargando(false);
       return;
@@ -74,7 +71,6 @@ export default function Register({ alVolverAlLogin }) {
     // lo que el Administrador verá como "Rol solicitado".
     if (!rolFinal || rolFinal === 'Crear nuevo rol...') {
       const msg = 'Por favor seleccione un Rol para tu solicitud.';
-      setMensaje({ tipo: 'error', texto: msg });
       notificarAdvertencia(msg, { titulo: 'Campos requeridos' });
       setCargando(false);
       return;
@@ -99,10 +95,6 @@ export default function Register({ alVolverAlLogin }) {
       await signOut(auth);
 
       const mensajeExito = 'Solicitud enviada exitosamente. Tu cuenta se encuentra en revisión por el administrador.';
-      setMensaje({
-        tipo: 'exito',
-        texto: mensajeExito,
-      });
 
       notificarExito(mensajeExito, {
         titulo: 'Solicitud Enviada',
@@ -116,134 +108,201 @@ export default function Register({ alVolverAlLogin }) {
       } else if (error.code === 'auth/weak-password') {
         errorTexto = 'La contraseña debe tener al menos 6 caracteres.';
       }
-      setMensaje({ tipo: 'error', texto: errorTexto });
       notificarError(errorTexto, { titulo: 'Error de Registro' });
     } finally {
       setCargando(false);
     }
   };
 
-  return (
-    <div className="login-page register-page" style={{ maxWidth: 380, margin: '50px auto', fontFamily: 'sans-serif' }}>
-      <img className="login-logo" src="/NorthServices.svg" alt="North Services" />
-      <h2 className="login-heading" style={{ color: '#000000', marginBottom: '0.5rem' }}>Solicitud de Acceso</h2>
-      <p className="login-subtitle" style={{ fontSize: 13, color: '#666666', marginBottom: 20 }}>
-        North Services AI Assistant
-      </p>
-
-
-      <form onSubmit={manejarRegistro} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Nombre</label>
-          <input
-            type="text"
-            placeholder="Nombre"
-            value={nombre}
-            onChange={(e) => setNombre(e.target.value.replace(/\s+/g, ''))}
-            required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
-          />
+  const contenidoRegistro = (
+    <>
+      {!dentroDeAuthCard && (
+        <div className="auth-header">
+          <img className="auth-logo" src="/NorthServices.svg" alt="North Services" />
+          <h1 className="auth-heading">Solicitud de Acceso</h1>
+          <p className="auth-subtitle">North Services AI Assistant</p>
         </div>
+      )}
 
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Apellido</label>
-          <input
-            type="text"
-            placeholder="Apellido"
-            value={apellido}
-            onChange={(e) => setApellido(e.target.value.replace(/\s+/g, ''))}
-            required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
-          />
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 11, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Correo autogenerado</label>
-          <input
-            type="email"
-            value={emailGenerado}
-            readOnly
-            placeholder="nombre.apellido@northservices.com.pe"
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', background: '#F8F9FA', border: '1px solid #E5E7EB', borderRadius: 4, color: '#666666' }}
-          />
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Contraseña</label>
-          <span className="password-field"><input type={passwordVisible ? 'text' : 'password'} placeholder="Mínimo 6 caracteres" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} /><button type="button" className="password-toggle" onClick={() => setPasswordVisible((visible) => !visible)} aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}>{passwordVisible ? <FiEyeOff /> : <FiEye />}</button></span>
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Área</label>
-          <select
-            value={areaSeleccionada}
-            onChange={(e) => setAreaSeleccionada(e.target.value)}
-            required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
-          >
-            <option value="">Selecciona un área…</option>
-            {areasExistentes.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-            <option value="Crear nueva área...">+ Crear nueva área…</option>
-          </select>
-          {areaSeleccionada === 'Crear nueva área...' && (
+      <form className="auth-form" onSubmit={manejarRegistro}>
+        {/* Fila 1: Nombre y Apellido */}
+        <div className="auth-grid-2">
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-nombre">Nombre</label>
             <input
+              id="register-nombre"
+              className="auth-input"
               type="text"
-              placeholder="Escriba el nombre de la nueva área"
-              value={otraArea}
-              onChange={(e) => setOtraArea(e.target.value)}
+              placeholder="Nombre"
+              value={nombre}
+              onChange={(e) => setNombre(e.target.value.replace(/\s+/g, ''))}
               required
-              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
             />
-          )}
-        </div>
+          </div>
 
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>WhatsApp (opcional)</label>
-          <input type="tel" placeholder="+51987654321" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }} />
-          <small style={{ color: '#666666' }}>Podrás verificarlo desde tu perfil.</small>
-        </div>
-
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#000000', marginBottom: 4, fontWeight: 600 }}>Rol</label>
-          <select
-            value={rolSeleccionado}
-            onChange={(e) => setRolSeleccionado(e.target.value)}
-            required
-            style={{ width: '100%', padding: 8, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
-          >
-            <option value="">Selecciona un rol…</option>
-            {rolesExistentes.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-            <option value="Crear nuevo rol...">+ Crear nuevo rol…</option>
-          </select>
-          {rolSeleccionado === 'Crear nuevo rol...' && (
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-apellido">Apellido</label>
             <input
+              id="register-apellido"
+              className="auth-input"
               type="text"
-              placeholder="Escriba el nombre del nuevo rol"
-              value={otroRol}
-              onChange={(e) => setOtroRol(e.target.value)}
+              placeholder="Apellido"
+              value={apellido}
+              onChange={(e) => setApellido(e.target.value.replace(/\s+/g, ''))}
               required
-              style={{ width: '100%', padding: 8, marginTop: 6, boxSizing: 'border-box', border: '1px solid #E5E7EB', borderRadius: 4 }}
             />
-          )}
+          </div>
         </div>
 
-        <button className="register-submit-button" type="submit" disabled={cargando} style={{ padding: 10, cursor: 'pointer', marginTop: 10, background: '#DD2226', color: '#FFFFFF', border: 'none', borderRadius: 4, fontWeight: 'bold', transition: 'all 0.3s' }}>
-          {cargando ? 'Enviando...' : 'Registrar'}
+        {/* Fila 2: Correo autogenerado */}
+        <div className="auth-field">
+          <label className="auth-label" htmlFor="register-email">Correo autogenerado</label>
+          <div className="auth-input-readonly-group">
+            <input
+              id="register-email"
+              className="auth-input auth-input-readonly"
+              type="email"
+              value={emailGenerado}
+              readOnly
+              placeholder="nombre.apellido@northservices.com.pe"
+            />
+            {emailGenerado && (
+              <span className="auth-input-readonly-tag" aria-hidden="true">
+                Automático
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Fila 3: Contraseña y WhatsApp */}
+        <div className="auth-grid-2">
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-password">Contraseña</label>
+            <div className="auth-password-group">
+              <input
+                id="register-password"
+                className="auth-input"
+                type={passwordVisible ? 'text' : 'password'}
+                placeholder="Mínimo 6 caracteres"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+              />
+              <button
+                type="button"
+                className="auth-password-toggle"
+                onClick={() => setPasswordVisible((visible) => !visible)}
+                aria-label={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+              >
+                {passwordVisible ? <FiEyeOff /> : <FiEye />}
+              </button>
+            </div>
+          </div>
+
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-whatsapp">WhatsApp (opcional)</label>
+            <input
+              id="register-whatsapp"
+              className="auth-input"
+              type="tel"
+              placeholder="+51987654321"
+              value={whatsapp}
+              onChange={(e) => setWhatsapp(e.target.value)}
+            />
+            <span className="auth-hint">Podrás verificarlo desde tu perfil.</span>
+          </div>
+        </div>
+
+        {/* Fila 4: Área y Rol */}
+        <div className="auth-grid-2">
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-area">Área</label>
+            <select
+              id="register-area"
+              className="auth-select"
+              value={areaSeleccionada}
+              onChange={(e) => setAreaSeleccionada(e.target.value)}
+              required
+            >
+              <option value="">Selecciona un área…</option>
+              {areasExistentes.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+              <option value="Crear nueva área...">+ Crear nueva área…</option>
+            </select>
+            {areaSeleccionada === 'Crear nueva área...' && (
+              <input
+                type="text"
+                className="auth-input auth-field-extra"
+                placeholder="Escriba el nombre de la nueva área"
+                value={otraArea}
+                onChange={(e) => setOtraArea(e.target.value)}
+                required
+              />
+            )}
+          </div>
+
+          <div className="auth-field">
+            <label className="auth-label" htmlFor="register-rol">Rol</label>
+            <select
+              id="register-rol"
+              className="auth-select"
+              value={rolSeleccionado}
+              onChange={(e) => setRolSeleccionado(e.target.value)}
+              required
+            >
+              <option value="">Selecciona un rol…</option>
+              {rolesExistentes.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+              <option value="Crear nuevo rol...">+ Crear nuevo rol…</option>
+            </select>
+            {rolSeleccionado === 'Crear nuevo rol...' && (
+              <input
+                type="text"
+                className="auth-input auth-field-extra"
+                placeholder="Escriba el nombre del nuevo rol"
+                value={otroRol}
+                onChange={(e) => setOtroRol(e.target.value)}
+                required
+              />
+            )}
+          </div>
+        </div>
+
+        <button
+          className="auth-btn-primary"
+          type="submit"
+          disabled={cargando}
+        >
+          {cargando && <span className="auth-btn-spinner" aria-hidden="true" />}
+          <span>{cargando ? 'Enviando...' : 'Registrar'}</span>
         </button>
       </form>
 
-      <div style={{ marginTop: 20, textAlign: 'center' }}>
+      <div className="auth-footer">
         <button
           type="button"
           onClick={alVolverAlLogin}
-          className="login-secondary-link"
+          className="auth-switch-btn"
         >
-          ¿Ya tienes cuenta? Inicia sesión aquí
+          ¿Ya tienes cuenta? <span className="auth-switch-highlight">Inicia sesión aquí</span>
         </button>
+      </div>
+    </>
+  );
+
+  if (dentroDeAuthCard) {
+    return contenidoRegistro;
+  }
+
+  return (
+    <div className="auth-viewport">
+      <div className="auth-viewport-grid" aria-hidden="true" />
+      <div className="auth-viewport-watermark" aria-hidden="true" />
+      <div className="auth-card auth-card-registro">
+        {contenidoRegistro}
       </div>
     </div>
   );

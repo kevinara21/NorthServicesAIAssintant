@@ -1,5 +1,55 @@
 const { db } = require('../firebaseAdmin');
 
+// Caché corta del perfil: evita leer Firestore en cada request. El TTL es bajo
+// para que un cambio de rol o de estado se refleje en segundos, y el admin
+// puede invalidarlo de inmediato al guardar el usuario.
+const TTL_CACHE_USUARIO_MS = Number(process.env.USER_CACHE_TTL_MS || 30000);
+const cacheUsuarios = new Map();
+
+function invalidarCacheUsuario(uid) {
+  if (uid) cacheUsuarios.delete(String(uid));
+  else cacheUsuarios.clear();
+}
+
+function leerUsuarioCacheado(uid) {
+  const entrada = cacheUsuarios.get(String(uid));
+  if (!entrada) return null;
+  if (Date.now() > entrada.expira) {
+    cacheUsuarios.delete(String(uid));
+    return null;
+  }
+  return entrada.datos;
+}
+
+function guardarUsuarioCacheado(uid, datos) {
+  cacheUsuarios.set(String(uid), {
+    datos,
+    expira: Date.now() + TTL_CACHE_USUARIO_MS,
+  });
+  if (cacheUsuarios.size > 5000) {
+    const ahora = Date.now();
+    for (const [clave, entrada] of cacheUsuarios) {
+      if (ahora > entrada.expira) cacheUsuarios.delete(clave);
+    }
+  }
+}
+
+function normalizarUsuario(uid, data) {
+  const rol = String(data.rol || '').trim();
+  return {
+    uid,
+    email: data.email,
+    nombre: data.nombre,
+    apellido: data.apellido,
+    whatsapp: data.whatsapp || '',
+    whatsappVerificado: data.whatsappVerificado === true,
+    rol: rol.toLowerCase(),
+    rolOriginal: rol,
+    area: data.area || data.departamento || '',
+    estado: data.estado || 'pendiente',
+  };
+}
+
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
 
@@ -12,36 +62,22 @@ const verifyToken = async (req, res, next) => {
   try {
     const { authAdmin } = require('../firebaseAdmin');
     const decodedToken = await authAdmin.verifyIdToken(token);
-    
-    // Consultar datos del usuario en Firestore
+
+    const cacheado = leerUsuarioCacheado(decodedToken.uid);
+    if (cacheado) {
+      req.user = cacheado;
+      return next();
+    }
+
     const userDoc = await db.collection('users').doc(decodedToken.uid).get();
 
     if (!userDoc.exists) {
       return res.status(404).json({ ok: false, error: 'Usuario no encontrado en la base de datos.' });
     }
 
-    const data = userDoc.data();
-
-    // El rol se conserva tal como lo registró o asignó el Administrador.
-    // Solo se normaliza a minúsculas para poder compararlo de forma
-    // consistente; NO se reemplaza por un rol por defecto, porque eso
-    // hacía que una solicitud de acceso apareciera siempre como
-    // "Técnico" aunque el usuario hubiera elegido otro rol.
-    const rol = String(data.rol || '').trim();
-
-    req.user = {
-      uid: decodedToken.uid,
-      email: data.email,
-      nombre: data.nombre,
-      apellido: data.apellido,
-      whatsapp: data.whatsapp || '',
-      whatsappVerificado: data.whatsappVerificado === true,
-      // Minúsculas para comparaciones; `rolOriginal` conserva el texto exacto.
-      rol: rol.toLowerCase(),
-      rolOriginal: rol,
-      area: data.area || data.departamento || '',
-      estado: data.estado || 'pendiente'
-    };
+    const usuario = normalizarUsuario(decodedToken.uid, userDoc.data());
+    guardarUsuarioCacheado(decodedToken.uid, usuario);
+    req.user = usuario;
 
     next();
   } catch (error) {
@@ -51,3 +87,4 @@ const verifyToken = async (req, res, next) => {
 };
 
 module.exports = verifyToken;
+module.exports.invalidarCacheUsuario = invalidarCacheUsuario;

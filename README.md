@@ -13,6 +13,7 @@ servicios externos que se habilitan mediante configuración.
 ## Contenido
 
 - [Resumen de módulos](#resumen-de-módulos)
+- [Stack tecnológico](#stack-tecnológico)
 - [Arquitectura e integraciones](#arquitectura-e-integraciones)
 - [Asistente y fuentes RAG](#asistente-y-fuentes-rag)
 - [Documentos, indexación y papelera](#documentos-indexación-y-papelera)
@@ -42,6 +43,58 @@ servicios externos que se habilitan mediante configuración.
 | Monitoreo de pozos | Publicación y administración de enlaces externos asociados a pozo y lote | Usuarios activos; publicación propia o administración |
 | Starlink | Registros de equipos, pagos, sincronización para el asistente y recordatorios | Administradores o roles habilitados |
 | Perfil | Datos personales, verificación del número y cambio de contraseña de la plataforma | Usuario autenticado |
+
+## Stack tecnológico
+
+### Frontend
+
+| Tecnología | Versión | Uso |
+|---|---|---|
+| React | 19 | Biblioteca de interfaz de usuario (componentes y hooks) |
+| React DOM | 19 | Renderizado en el navegador |
+| Vite | 8 | Servidor de desarrollo y empaquetado de producción |
+| `@vitejs/plugin-react` | 6 | Soporte de React en Vite |
+| Firebase JS SDK | 12 | Autenticación del cliente y acceso a servicios |
+| Axios | 1 | Cliente HTTP para consumir la API del backend |
+| React Markdown | 10 | Renderizado de las respuestas del asistente en Markdown |
+| React Icons | 5 | Iconografía de la interfaz |
+| Oxlint | 1 | Análisis estático (lint) del frontend |
+| TypeScript (`@types/react`) | 19 | Tipos de React para el editor |
+
+### Backend
+
+| Tecnología | Versión | Uso |
+|---|---|---|
+| Node.js | — | Entorno de ejecución del servidor |
+| Express | 5 | Framework HTTP y definición de rutas de la API |
+| Firebase Admin SDK | 14 | Verificación de tokens y operaciones administrativas |
+| MongoDB Node.js Driver | 7 | Acceso a MongoDB Atlas (metadatos, permisos y vectores) |
+| Multer | 2 | Carga de archivos multipart (límite de 50 MB) |
+| Nodemailer | 10 | Envío de correo por SMTP (OTP y avisos) |
+| pdf2json | 4 | Extracción de texto de PDF como alternativa |
+| dotenv | 17 | Carga de variables de entorno |
+| CORS | 2 | Control de acceso entre orígenes |
+| nodemon | 3 | Recarga automática en desarrollo |
+
+### Datos, IA e infraestructura
+
+| Componente | Uso |
+|---|---|
+| MongoDB Atlas | Documentos, categorías, permisos y **Vector Search** (embeddings) |
+| Firebase Authentication | Identidad y credenciales de acceso |
+| Cloud Firestore | Usuarios, recursos, monitoreo, Starlink, OTP |
+| Gemini (Google AI) | Chat en streaming, embeddings y parsing estructurado de PDFs |
+| `gemini-embedding-001` | Modelo de embeddings (chat/documentos, 3072 dims) |
+| Ollama | Proveedor alternativo de chat local (`llama3.1`) |
+| Google Drive API | Lectura de reportes PDF de la carpeta compartida (`drive.readonly`) |
+| Web Speech API | Síntesis de voz (TTS) y resaltado palabra por palabra en el chat |
+| Web Audio API | Aviso sonoro de dos tonos al completar una respuesta |
+| Infobip | Envío de OTP por SMS y WhatsApp |
+| MySQL + PHP (cPanel) | Origen de inventarios MWD/Motores leído por el puente |
+
+> Las versiones corresponden a las declaradas en `frontend/package.json` y
+> `backend/package.json` (rangos `^`). Consulta el `package.json` correspondiente
+> para el detalle exacto de cada librería.
 
 ## Arquitectura e integraciones
 

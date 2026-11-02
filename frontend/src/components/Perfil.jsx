@@ -2,8 +2,11 @@ import { useState } from 'react';
 import { FiCheck, FiCheckCircle, FiEye, FiEyeOff, FiKey, FiLock, FiSave, FiSend } from 'react-icons/fi';
 import { EmailAuthProvider, reauthenticateWithCredential } from 'firebase/auth';
 import { auth } from '../services/firebaseConfig';
-import { apiFetch } from '../services/api';
+import { apiJson } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
+import useCountdown, { formatearSegundos } from '../hooks/useCountdown';
+
+const OTP_DIARIO = 5;
 
 export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   const [nombre, setNombre] = useState(usuario?.nombre || '');
@@ -13,27 +16,21 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   const [canal, setCanal] = useState('sms');
   const [cargando, setCargando] = useState(false);
   const [otpEnviado, setOtpEnviado] = useState(false);
+  const [restanteHoy, setRestanteHoy] = useState(null);
   const [passwordActual, setPasswordActual] = useState('');
   const [nuevaPassword, setNuevaPassword] = useState('');
   const [repetirPassword, setRepetirPassword] = useState('');
   const [passwordVisible, setPasswordVisible] = useState({ actual: false, nueva: false, repetir: false });
   const { notificarExito, notificarError } = useNotification();
 
-  const llamada = async (ruta, opciones = {}) => {
-    const respuesta = await apiFetch(ruta, {
-      ...opciones,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...opciones.headers },
-    });
-    const textoRespuesta = await respuesta.text();
-    let data;
-    try {
-      data = JSON.parse(textoRespuesta);
-    } catch {
-      throw new Error('El servidor no respondió correctamente. Verifica que el backend esté ejecutándose en el puerto 8000.');
-    }
-    if (!respuesta.ok) throw new Error(data.error || 'No se pudo completar la operación.');
-    return data;
-  };
+  const { restante: espera, iniciar: iniciarEspera } = useCountdown(
+    `otp:verificar-whatsapp:${usuario?.uid || 'anonimo'}`
+  );
+
+  const llamada = async (ruta, opciones = {}) => apiJson(ruta, {
+    ...opciones,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...opciones.headers },
+  });
 
   const guardarPerfil = async (event) => {
     if (event) event.preventDefault();
@@ -51,15 +48,20 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
   };
 
   const enviarCodigo = async () => {
+    if (espera > 0) return;
     setCargando(true);
     try {
-      await llamada('/api/otp/solicitar', { method: 'POST', body: JSON.stringify({ telefono, canal }) });
+      const data = await llamada('/api/otp/solicitar', { method: 'POST', body: JSON.stringify({ telefono, canal }) });
       setOtpEnviado(true);
+      iniciarEspera(data.reintentarEn || 120);
+      if (typeof data.restanteHoy === 'number') setRestanteHoy(data.restanteHoy);
       notificarExito(`Código enviado correctamente por ${canal === 'whatsapp' ? 'WhatsApp' : 'SMS'}.`, {
         titulo: 'Código enviado',
         duracion: 5000,
       });
     } catch (error) {
+      if (error.reintentarEn) iniciarEspera(error.reintentarEn);
+      if (typeof error.restanteHoy === 'number') setRestanteHoy(error.restanteHoy);
       notificarError(error.message, { titulo: 'No se pudo enviar el código', duracion: 5500 });
     } finally { setCargando(false); }
   };
@@ -143,9 +145,21 @@ export default function Perfil({ usuario, token, onUsuarioActualizado }) {
               <input value={telefono} onChange={(event) => setTelefono(event.target.value)} placeholder="+51987654321" required />
             </label>
             <div className="profile-action-wrapper">
-              <button className="profile-primary-button profile-btn-full" type="button" onClick={enviarCodigo} disabled={cargando}>
-                <FiSend /> Enviar código
+              <button
+                className="profile-primary-button profile-btn-full"
+                type="button"
+                onClick={enviarCodigo}
+                disabled={cargando || espera > 0}
+              >
+                <FiSend /> {espera > 0
+                  ? `Reenviar en ${formatearSegundos(espera)}`
+                  : otpEnviado ? 'Reenviar código' : 'Enviar código'}
               </button>
+              {typeof restanteHoy === 'number' && (
+                <small className="profile-otp-hint">
+                  Códigos restantes hoy: {restanteHoy} de {OTP_DIARIO}.
+                </small>
+              )}
             </div>
 
             {/* Fila 3: Guardar cambios (abajo de Correo, mismo ancho con icono), Estado / OTP */}

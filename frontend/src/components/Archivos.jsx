@@ -55,7 +55,6 @@ async function eliminarBorradorSubida(uid) {
 
 function tieneContenidoBorrador(borrador) {
   return (borrador.archivos || []).length > 0
-    || Boolean(borrador.descripcion?.trim())
     || Boolean(borrador.nuevaCategoria?.nombre?.trim())
     || Boolean(borrador.nuevaCategoria?.descripcion?.trim());
 }
@@ -72,7 +71,6 @@ export default function Archivos({ token, usuario }) {
   const [archivosSeleccionados, setArchivosSeleccionados] = useState([]);
   const [idsSeleccionados, setIdsSeleccionados] = useState([]);
   const [modoSeleccion, setModoSeleccion] = useState(false);
-  const [descripcion, setDescripcion] = useState('');
   const [busqueda, setBusqueda] = useState('');
   const [filtroCategorias, setFiltroCategorias] = useState([]);
   const [filtroAbierto, setFiltroAbierto] = useState(false);
@@ -122,7 +120,6 @@ export default function Archivos({ token, usuario }) {
         borradorDisponibleRef.current = true;
         setBorradorDisponible(true);
         setArchivosSeleccionados(borrador.archivos || []);
-        setDescripcion(borrador.descripcion || '');
         setCategoriaId(borrador.categoriaId || '');
         draftCategoriaRef.current = borrador.categoriaId || '';
         setCreandoCategoria(Boolean(borrador.creandoCategoria));
@@ -146,14 +143,12 @@ export default function Archivos({ token, usuario }) {
 
     const borrador = {
       archivos: archivosSeleccionados,
-      descripcion,
       categoriaId,
       creandoCategoria,
       nuevaCategoria,
     };
     const tieneTrabajo = tieneContenidoBorrador({
       archivos: archivosSeleccionados,
-      descripcion,
       nuevaCategoria,
     });
     if (!tieneTrabajo && !borradorDisponibleRef.current) return;
@@ -166,7 +161,7 @@ export default function Archivos({ token, usuario }) {
       .catch((error) => {
         notificarError(error.message, { titulo: 'No se pudo guardar el borrador' });
       });
-  }, [almacenamientoDisponible, archivosSeleccionados, borradorCargado, categoriaId, creandoCategoria, descripcion, nuevaCategoria, notificarError, usuarioUid]);
+  }, [almacenamientoDisponible, archivosSeleccionados, borradorCargado, categoriaId, creandoCategoria, nuevaCategoria, notificarError, usuarioUid]);
 
   useEffect(() => {
     if (!filtroAbierto) return undefined;
@@ -232,7 +227,6 @@ export default function Archivos({ token, usuario }) {
     if (cargando || guardandoCategoria) return;
     const tieneTrabajo = tieneContenidoBorrador({
       archivos: archivosSeleccionados,
-      descripcion,
       nuevaCategoria,
     });
     if (tieneTrabajo) {
@@ -240,7 +234,7 @@ export default function Archivos({ token, usuario }) {
     } else {
       setModalSubirAbierto(false);
     }
-  }, [archivosSeleccionados, cargando, descripcion, guardandoCategoria, nuevaCategoria]);
+  }, [archivosSeleccionados, cargando, guardandoCategoria, nuevaCategoria]);
 
   const guardarBorradorYCerrar = async () => {
     setGuardandoBorrador(true);
@@ -248,7 +242,6 @@ export default function Archivos({ token, usuario }) {
       try {
         await guardarBorradorSubida(usuarioUid, {
           archivos: archivosSeleccionados,
-          descripcion,
           categoriaId,
           creandoCategoria,
           nuevaCategoria,
@@ -331,7 +324,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
 
     const termino = busqueda.trim().toLowerCase();
     if (!termino) return porCategoria;
-    return porCategoria.filter((item) => [item.nombre, item.nombreArchivo, item.descripcion, item.propietarioNombre, item.propietarioEmail, item.categoriaNombre]
+    return porCategoria.filter((item) => [item.nombre, item.nombreArchivo, item.propietarioNombre, item.propietarioEmail, item.categoriaNombre]
       .filter(Boolean).some((valor) => valor.toLowerCase().includes(termino)));
   }, [archivos, busqueda, filtroCategorias]);
 
@@ -407,7 +400,6 @@ const respuesta = await apiFetch('/api/rag/categorias', {
           // No hay campo "Nombre" en el formulario: cada archivo lleva el suyo.
           // Si no se envía, el backend guarda el nombre del archivo sin la
           // extensión, que es exactamente lo que se quería.
-          datos.append('descripcion', descripcion.trim());
           // El backend decide la colección de embeddings a partir de esto.
           datos.append('categoriaId', categoriaId);
           const respuesta = await apiFetch('/api/archivos', { method: 'POST',           headers: {
@@ -428,7 +420,6 @@ const respuesta = await apiFetch('/api/rag/categorias', {
             setArchivosSeleccionados(errores.map((error) => error.archivo));
       } else {
         setArchivosSeleccionados([]);
-        setDescripcion('');
         setNuevaCategoria({ nombre: '', descripcion: '' });
         setCreandoCategoria(false);
         setModalSubirAbierto(false);
@@ -462,7 +453,7 @@ const respuesta = await apiFetch('/api/rag/categorias', {
     setConfirmacion({
       visible: true,
       titulo: `¿Reemplazar "${item.nombre || item.nombreArchivo}"?`,
-      mensaje: 'El documento anterior y sus fragmentos dejarán de estar disponibles para la IA. Se conservarán el nombre, la descripción, la categoría y los permisos; el archivo nuevo se volverá a procesar e indexar.',
+      mensaje: 'El documento anterior y sus fragmentos dejarán de estar disponibles para la IA. Se conservarán el nombre, la categoría y los permisos; el archivo nuevo se volverá a procesar e indexar.',
       etiqueta: 'Reemplazar documento',
       onConfirm: async () => {
         setConfirmacion({ visible: false });
@@ -624,7 +615,6 @@ const respuesta = await apiFetch('/api/rag/categorias', {
                     </div>
                   )}
                 </label>
-                <label>Descripción<input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} disabled={cargando} /></label>
 
                 <div className="archivo-categoria">
                   <span className="archivo-categoria__etiqueta">

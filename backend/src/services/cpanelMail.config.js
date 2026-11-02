@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 /* ============================================================
  * CONFIG SMTP CORPORATIVO (cPanel / cPanel Mail) — NODE

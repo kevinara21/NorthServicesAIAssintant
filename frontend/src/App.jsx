@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { NotificationProvider, useNotification } from './context/NotificationContext';
-import Login from './pages/Login';
-import Dashboard from './components/Dashboard';
 import OilLoader from './components/common/OilLoader';
 import ModalInactividad from './components/common/ModalInactividad';
 import useSesionSegura from './hooks/useSesionSegura';
 import { apiFetch } from './services/api';
+
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./components/Dashboard'));
 
 const CLAVE_RECARGAS = 'recargas_north_ai';
 const UMBRAL_RECARGAS = 5;
@@ -194,15 +195,19 @@ function AppContent() {
         </div>
       )}
       {!usuario ? (
-        <Login onLoginSuccess={handleLoginSuccess} />
+        <Suspense fallback={<OilLoader label="Cargando acceso" />}>
+          <Login onLoginSuccess={handleLoginSuccess} />
+        </Suspense>
       ) : (
-        <Dashboard
-          usuario={usuario}
-          token={token}
-          onLogout={handleLogout}
-          tiempoSesionTexto={tiempoSesionTexto}
-          onUsuarioActualizado={(usuarioData) => handleLoginSuccess(usuarioData, token)}
-        />
+        <Suspense fallback={<OilLoader label="Cargando panel" />}>
+          <Dashboard
+            usuario={usuario}
+            token={token}
+            onLogout={handleLogout}
+            tiempoSesionTexto={tiempoSesionTexto}
+            onUsuarioActualizado={(usuarioData) => handleLoginSuccess(usuarioData, token)}
+          />
+        </Suspense>
       )}
       {usuario && mostrarModalInactividad && (
         <ModalInactividad cuentaRegresivaTexto={cuentaRegresivaTexto} progreso={progresoCierre} />

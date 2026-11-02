@@ -24,7 +24,7 @@
 // sin lanzar excepciones para no romper el endpoint.
 // ==========================================================
 
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 const nodemailer = require('nodemailer');
 const CpanelMailConfig = require('./cpanelMail.config');

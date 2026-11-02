@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FiEdit2, FiEye, FiEyeOff, FiPlus, FiRefreshCw, FiSave, FiX, FiCheckCircle, FiXCircle } from 'react-icons/fi';
+import { FiCopy, FiEdit2, FiEye, FiEyeOff, FiPlus, FiRefreshCw, FiSave, FiX, FiCheckCircle, FiXCircle } from 'react-icons/fi';
 import { apiFetch } from '../services/api';
 import { useNotification } from '../context/NotificationContext';
 import OilLoader from '../components/common/OilLoader';
@@ -51,6 +51,7 @@ export default function GestionFacturacion({ token }) {
   const [modalDetallesAbierto, setModalDetallesAbierto] = useState(false);
   const [pozoSeleccionado, setPozoSeleccionado] = useState(null);
   const [mostrarContrasena, setMostrarContrasena] = useState(false);
+  const [mostrarContrasenaDetalle, setMostrarContrasenaDetalle] = useState(false);
   const { notificarError, notificarExito } = useNotification();
 
   const cargarPozos = async () => {
@@ -131,7 +132,34 @@ export default function GestionFacturacion({ token }) {
 
   const verDetalles = (pozo) => {
     setPozoSeleccionado(pozo);
+    setMostrarContrasenaDetalle(false);
     setModalDetallesAbierto(true);
+  };
+
+  // Copia un dato del equipo. navigator.clipboard solo existe en contextos
+  // seguros (HTTPS o localhost); en la red interna por HTTP se usa el respaldo
+  // con un textarea temporal para que el botón siga funcionando.
+  const copiarAlPortapapeles = async (valor, mensajeExito) => {
+    if (!valor) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(valor);
+      } else {
+        const area = document.createElement('textarea');
+        area.value = valor;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const copiado = document.execCommand('copy');
+        document.body.removeChild(area);
+        if (!copiado) throw new Error('No se pudo copiar.');
+      }
+      notificarExito(mensajeExito, { titulo: 'Copiado' });
+    } catch {
+      notificarError('No se pudo copiar automáticamente. Selecciona el texto y cópialo manualmente.', { titulo: 'No se pudo copiar' });
+    }
   };
 
   const guardarPozo = async (event) => {
@@ -323,8 +351,19 @@ export default function GestionFacturacion({ token }) {
                           className="starlink-password-toggle"
                           onClick={() => setMostrarContrasena(!mostrarContrasena)}
                           title={mostrarContrasena ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                          aria-label={mostrarContrasena ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                         >
                           {mostrarContrasena ? <FiEyeOff /> : <FiEye />}
+                        </button>
+                        <button
+                          type="button"
+                          className="starlink-password-toggle"
+                          onClick={() => copiarAlPortapapeles(formulario.contrasena, 'Contraseña copiada al portapapeles.')}
+                          disabled={!formulario.contrasena}
+                          title="Copiar contraseña"
+                          aria-label="Copiar contraseña"
+                        >
+                          <FiCopy />
                         </button>
                       </div>
                     </div>
@@ -456,7 +495,52 @@ export default function GestionFacturacion({ token }) {
                 </div>
                 <div className="starlink-detail-item">
                   <span className="starlink-detail-label">Correo</span>
-                  <span className="starlink-detail-value">{pozoSeleccionado.correo || '-'}</span>
+                  <div className="starlink-copy-row">
+                    <span className="starlink-detail-value starlink-copy-value">{pozoSeleccionado.correo || '-'}</span>
+                    {pozoSeleccionado.correo && (
+                      <button
+                        type="button"
+                        className="starlink-copy-button"
+                        onClick={() => copiarAlPortapapeles(pozoSeleccionado.correo, 'Correo copiado al portapapeles.')}
+                        title="Copiar correo"
+                        aria-label="Copiar correo"
+                      >
+                        <FiCopy />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="starlink-detail-item">
+                  <span className="starlink-detail-label">Contraseña</span>
+                  <div className="starlink-copy-row">
+                    <span className="starlink-detail-value starlink-copy-value">
+                      {pozoSeleccionado.contrasena
+                        ? (mostrarContrasenaDetalle ? pozoSeleccionado.contrasena : '••••••••')
+                        : 'Sin contraseña'}
+                    </span>
+                    {pozoSeleccionado.contrasena && (
+                      <>
+                        <button
+                          type="button"
+                          className="starlink-copy-button"
+                          onClick={() => setMostrarContrasenaDetalle((visible) => !visible)}
+                          title={mostrarContrasenaDetalle ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                          aria-label={mostrarContrasenaDetalle ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                        >
+                          {mostrarContrasenaDetalle ? <FiEyeOff /> : <FiEye />}
+                        </button>
+                        <button
+                          type="button"
+                          className="starlink-copy-button"
+                          onClick={() => copiarAlPortapapeles(pozoSeleccionado.contrasena, 'Contraseña copiada al portapapeles.')}
+                          title="Copiar contraseña"
+                          aria-label="Copiar contraseña"
+                        >
+                          <FiCopy />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div className="starlink-detail-item">
                   <span className="starlink-detail-label">Día de pago</span>

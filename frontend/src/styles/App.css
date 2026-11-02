@@ -187,41 +187,13 @@
   margin-bottom: var(--space-xl);
 }
 
-/* ========== LOGIN ========== */
-.login-page { width: min(380px, calc(100% - 2rem)); margin: 60px auto; font-family: var(--font-body); }
-.login-page input { background: #FFFFFF !important; color: #000000 !important; }
-.login-page input::placeholder { color: #4B5563; opacity: 1; }
-.login-page > form > input { border-color: var(--color-primary) !important; }
+/* ========== LOGIN & REGISTER (See auth.css for complete system) ========== */
 .password-field { position: relative; display: block; width: 100%; }
-.password-field input { padding-right: 42px !important; }
-.password-toggle { position: absolute; top: 50%; right: 7px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; transform: translateY(-50%); background: transparent; color: var(--color-text-muted); cursor: pointer; }
-.password-toggle:hover { color: var(--color-primary); }
+.password-field input { padding-right: 42px; }
+.password-toggle { position: absolute; top: 50%; right: 7px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; transform: translateY(-50%); background: transparent; color: var(--color-text-muted); cursor: pointer; border-radius: 4px; }
+.password-toggle:hover { color: var(--color-primary); background: rgba(221, 34, 38, 0.06); }
 .password-toggle svg { width: 18px; height: 18px; }
-.login-page .password-field input { border-color: var(--color-primary) !important; }
-.login-email-field { border-color: var(--color-primary) !important; background: #FFFFFF !important; }
-.login-email-field input { border: 0 !important; background: #FFFFFF !important; color: #000000 !important; }
-.login-recovery-form { display: flex; flex-direction: column; gap: 12px; }
-.login-recovery-field { display: flex; flex-direction: column; gap: 6px; color: #000000; font-size: 12px; font-weight: 600; text-align: left; }
-.login-recovery-field input { width: 100%; min-height: 40px; padding: 9px 11px; border: 1px solid var(--color-primary) !important; border-radius: var(--border-radius-sm); }
-.login-recovery-message { margin: 0; color: var(--color-primary); font-size: 13px; font-weight: 600; text-align: center; }
-.login-recovery-submit { width: 100%; min-height: 40px; margin-top: 2px; padding: 10px; border: 0; border-radius: var(--border-radius-sm); background: var(--color-primary); color: #FFFFFF !important; font: inherit; font-weight: 700; cursor: pointer; }
-.login-recovery-submit:disabled { cursor: wait; opacity: .65; }
-.login-canal-selector { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; margin: 4px 0; }
-.login-canal-option { display: flex; flex-direction: column; align-items: center; gap: 9px; width: 100%; min-height: 64px; padding: 12px 10px; border: 1px solid var(--color-light-border); border-radius: var(--border-radius-md); background: var(--color-white); color: var(--color-text-muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast); }
-.login-canal-option svg { transition: color var(--transition-fast), transform var(--transition-fast); }
-.login-canal-option:hover { border-color: var(--color-primary); color: var(--color-primary-dark); }
-.login-canal-option:hover svg { transform: translateY(-1px); }
-.login-canal-option.active { border-color: var(--color-primary); color: var(--color-primary); background: var(--color-primary-alpha10); box-shadow: inset 0 0 0 1px var(--color-primary); }
-.register-page .login-logo { width: 350px; height: 150px; margin: 0 auto 18px; }
-.register-page label { display: block; color: #000000; font-size: 12px; font-weight: 600; }
-.register-page input, .register-page select { background: #FFFFFF !important; border: 1px solid var(--color-primary) !important; color: #000000 !important; }
-.register-page input::placeholder { color: #4B5563; opacity: 1; }
-.register-page .register-submit-button { width: 100%; color: #FFFFFF !important; }
-.register-page .login-secondary-link { margin-top: 20px; }
-.login-secondary-link { display: block; width: 100%; margin-top: 20px; padding: 0; background: none; border: none; color: var(--color-primary); cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; text-align: center; text-decoration: underline; }
-.login-secondary-link:hover { color: var(--color-primary-dark); }
-.login-logo { width: 350px; height: 150px; object-fit: contain; margin: 0 auto 18px; }
-.login-heading, .login-subtitle { text-align: center; }
+
 
 /* ========== DASHBOARD SIDEBAR ========== */
 .dashboard-shell { position: relative; display: flex; min-height: 100vh; isolation: isolate; background: #eef1f0; }
@@ -253,6 +225,8 @@
 .dashboard-topbar-user { display: flex; align-items: center; gap: 12px; color: var(--color-text-muted); font-size: 12px; }
 .dashboard-avatar { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--color-primary); color: var(--color-white); font-weight: 700; }
 .dashboard-view { min-height: calc(100vh - 92px); padding: 16px 36px 32px; width: 100%; }
+.dashboard-view-loading { display: grid; place-items: center; min-height: 160px; color: var(--color-text-muted); font-size: 13px; }
+.profile-otp-hint { display: block; margin-top: 6px; color: var(--color-text-muted); font-size: 11px; text-align: center; }
 .library-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 .library-search { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; max-width: 560px; margin-top: 18px; padding: 4px 14px; background: #fff; border: 1px solid #d7dde5; border-radius: 10px; box-shadow: 0 2px 8px rgba(15, 23, 42, .06); color: #64748b; }
 .library-toolbar .library-search { margin-top: 0; }
@@ -1359,6 +1333,58 @@
   font-weight: 600;
   color: #0f172a;
   overflow-wrap: anywhere;
+}
+
+/* Correo y contraseña en el modal de detalles: el dato y sus acciones de
+   revelar/copiar comparten fila. */
+.starlink-copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.starlink-copy-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.starlink-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.starlink-copy-button:hover {
+  border-color: #DD2226;
+  color: #DD2226;
+  background: #fef2f2;
+}
+
+.starlink-copy-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.starlink-password-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.starlink-password-toggle:disabled:hover {
+  border-color: #e2e8f0;
+  color: #64748b;
+  background: #ffffff;
 }
 
 .billing-action-button {

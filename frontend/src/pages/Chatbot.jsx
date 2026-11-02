@@ -184,6 +184,7 @@ export default function Chatbot({ token, uid }) {
   const utteranceEnCursoRef = useRef(null);
   const indiceBotAutoRef = useRef(null);
   const temporizadorGuiaRef = useRef(null);
+  const abortRef = useRef(null);
   const [mensajeLeyendo, setMensajeLeyendo] = useState(null);
   const [palabraLeyendo, setPalabraLeyendo] = useState(null);
 
@@ -205,6 +206,10 @@ export default function Chatbot({ token, uid }) {
   }, [vozRespuesta]);
 
   useEffect(() => () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     if (contextoAudioRef.current && contextoAudioRef.current.state !== 'closed') {
       contextoAudioRef.current.close();
     }
@@ -765,6 +770,22 @@ export default function Chatbot({ token, uid }) {
       ];
     });
 
+    const controlador = new AbortController();
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = controlador;
+
+    // Los tokens llegan en rachas muy cortas. Se agrupan y se vuelcan una vez
+    // por frame: el texto se ve igual de fluido pero React repinta mucho menos.
+    let textoPendiente = '';
+    let framePendiente = null;
+
+    const cancelarVolcado = () => {
+      if (framePendiente !== null) {
+        cancelAnimationFrame(framePendiente);
+        framePendiente = null;
+      }
+    };
+
     try {
       logDebug('Enviando POST a:', `${API_URL}/api/chat`);
       logDebug('Token disponible:', token ? 'SÍ' : 'NO');
@@ -773,6 +794,7 @@ export default function Chatbot({ token, uid }) {
         `${API_URL}/api/chat`,
         {
           method: 'POST',
+          signal: controlador.signal,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
@@ -851,6 +873,25 @@ export default function Chatbot({ token, uid }) {
         });
       };
 
+      const volcarTextoPendiente = () => {
+        framePendiente = null;
+        if (!textoPendiente) return;
+        const fragmento = textoPendiente;
+        textoPendiente = '';
+        actualizarUltimoBot((ultimo) => ({
+          ...ultimo,
+          texto: ultimo.texto + fragmento,
+        }));
+      };
+
+      const encolarTexto = (fragmento) => {
+        if (!fragmento) return;
+        textoPendiente += fragmento;
+        if (framePendiente === null) {
+          framePendiente = requestAnimationFrame(volcarTextoPendiente);
+        }
+      };
+
       // Procesa UN evento SSE ya parseado (separado por \n\n)
       const procesarEvento = (evento) => {
         const lineas = evento.split(/\r?\n/);
@@ -876,16 +917,15 @@ export default function Chatbot({ token, uid }) {
           // --- TEXTO ---------------------------------------------------------
           if (data.tipo === 'texto') {
             textoAcumulado += data.texto || '';
-            actualizarUltimoBot((ultimo) => ({
-              ...ultimo,
-              texto: ultimo.texto + (data.texto || ''),
-            }));
+            encolarTexto(data.texto || '');
           }
 
           // --- REINICIAR TEXTO ----------------------------------------------
           if (data.tipo === 'texto_reset') {
             logDebug('TEXTO_RESET: limpiando respuesta parcial.');
             textoAcumulado = '';
+            textoPendiente = '';
+            cancelarVolcado();
             actualizarUltimoBot((ultimo) => ({
               ...ultimo,
               texto: '',
@@ -929,6 +969,8 @@ export default function Chatbot({ token, uid }) {
           // --- FIN -----------------------------------------------------------
           if (data.tipo === 'fin') {
             logDebug('EVENTO FIN RECIBIDO');
+            cancelarVolcado();
+            volcarTextoPendiente();
             if (!respuestaConError && !sonidoReproducido) {
               sonidoReproducido = true;
               reproducirSonidoRespuesta(textoAcumulado, indiceBotAutoRef.current);
@@ -970,6 +1012,9 @@ export default function Chatbot({ token, uid }) {
         procesarEvento(buffer);
       }
 
+      cancelarVolcado();
+      volcarTextoPendiente();
+
       // Algunas rutas del backend envían su respuesta sin evento "fin"
       // (p. ej. consultas fuera de alcance). Si terminó el stream y hay
       // texto, se lanza la lectura en voz aunque no haya llegado "fin".
@@ -984,6 +1029,14 @@ export default function Chatbot({ token, uid }) {
 
       setCargando(false);
     } catch (error) {
+      cancelarVolcado();
+
+      if (error?.name === 'AbortError') {
+        logDebug('Consulta cancelada por el navegador.');
+        setCargando(false);
+        return;
+      }
+
       // ERROR REAL: sí se debe imprimir en producción para trazabilidad
       console.error('====================================');
       console.error('[CHATBOT] ERROR REAL');
@@ -1015,6 +1068,8 @@ export default function Chatbot({ token, uid }) {
       });
 
       setCargando(false);
+    } finally {
+      if (abortRef.current === controlador) abortRef.current = null;
     }
   };
 
